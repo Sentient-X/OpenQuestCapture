@@ -12,6 +12,16 @@
 
 `QuestRealityCapture` is a Unity-based data logging app for Meta Quest 3. It captures and stores synchronized real-world information such as headset and controller poses, images from both passthrough cameras, camera characteristics, and depth data, organized per session.
 
+For **data parsing, visualization, and reconstruction**, refer to the companion project:
+**[Meta Quest 3D Reconstruction](https://github.com/t-34400/metaquest-3d-reconstrucion)**
+
+This includes:
+
+* Scripts for **loading and decoding** camera poses, intrinsics, and depth descriptors
+* Conversions of **raw YUV images** and **depth maps** to usable formats (RGB, point clouds)
+* Utilities for **reconstructing 3D scenes** using [Open3D](http://www.open3d.org/)
+* Export pipelines to prepare data for **SfM/SLAM tools** like **COLMAP**
+
 ---
 
 ## ✅ Features
@@ -21,6 +31,30 @@
 * Logs **Camera2 API characteristics** and image format information
 * Saves **depth maps** and **depth descriptors** from both cameras
 * Automatically organizes logs into timestamped folders on internal storage
+
+---
+
+## 📢 NOTICE (v1.1.0)
+
+Starting with version **1.1.0**, the **camera pose values** stored in `left_camera_characteristics.json` and `right_camera_characteristics.json` are now saved as **raw pose values directly obtained from the Android Camera2 API**.
+
+### Migration Guide for Older Logs (v1.0.x and earlier)
+
+In versions **prior to 1.1.0**, the camera poses were preprocessed into Unity coordinate space. To convert these older poses to match the new raw format convention, apply the following transformation:
+
+* **Translation (position)**:
+
+  ```
+  (x, y, z) → (x, y, -z)
+  ```
+
+* **Rotation (quaternion)**:
+
+  ```
+  (x, y, z, w) → (-x, -y, z, w)
+  ```
+
+This conversion aligns the preprocessed Unity pose with the raw Android pose representation now used in version 1.1.0 and later.
 
 ---
 
@@ -145,5 +179,3 @@ This project uses Meta’s OpenXR SDK — please ensure compliance with its lice
 ---
 
 ## 📌 TODO
-
-* [ ] 3D point reconstruction from depth
