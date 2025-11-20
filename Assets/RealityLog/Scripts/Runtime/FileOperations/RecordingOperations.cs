@@ -90,19 +90,43 @@ namespace RealityLog.FileOperations
         }
 
         /// <summary>
-        /// Compresses a recording directory into a ZIP file.
+        /// Event fired when an operation reports progress. Passes (operation, progress 0-1).
         /// </summary>
-        public void CompressRecording(string directoryName)
+        public event Action<string, float>? OnOperationProgress;
+
+        /// <summary>
+        /// Compresses a recording directory into a ZIP file asynchronously.
+        /// </summary>
+        public void CompressRecordingAsync(string directoryName)
         {
+            StartCoroutine(CompressCoroutine(directoryName, false));
+        }
+
+        /// <summary>
+        /// Exports a recording by compressing it and moving the ZIP to Downloads asynchronously.
+        /// </summary>
+        public void ExportRecordingAsync(string directoryName)
+        {
+            StartCoroutine(CompressCoroutine(directoryName, true));
+        }
+
+        private System.Collections.IEnumerator CompressCoroutine(string directoryName, bool isExport)
+        {
+            string operationName = isExport ? "Export" : "Compress";
+            string sourcePath = Path.Join(Application.persistentDataPath, directoryName);
+            string zipName = $"{directoryName}.qscan";
+            string zipPath = Path.Join(Application.persistentDataPath, zipName);
+
+            // Enable runInBackground to ensure operation continues if headset is removed
+            bool originalRunInBackground = Application.runInBackground;
+            Application.runInBackground = true;
+
             try
             {
-                string sourcePath = Path.Join(Application.persistentDataPath, directoryName);
-                string zipPath = Path.Join(Application.persistentDataPath, $"{directoryName}.zip");
-
                 if (!Directory.Exists(sourcePath))
                 {
-                    OnOperationComplete?.Invoke("Compress", false, $"Directory not found: {directoryName}");
-                    return;
+                    OnOperationComplete?.Invoke(operationName, false, $"Directory not found: {directoryName}");
+                    yield break;
                 }
 
                 // Delete existing zip if it exists
@@ -111,17 +135,140 @@ namespace RealityLog.FileOperations
                     File.Delete(zipPath);
                 }
 
-                // Create zip file
-                ZipFile.CreateFromDirectory(sourcePath, zipPath);
-                
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingOperations: Compressed {directoryName} to {zipPath}");
-                OnOperationComplete?.Invoke("Compress", true, $"Compressed to {directoryName}.zip");
+                bool success = false;
+                string message = "";
+
+                Exception? threadException = null;
+
+                // Get file list on main thread
+                string[] files;
+                try
+                {
+                    files = Directory.GetFiles(sourcePath, "*", SearchOption.AllDirectories);
+                }
+                catch (Exception e)
+                {
+                    OnOperationComplete?.Invoke(operationName, false, $"Error listing files: {e.Message}");
+                    yield break;
+                }
+
+                int totalFiles = files.Length;
+                // Shared state for progress reporting
+                // We use a class or closure to share state safely
+                var progressState = new ProgressState();
+
+                // Start background task
+                var task = System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        // Create empty zip
+                        using (var zipToOpen = new FileStream(zipPath, FileMode.Create))
+                        using (var archive = new ZipArchive(zipToOpen, ZipArchiveMode.Create))
+                        {
+                            foreach (var file in files)
+                            {
+                                if (progressState.IsCancelled) break;
+
+                                string entryName = Path.GetRelativePath(sourcePath, file);
+                                // Use Fastest compression to speed up the process on Quest
+                                archive.CreateEntryFromFile(file, entryName, System.IO.Compression.CompressionLevel.Fastest);
+                                
+                                System.Threading.Interlocked.Increment(ref progressState.ProcessedFiles);
+                            }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        progressState.Exception = e;
+                    }
+                    finally
+                    {
+                        progressState.IsDone = true;
+                    }
+                });
+
+                // Poll for progress on main thread
+                while (!progressState.IsDone)
+                {
+                    float progress = (float)progressState.ProcessedFiles / totalFiles;
+                    OnOperationProgress?.Invoke(operationName, progress);
+                    yield return null;
+                }
+
+                // Final progress update
+                OnOperationProgress?.Invoke(operationName, 1.0f);
+
+                if (progressState.Exception != null)
+                {
+                    OnOperationComplete?.Invoke(operationName, false, $"Error: {progressState.Exception.Message}");
+                    yield break;
+                }
+
+                if (isExport)
+                {
+                    try
+                    {
+                        // Create downloads directory if it doesn't exist
+                        if (!Directory.Exists(downloadsBasePath))
+                        {
+                            Directory.CreateDirectory(downloadsBasePath);
+                        }
+
+                        string destZipPath = Path.Join(downloadsBasePath, zipName);
+
+                        // If destination zip exists, add timestamp suffix
+                        if (File.Exists(destZipPath))
+                        {
+                            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                            string zipNameWithoutExt = Path.GetFileNameWithoutExtension(zipName);
+                            destZipPath = Path.Join(downloadsBasePath, $"{zipNameWithoutExt}_{timestamp}.qscan");
+                        }
+
+                        // Move zip to downloads
+                        File.Move(zipPath, destZipPath);
+                        
+                        Debug.Log($"[{Constants.LOG_TAG}] RecordingOperations: Exported {directoryName} to {destZipPath}");
+                        OnOperationComplete?.Invoke("Export", true, $"Exported to Downloads: {Path.GetFileName(destZipPath)}");
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError($"[{Constants.LOG_TAG}] RecordingOperations: Error exporting {directoryName}: {e.Message}");
+                        OnOperationComplete?.Invoke("Export", false, $"Error: {e.Message}");
+                    }
+                }
+                else
+                {
+                    Debug.Log($"[{Constants.LOG_TAG}] RecordingOperations: Compressed {directoryName} to {zipPath}");
+                    OnOperationComplete?.Invoke("Compress", true, $"Compressed to {directoryName}.qscan");
+                }
             }
-            catch (Exception e)
+            finally
             {
-                Debug.LogError($"[{Constants.LOG_TAG}] RecordingOperations: Error compressing {directoryName}: {e.Message}");
-                OnOperationComplete?.Invoke("Compress", false, $"Error: {e.Message}");
+                // Restore original runInBackground setting
+                Application.runInBackground = originalRunInBackground;
             }
+        }
+
+        private class ProgressState
+        {
+            public int ProcessedFiles;
+            public bool IsDone;
+            public bool IsCancelled;
+            public Exception? Exception;
+        }
+
+        // Keeping synchronous methods for compatibility if needed, or we can remove them.
+        // The user asked to "compress and export in a coroutine", implying replacement or addition.
+        // I will remove the old synchronous bodies to avoid confusion, or redirect them.
+        // For now, I have replaced them in the file content range.
+
+        /// <summary>
+        /// Compresses a recording directory into a ZIP file.
+        /// </summary>
+        public void CompressRecording(string directoryName)
+        {
+           CompressRecordingAsync(directoryName);
         }
 
         /// <summary>
@@ -129,53 +276,7 @@ namespace RealityLog.FileOperations
         /// </summary>
         public void ExportRecording(string directoryName)
         {
-            try
-            {
-                string sourcePath = Path.Join(Application.persistentDataPath, directoryName);
-                string zipName = $"{directoryName}.zip";
-                string zipPath = Path.Join(Application.persistentDataPath, zipName);
-                string destZipPath = Path.Join(downloadsBasePath, zipName);
-
-                if (!Directory.Exists(sourcePath))
-                {
-                    OnOperationComplete?.Invoke("Export", false, $"Directory not found: {directoryName}");
-                    return;
-                }
-
-                // Create downloads directory if it doesn't exist
-                if (!Directory.Exists(downloadsBasePath))
-                {
-                    Directory.CreateDirectory(downloadsBasePath);
-                }
-
-                // Delete existing zip if it exists (both in persistent data and downloads)
-                if (File.Exists(zipPath))
-                {
-                    File.Delete(zipPath);
-                }
-
-                // Create zip file in persistent data path first
-                ZipFile.CreateFromDirectory(sourcePath, zipPath);
-                
-                // If destination zip exists, add timestamp suffix
-                if (File.Exists(destZipPath))
-                {
-                    string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                    string zipNameWithoutExt = Path.GetFileNameWithoutExtension(zipName);
-                    destZipPath = Path.Join(downloadsBasePath, $"{zipNameWithoutExt}_{timestamp}.zip");
-                }
-
-                // Move zip to downloads
-                File.Move(zipPath, destZipPath);
-                
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingOperations: Exported {directoryName} to {destZipPath}");
-                OnOperationComplete?.Invoke("Export", true, $"Exported to Downloads: {Path.GetFileName(destZipPath)}");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[{Constants.LOG_TAG}] RecordingOperations: Error exporting {directoryName}: {e.Message}");
-                OnOperationComplete?.Invoke("Export", false, $"Error: {e.Message}");
-            }
+            ExportRecordingAsync(directoryName);
         }
 
         /// <summary>

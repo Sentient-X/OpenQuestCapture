@@ -34,6 +34,7 @@ namespace RealityLog.UI
         [SerializeField] private TextMeshProUGUI statusText = default!;
 
         private List<RecordingListItemUI> itemInstances = new List<RecordingListItemUI>();
+        private Coroutine? statusHideCoroutine;
 
         private void OnEnable()
         {
@@ -45,6 +46,13 @@ namespace RealityLog.UI
             if (operations != null)
             {
                 operations.OnOperationComplete += OnOperationComplete;
+                operations.OnOperationProgress += OnOperationProgress;
+            }
+
+            // Ensure status text is hidden initially
+            if (statusText != null)
+            {
+                statusText.text = string.Empty;
             }
 
             RefreshList();
@@ -60,6 +68,7 @@ namespace RealityLog.UI
             if (operations != null)
             {
                 operations.OnOperationComplete -= OnOperationComplete;
+                operations.OnOperationProgress -= OnOperationProgress;
             }
         }
 
@@ -157,13 +166,45 @@ namespace RealityLog.UI
             }
         }
 
+        private void OnOperationProgress(string operation, float progress)
+        {
+            // Don't auto-hide while progress is updating
+            if (statusText != null)
+            {
+                statusText.text = $"{operation}: {progress:P0}";
+                statusText.color = Color.yellow; // Use a different color for in-progress? Or just white/green.
+                
+                if (statusHideCoroutine != null)
+                {
+                    StopCoroutine(statusHideCoroutine);
+                    statusHideCoroutine = null;
+                }
+            }
+        }
+
         private void ShowStatus(string message, bool isSuccess)
         {
             if (statusText != null)
             {
                 statusText.text = message;
                 statusText.color = isSuccess ? Color.green : Color.red;
+
+                if (statusHideCoroutine != null)
+                {
+                    StopCoroutine(statusHideCoroutine);
+                }
+                statusHideCoroutine = StartCoroutine(HideStatusAfterDelay());
             }
+        }
+
+        private System.Collections.IEnumerator HideStatusAfterDelay()
+        {
+            yield return new WaitForSeconds(5f);
+            if (statusText != null)
+            {
+                statusText.text = string.Empty;
+            }
+            statusHideCoroutine = null;
         }
 
         private void OnValidate()

@@ -36,6 +36,9 @@ namespace RealityLog
         [Tooltip("Invoked when recording stops and files are saved. Passes the directory name where files were saved.")]
         [SerializeField] private UnityEvent<string> onRecordingSaved = default!;
 
+        [Tooltip("Invoked when recording starts.")]
+        [SerializeField] private UnityEvent onRecordingStarted = default!;
+
         private bool isRecording = false;
         private float recordingStartTime = 0f;
         private string? currentSessionDirectory = null;
@@ -110,6 +113,8 @@ namespace RealityLog
 
             isRecording = true;
             recordingStartTime = Time.time;
+
+            onRecordingStarted?.Invoke();
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
         }
