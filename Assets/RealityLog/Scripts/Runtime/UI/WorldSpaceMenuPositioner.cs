@@ -84,6 +84,19 @@ namespace RealityLog.UI
                       $"rotation: ({canvasRotation.eulerAngles.x:F1}°, {canvasRotation.eulerAngles.y:F1}°, {canvasRotation.eulerAngles.z:F1}°), " +
                       $"active: {canvasTransform.gameObject.activeSelf}, enabled: {canvasTransform.gameObject.activeInHierarchy}");
         }
+
+        public void PositionAway()
+        {
+            if (canvasTransform == null)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] WorldSpaceMenuPositioner: Canvas transform is null!");
+                return;
+            }
+
+            canvasTransform.position = new Vector3(1000.0f, 1000.0f, 1000.0f);
+
+            Debug.Log($"[{Constants.LOG_TAG}] WorldSpaceMenuPositioner: Menu positioned away from camera");
+        }
     }
 }
 

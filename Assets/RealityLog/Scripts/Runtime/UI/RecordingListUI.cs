@@ -157,7 +157,9 @@ namespace RealityLog.UI
 
         private void OnOperationComplete(string operation, bool success, string message)
         {
-            ShowStatus($"{operation}: {message}", success);
+            // Keep export success message for much longer (5 minutes) so user sees it if they took headset off
+            float duration = (operation == "Export" && success) ? 1000f : 5f;
+            ShowStatus($"{operation}: {message}", success, duration);
             
             // Refresh list after operations that modify files
             if (operation == "Delete")
@@ -182,7 +184,7 @@ namespace RealityLog.UI
             }
         }
 
-        private void ShowStatus(string message, bool isSuccess)
+        private void ShowStatus(string message, bool isSuccess, float duration = 5f)
         {
             if (statusText != null)
             {
@@ -193,13 +195,13 @@ namespace RealityLog.UI
                 {
                     StopCoroutine(statusHideCoroutine);
                 }
-                statusHideCoroutine = StartCoroutine(HideStatusAfterDelay());
+                statusHideCoroutine = StartCoroutine(HideStatusAfterDelay(duration));
             }
         }
 
-        private System.Collections.IEnumerator HideStatusAfterDelay()
+        private System.Collections.IEnumerator HideStatusAfterDelay(float delay)
         {
-            yield return new WaitForSeconds(5f);
+            yield return new WaitForSeconds(delay);
             if (statusText != null)
             {
                 statusText.text = string.Empty;

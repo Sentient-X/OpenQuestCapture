@@ -29,7 +29,6 @@ namespace RealityLog.UI
 
         private void Start()
         {
-            // Ensure menu starts hidden
             if (menuPanel != null)
             {
                 menuPanel.SetActive(false);
@@ -72,6 +71,10 @@ namespace RealityLog.UI
                 else
                 {
                     Debug.Log($"[{Constants.LOG_TAG}] RecordingMenuController: Menu closed");
+                    if (menuPositioner != null)
+                    {
+                        menuPositioner.PositionAway();
+                    }
                 }
             }
         }
@@ -102,7 +105,8 @@ namespace RealityLog.UI
         {
             if (menuPanel == null)
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingMenuController: Missing menu panel GameObject reference!");
+            if (menuPositioner == null)
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingMenuController: Missing menu positioner reference!");
         }
     }
 }
-
