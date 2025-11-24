@@ -210,7 +210,6 @@ python quest-3d-reconstruction/scripts/e2e_quest_to_colmap.py \
 ## 🙏 Acknowledgements
 
 This project is a fork of **[QuestRealityCapture](https://github.com/t-34400/QuestRealityCapture)** by **[t-34400](https://github.com/t-34400)**.
-The 3D reconstruction submodule is based on **[metaquest-3d-reconstrucion](https://github.com/samuelm2/quest-3d-reconstruction)**.
 
 Huge thanks to the original author for their excellent work in making Quest sensor data accessible!
 
