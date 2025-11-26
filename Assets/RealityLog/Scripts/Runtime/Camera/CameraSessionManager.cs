@@ -8,7 +8,7 @@ namespace RealityLog.Camera
 {
     public class CameraSessionManager : MonoBehaviour
     {
-        private const string CAMEAR_SESSION_MANAGER_CLASS_NAME = "com.t34400.questcamera.core.CameraSessionManager";
+        private const string CAMEAR_SESSION_MANAGER_CLASS_NAME = "com.samusynth.questcamera.core.CameraSessionManager";
 
         private const string REGISTER_SURFACE_PROVIDER_METHOD_NAME = "registerSurfaceProvider";
         private const string SET_CAPTURE_TEMPLATE_METHOD_NAME = "setCaptureTemplateFromString";

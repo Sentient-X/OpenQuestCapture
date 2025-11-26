@@ -43,13 +43,13 @@ This includes:
 Each time you start recording, a new folder is created under:
 
 ```
-/sdcard/Android/data/com.t34400.QuestRealityCapture/files
+/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
 ```
 
 Example structure:
 
 ```
-/sdcard/Android/data/com.t34400.QuestRealityCapture/files
+/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
 └── YYYYMMDD_hhmmss/
     ├── hmd_poses.csv
     ├── left_controller_poses.csv
@@ -144,7 +144,7 @@ To convert raw depth maps into linear or 3D form, refer to the companion project
    - Press the **Menu button** on the left controller to dismiss the instruction panel and start logging.
    - To stop, simply close the app or pause the session.
 
-2. **Manage Recordings (New!)**:
+2. **Manage Recordings**:
    - Press the **Y button** on the left controller to toggle the **Recording Menu**.
    - This menu allows you to:
      - **View** a list of all recorded sessions.
@@ -180,15 +180,18 @@ git submodule update --init --recursive
 
 ### End-to-End Pipeline
 
-The `e2e_quest_to_colmap.py` script provides a one-step solution to convert your Quest data into a COLMAP-compatible format.
+The `e2e_quest_to_colmap.py` script provides a one-step solution to convert your Quest data into a COLMAP format.
 
 **Usage Example:**
 
 ```bash
 python quest-3d-reconstruction/scripts/e2e_quest_to_colmap.py \
   --project_dir /path/to/extracted/session/folder \
-  --output_dir /path/to/output/colmap/project
+  --output_dir /path/to/output/colmap/project \ 
+  --use_colored_pointcloud
 ```
+
+Once in colmap format, the reconstruction can be passed into various Gaussian Splatting tools to generate a Gaussian Splatting scene.
 
 **What this script does:**
 1. **Converts YUV images** to RGB.
@@ -202,8 +205,7 @@ python quest-3d-reconstruction/scripts/e2e_quest_to_colmap.py \
 * Unity **6000.0.30f1**
 * Meta OpenXR SDK
 * Device: Meta Quest 3 or 3s only
-* Default capture frame rate: **3 FPS** (configurable, max ~25 FPS)
-  - See [docs/FPS_CONTROL.md](docs/FPS_CONTROL.md) for customization options
+* Default capture frame rate: **3 FPS**
 
 ---
 

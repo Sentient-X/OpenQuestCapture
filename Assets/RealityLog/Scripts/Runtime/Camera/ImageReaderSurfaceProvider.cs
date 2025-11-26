@@ -9,7 +9,7 @@ namespace RealityLog.Camera
 {
     public class ImageReaderSurfaceProvider : SurfaceProviderBase
     {
-        private const string IMAGE_READER_SURFACE_PROVIDER_CLASS_NAME = "com.t34400.questcamera.io.ImageReaderSurfaceProvider";
+        private const string IMAGE_READER_SURFACE_PROVIDER_CLASS_NAME = "com.samusynth.questcamera.io.ImageReaderSurfaceProvider";
         
         private const string RESET_BASE_TIME_METHOD_NAME = "resetBaseTime";
         private const string UPDATE_DIRECTORY_PATHS_METHOD_NAME = "updateDirectoryPaths";

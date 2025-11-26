@@ -11,7 +11,7 @@ namespace RealityLog.Camera
     {
         private const float CAMERA_MANAGER_CHECK_INTERVAL = 0.1f;
 
-        private const string CAMEAR_PERMISSION_MANAGER_CLASS_NAME = "com.t34400.questcamera.core.CameraPermissionManager";
+        private const string CAMEAR_PERMISSION_MANAGER_CLASS_NAME = "com.samusynth.questcamera.core.CameraPermissionManager";
 
         private const string REQUEST_CAMERA_PERMISSION_METHOD_NAME = "requestCameraPermissionIfNeeded";
         private const string HAS_CAMERA_MANAGER_METHOD_NAME = "hasCameraManager";
