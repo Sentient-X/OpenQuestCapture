@@ -41,7 +41,7 @@ This includes:
 * Automatically organizes logs into timestamped folders on internal storage
 
 
-### Step-by-Step Guide
+### Quick Start Guide
 
 1. **Install the app**: Sideload the app from the APK file in the Releases section of this repository. [This video](https://www.youtube.com/watch?v=bsC805t63-E) has a good guide on how to set up sideloading.
 2. **Start recording**: Launch the app and press the Menu button on the left controller to start a capture session.
