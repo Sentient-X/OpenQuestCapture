@@ -10,7 +10,7 @@
 
 ## 🙏 Acknowledgement
 
-First I'd like to acknowledge the work of the auther of QuestRealityCapture. This project largely is built on top of the Quest sensor data capture platform / library that they built. **[QuestRealityCapture](https://github.com/t-34400/QuestRealityCapture)** by **[t-34400](https://github.com/t-34400)**.
+First I'd like to acknowledge the work of the author of QuestRealityCapture. This project largely is built on top of the Quest sensor data capture platform / library that they built. **[QuestRealityCapture](https://github.com/t-34400/QuestRealityCapture)** by **[t-34400](https://github.com/t-34400)**.
 
 Huge thanks to the original author for their excellent work in making Quest sensor data accessible!
 
