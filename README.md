@@ -1,10 +1,13 @@
 # OpenQuestCapture
 
+[![](https://dcbadge.limes.pink/api/server/y5v3BTXAUd)](https://discord.gg/y5v3BTXAUd)
 
 **Capture and store real-world sensor data on Meta Quest 3**
 
 
 ![Demo](docs/demo.gif)
+
+**[Watch the full pipeline in action (45 seconds)](https://www.youtube.com/watch?v=OLoXAgbI8XA)** - See how data is captured on Quest and reconstructed into a 3D scene. *(Thank you to EggMan28 for the demo!)*
 
 ---
 
@@ -33,12 +36,6 @@ This includes:
 * Export pipelines to prepare data for **SfM/SLAM tools** like **COLMAP**
 
 ---
-
-## 💬 Community & Discussion
-
-Join our Discord community for discussions, support, and sharing your captures:
-
-**[Join Discord Server](https://discord.gg/y5v3BTXAUd)**
 
 ---
 
@@ -258,6 +255,8 @@ This project uses Meta’s OpenXR SDK — please ensure compliance with its lice
 
 This project is in its early stages and is still in active development. If you have any suggestions, bug reports, or feature requests, please open an issue or submit a pull request.
 
-Join our [Discord community](https://discord.gg/y5v3BTXAUd) to discuss ideas, get help, and share your captures with other users!
+Join our Discord community to discuss ideas, get help, and share your captures with other users:
+
+[![](https://dcbadge.limes.pink/api/server/y5v3BTXAUd)](https://discord.gg/y5v3BTXAUd)
 
 One area improvment is the export process. Currently it can take several minutes to export a session. It would be great to have a faster way to do this.
