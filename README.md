@@ -233,6 +233,31 @@ Once in colmap format, the reconstruction can be passed into various Gaussian Sp
 
 ---
 
+## 🎨 Tone Mapping for Indoor Scenes
+
+If you're capturing indoor scenes with windows, you may notice that bright window light can blow out the interior lighting, resulting in overexposed highlights and underexposed shadows. The reconstruction pipeline includes **tone mapping** (CLAHE + gamma correction) to fix this issue during YUV→RGB conversion.
+
+This is **especially effective for indoor environments** where natural light from windows creates high dynamic range conditions that exceed the camera's capture capability.
+
+### How to Enable
+
+Edit `quest-3d-reconstruction/config/pipeline_config.yml` before running the reconstruction:
+
+```yaml
+yuv_to_rgb:
+  tone_mapping: true              # Enable tone mapping
+  tone_mapping_method: "clahe+gamma"  # Options: "clahe", "gamma", "clahe+gamma"
+  clahe_clip_limit: 2.0           # Contrast enhancement (1.0-4.0)
+  clahe_tile_grid_size: 8         # Local adaptation grid size (4-16)
+  gamma_correction: 1.2           # Brightness boost (>1 brightens)
+```
+
+Then run the pipeline as normal. The tone mapping will be applied automatically when converting YUV images to RGB.
+
+For more details and advanced options, see the full documentation in the [quest-3d-reconstruction README](https://github.com/samuelm2/quest-3d-reconstruction#-tone-mapping-for-high-dynamic-range-scenes).
+
+---
+
 ## 🛠 Environment
 
 * Unity **6000.2.9f1**
