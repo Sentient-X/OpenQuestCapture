@@ -26,6 +26,9 @@ namespace RealityLog
         [Tooltip("Manages pose logging (HMD, controllers, etc.)")]
         [SerializeField] private PoseLogger[] poseLoggers = default!;
         
+        [Tooltip("Manages IMU logging (accelerometer, gyroscope)")]
+        [SerializeField] private IMULogger[] imuLoggers = default!;
+        
         [Tooltip("Manages FPS timing for synchronized capture")]
         [SerializeField] private CaptureTimer captureTimer = default!;
 
@@ -88,6 +91,10 @@ namespace RealityLog
                 {
                     logger.DirectoryName = timestamp;
                 }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.DirectoryName = timestamp;
+                }
             }
             {
                 currentSessionDirectory = recordDepthMaps && depthMapExporter != null ? depthMapExporter.DirectoryName : "manual_session";
@@ -113,6 +120,10 @@ namespace RealityLog
                 }
             }
             foreach (var logger in poseLoggers)
+            {
+                logger.StartLogging();
+            }
+            foreach (var logger in imuLoggers)
             {
                 logger.StartLogging();
             }
@@ -160,6 +171,10 @@ namespace RealityLog
                 depthMapExporter.StopExport();
             }
             foreach (var logger in poseLoggers)
+            {
+                logger.StopLogging();
+            }
+            foreach (var logger in imuLoggers)
             {
                 logger.StopLogging();
             }
