@@ -189,7 +189,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!4 &138327925
 Transform:
   m_ObjectHideFlags: 0
@@ -7561,7 +7561,7 @@ MonoBehaviour:
   - {fileID: 1550360849}
   captureTimer: {fileID: 1964602098}
   generateTimestampedDirectories: 1
-  recordDepthMaps: 0
+  recordDepthMaps: 1
   onRecordingSaved:
     m_PersistentCalls:
       m_Calls:
@@ -7621,6 +7621,7 @@ MonoBehaviour:
   minRaycastDistance: 0.25
   raycastDistance: 10
   showDebugLines: 1
+  isVisible: 0
   captureTimer: {fileID: 1964602098}
   environmentRaycastManager: {fileID: 1104910061}
   trackingSpace: {fileID: 678640233}
@@ -9268,7 +9269,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 29213cb0f1f1ea149abba5dca8a2c97c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: RealityLog.Common::RealityLog.Common.CaptureTimer
-  targetCaptureFPS: 60
+  targetCaptureFPS: 0
 --- !u!4 &1964602099
 Transform:
   m_ObjectHideFlags: 0

@@ -127,13 +127,15 @@ namespace RealityLog.IO
                     return;
                 }
 
-                var data = request.GetData<float>();
+                // Copy to managed array on MAIN THREAD while NativeArray is valid
+                var nativeData = request.GetData<float>();
+                float[] managedData = nativeData.ToArray();
 
-                SaveAsRaw(data, outputPath, () => ReturnBuffer(buffer));
+                SaveAsRaw(managedData, outputPath, () => ReturnBuffer(buffer));
             });
         }
 
-        private void SaveAsRaw(NativeArray<float> data, string path, Action onComplete)
+        private void SaveAsRaw(float[] data, string path, Action onComplete)
         {
             Task.Run(() =>
             {
@@ -141,7 +143,7 @@ namespace RealityLog.IO
                 {
                     int byteLength = data.Length * sizeof(float);
                     byte[] rawBytes = new byte[byteLength];
-                    Buffer.BlockCopy(data.ToArray(), 0, rawBytes, 0, byteLength);
+                    Buffer.BlockCopy(data, 0, rawBytes, 0, byteLength);
                     File.WriteAllBytes(path, rawBytes);
                 }
                 catch (Exception ex)
@@ -150,6 +152,8 @@ namespace RealityLog.IO
                 }
                 finally
                 {
+                    // Callback might need to be on main thread if it touches Unity objects
+                    // implementation of ReturnBuffer uses a lock so it is thread safe.
                     onComplete?.Invoke();
                 }
             });

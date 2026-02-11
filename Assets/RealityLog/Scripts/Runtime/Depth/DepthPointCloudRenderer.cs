@@ -25,6 +25,7 @@ namespace RealityLog.Depth
         [SerializeField] private float minRaycastDistance = 0.25f;
         [SerializeField] private float raycastDistance = 10f;
         [SerializeField] private bool showDebugLines = true;
+        [SerializeField] private bool isVisible = true;
         [SerializeField] private CaptureTimer captureTimer;
         [SerializeField] private EnvironmentRaycastManager environmentRaycastManager;
         [SerializeField] private Transform trackingSpace;
@@ -114,11 +115,14 @@ namespace RealityLog.Depth
                         Color pointColor = GetColorFromSurfaceNormal(hit.point, camera.transform.position, hit.normal);
                         
                         // Emit particle
-                        var emitParams = new ParticleSystem.EmitParams();
-                        emitParams.position = hit.point;
-                        emitParams.startColor = pointColor;
-                        emitParams.startSize = 0.01f; // Adjust size as needed
-                        pointCloudParticleSystem.Emit(emitParams, 1);
+                        if (isVisible)
+                        {
+                            var emitParams = new ParticleSystem.EmitParams();
+                            emitParams.position = hit.point;
+                            emitParams.startColor = pointColor;
+                            emitParams.startSize = 0.01f; // Adjust size as needed
+                            pointCloudParticleSystem.Emit(emitParams, 1);
+                        }
                     }
                 }
             }
