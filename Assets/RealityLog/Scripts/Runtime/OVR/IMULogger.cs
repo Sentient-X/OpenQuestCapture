@@ -31,6 +31,27 @@ namespace RealityLog.OVR
 
         private double baseOvrTimeSec;
         private long baseUnixTimeMs;
+        
+        // State for numerical differentiation
+        private OVRPlugin.Vector3f prevVelocity;
+        private OVRPlugin.Vector3f prevAngularVelocity;
+        private double prevTimestamp;
+
+        private bool IsZero(OVRPlugin.Vector3f v)
+        {
+            return v.x == 0 && v.y == 0 && v.z == 0;
+        }
+
+        private OVRPlugin.Vector3f CalculateDerivative(OVRPlugin.Vector3f current, OVRPlugin.Vector3f prev, double dt)
+        {
+            float fDt = (float)dt;
+            return new OVRPlugin.Vector3f
+            {
+                x = (current.x - prev.x) / fDt,
+                y = (current.y - prev.y) / fDt,
+                z = (current.z - prev.z) / fDt
+            };
+        }
 
         private double latestTimestamp;
 
@@ -49,6 +70,9 @@ namespace RealityLog.OVR
                 baseOvrTimeSec = OVRPlugin.GetTimeInSeconds();
                 baseUnixTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 latestTimestamp = 0;
+                prevVelocity = default;
+                prevAngularVelocity = default;
+                prevTimestamp = 0;
                 
                 Debug.Log($"[{Constants.LOG_TAG}] {fileName} - Starting IMU logging thread. Reset base times: OVR={baseOvrTimeSec:F3}s, Unix={baseUnixTimeMs}ms");
                 
@@ -126,6 +150,21 @@ namespace RealityLog.OVR
                     var gyro = poseState.AngularVelocity;
                     var vel = poseState.Velocity;
                     var angAcc = poseState.AngularAcceleration;
+
+                    // If raw acceleration data is missing (OpenXR), calculate it from velocity
+                    if (IsZero(acc) && prevTimestamp > 0)
+                    {
+                        double dt = timestamp - prevTimestamp;
+                        if (dt > 0.0001) // Avoid division by zero
+                        {
+                            acc = CalculateDerivative(vel, prevVelocity, dt);
+                            angAcc = CalculateDerivative(gyro, prevAngularVelocity, dt);
+                        }
+                    }
+
+                    prevVelocity = vel;
+                    prevAngularVelocity = gyro;
+                    prevTimestamp = timestamp;
 
                     writer.EnqueueRow(
                         ConvertOvrSecToUnixTimeMs(timestamp), timestamp,
