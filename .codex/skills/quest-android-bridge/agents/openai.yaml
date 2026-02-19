@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quest Android Bridge"
+  short_description: "Work on Quest camera AAR and Unity Android bridge"
+  default_prompt: "Use $quest-android-bridge to update Unity-Android camera bridge code, AAR integration, and Quest Android manifest/gradle settings."

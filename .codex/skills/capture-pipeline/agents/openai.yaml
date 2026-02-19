@@ -1,0 +1,4 @@
+interface:
+  display_name: "Capture Pipeline"
+  short_description: "Modify synchronized Quest capture pipeline"
+  default_prompt: "Use $capture-pipeline to update synchronized camera/depth/pose recording behavior in OpenQuestCapture."

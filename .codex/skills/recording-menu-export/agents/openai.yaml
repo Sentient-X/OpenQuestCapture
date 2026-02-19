@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recording Menu Export"
+  short_description: "Update recording list, export, and VR menu flows"
+  default_prompt: "Use $recording-menu-export to modify recording list UI, export behavior, and related scene wiring in OpenQuestCapture."
