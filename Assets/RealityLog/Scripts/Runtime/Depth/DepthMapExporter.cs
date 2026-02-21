@@ -28,6 +28,9 @@ namespace RealityLog.Depth
         [SerializeField] private string rightDepthMapDirectoryName = "right_depth";
         [SerializeField] private string leftDepthDescFileName = "left_depth_descriptors.csv";
         [SerializeField] private string rightDepthDescFileName = "right_depth_descriptors.csv";
+        [Header("Depth Capture")]
+        [Tooltip("When disabled, depth files are not captured or saved. Camera raw frames are unaffected.")]
+        [SerializeField] private bool enableDepthCapture = false;
         [Header("Synchronized Capture")]
         [Tooltip("Required: Reference to CaptureTimer for FPS-based capture timing.")]
         [SerializeField] private CaptureTimer captureTimer = default!;
@@ -57,6 +60,13 @@ namespace RealityLog.Depth
         {
             leftDepthCsvWriter?.Dispose();
             rightDepthCsvWriter?.Dispose();
+            leftDepthCsvWriter = null;
+            rightDepthCsvWriter = null;
+
+            if (!enableDepthCapture)
+            {
+                return;
+            }
 
             // Reset base times when starting a new recording session
             // This ensures timestamps align with camera/pose data
@@ -90,6 +100,12 @@ namespace RealityLog.Depth
             baseOvrTimeSec = OVRPlugin.GetTimeInSeconds();
             baseUnixTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
+            if (!enableDepthCapture)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] DepthMapExporter - Depth capture disabled; saving camera raw frames only.");
+                return;
+            }
+
             depthDataExtractor = new();
             renderTextureExporter = new(copyDepthMapShader);
 
@@ -101,7 +117,10 @@ namespace RealityLog.Depth
 
         private void Update()
         {
-            if (!IsExportEnabled) return;
+            if (!enableDepthCapture || !IsExportEnabled)
+            {
+                return;
+            }
 
             // Try to "prime" the depth system by fetching one frame at startup
             // Once we get a valid frame, mark the system as ready and stop trying
@@ -131,6 +150,11 @@ namespace RealityLog.Depth
 
         private void OnDestroy()
         {
+            if (!enableDepthCapture)
+            {
+                return;
+            }
+
             // Clean up depth system
             depthDataExtractor?.SetDepthEnabled(false);
             
@@ -142,6 +166,11 @@ namespace RealityLog.Depth
 
         private void OnBeforeRender()
         {
+            if (!enableDepthCapture)
+            {
+                return;
+            }
+
             // Early exit if resources not ready or disabled
             if (!IsExportEnabled || renderTextureExporter == null || depthDataExtractor == null
                 || leftDepthCsvWriter == null || rightDepthCsvWriter == null)
