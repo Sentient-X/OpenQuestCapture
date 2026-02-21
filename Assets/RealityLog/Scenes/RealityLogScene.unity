@@ -7557,8 +7557,11 @@ MonoBehaviour:
   - {fileID: 692325389}
   - {fileID: 543200301}
   - {fileID: 1206027370}
+  imuLoggers:
+  - {fileID: 1550360849}
   captureTimer: {fileID: 1964602098}
   generateTimestampedDirectories: 1
+  recordDepthMaps: 1
   onRecordingSaved:
     m_PersistentCalls:
       m_Calls:
@@ -7618,6 +7621,7 @@ MonoBehaviour:
   minRaycastDistance: 0.25
   raycastDistance: 10
   showDebugLines: 1
+  isVisible: 0
   captureTimer: {fileID: 1964602098}
   environmentRaycastManager: {fileID: 1104910061}
   trackingSpace: {fileID: 678640233}
@@ -8534,6 +8538,7 @@ GameObject:
   - component: {fileID: 730769973}
   - component: {fileID: 730769972}
   - component: {fileID: 1550360848}
+  - component: {fileID: 1550360849}
   m_Layer: 0
   m_Name: RecordingManager
   m_TagString: Untagged
@@ -8557,6 +8562,23 @@ MonoBehaviour:
   distance: 2
   heightOffset: 0
   lookAtCamera: 1
+--- !u!114 &1550360849
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1550360847}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: RealityLog.OVR::RealityLog.OVR.IMULogger
+  node: 9
+  fileName: imu.csv
+  directoryName: data
+  startLoggingOnStart: 1
+  samplingRateHz: 200
 --- !u!1 &1605832081
 GameObject:
   m_ObjectHideFlags: 0
@@ -9247,7 +9269,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 29213cb0f1f1ea149abba5dca8a2c97c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: RealityLog.Common::RealityLog.Common.CaptureTimer
-  targetCaptureFPS: 3
+  targetCaptureFPS: 0
 --- !u!4 &1964602099
 Transform:
   m_ObjectHideFlags: 0

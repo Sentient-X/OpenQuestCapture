@@ -12,7 +12,7 @@ namespace RealityLog.Common
     {
         [Header("Capture Timing")]
         [Tooltip("Target FPS for synchronized camera and depth capture. Set to 0 to capture at maximum rate (~25 FPS)")]
-        [SerializeField] private float targetCaptureFPS = 3f;
+        [SerializeField] private float targetCaptureFPS = 30f;
 
         private float lastCaptureTime = 0f;
         private float captureInterval = 0f;

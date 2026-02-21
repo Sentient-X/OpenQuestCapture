@@ -43,6 +43,7 @@ namespace RealityLog.Depth
 
         private bool hasScenePermission = false;
         private bool depthSystemReady = false;
+        public bool IsExportEnabled { get; set; } = true;
 
         public bool IsDepthSystemReady => depthSystemReady;
 
@@ -100,6 +101,8 @@ namespace RealityLog.Depth
 
         private void Update()
         {
+            if (!IsExportEnabled) return;
+
             // Try to "prime" the depth system by fetching one frame at startup
             // Once we get a valid frame, mark the system as ready and stop trying
             if (!depthSystemReady && depthDataExtractor != null)
@@ -139,8 +142,8 @@ namespace RealityLog.Depth
 
         private void OnBeforeRender()
         {
-            // Early exit if resources not ready
-            if (renderTextureExporter == null || depthDataExtractor == null
+            // Early exit if resources not ready or disabled
+            if (!IsExportEnabled || renderTextureExporter == null || depthDataExtractor == null
                 || leftDepthCsvWriter == null || rightDepthCsvWriter == null)
             {
                 return;

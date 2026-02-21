@@ -18,7 +18,7 @@ namespace RealityLog
     {
         [Header("Recording Components")]
         [Tooltip("Manages depth map export")]
-        [SerializeField] private DepthMapExporter depthMapExporter = default!;
+        [SerializeField] private DepthMapExporter? depthMapExporter = default!;
         
         [Tooltip("Manages camera image capture (left, right, etc.)")]
         [SerializeField] private ImageReaderSurfaceProvider[] cameraProviders = default!;
@@ -26,11 +26,15 @@ namespace RealityLog
         [Tooltip("Manages pose logging (HMD, controllers, etc.)")]
         [SerializeField] private PoseLogger[] poseLoggers = default!;
         
+        [Tooltip("Manages IMU logging (accelerometer, gyroscope)")]
+        [SerializeField] private IMULogger[] imuLoggers = default!;
+        
         [Tooltip("Manages FPS timing for synchronized capture")]
         [SerializeField] private CaptureTimer captureTimer = default!;
 
         [Header("Recording Settings")]
         [SerializeField] private bool generateTimestampedDirectories = true;
+        [SerializeField] private bool recordDepthMaps = true;
 
         [Header("Events")]
         [Tooltip("Invoked when recording stops and files are saved. Passes the directory name where files were saved.")]
@@ -51,6 +55,14 @@ namespace RealityLog
         /// </summary>
         public float RecordingDuration => isRecording ? Time.time - recordingStartTime : 0f;
 
+        private void Start()
+        {
+            if (depthMapExporter != null)
+            {
+                depthMapExporter.IsExportEnabled = recordDepthMaps;
+            }
+        }
+
         /// <summary>
         /// Starts recording from all subsystems in the proper order.
         /// </summary>
@@ -67,7 +79,10 @@ namespace RealityLog
             {
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 currentSessionDirectory = timestamp;
-                depthMapExporter.DirectoryName = timestamp;
+                if (recordDepthMaps && depthMapExporter != null)
+                {
+                    depthMapExporter.DirectoryName = timestamp;
+                }
                 foreach (var provider in cameraProviders)
                 {
                     provider.DataDirectoryName = timestamp;
@@ -76,10 +91,13 @@ namespace RealityLog
                 {
                     logger.DirectoryName = timestamp;
                 }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.DirectoryName = timestamp;
+                }
             }
-            else
             {
-                currentSessionDirectory = depthMapExporter.DirectoryName;
+                currentSessionDirectory = recordDepthMaps && depthMapExporter != null ? depthMapExporter.DirectoryName : "manual_session";
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
@@ -93,8 +111,19 @@ namespace RealityLog
 
             // Step 2: Setup file writers and directories
             // (Depth and camera systems are already initialized from app start)
-            depthMapExporter.StartExport();
+            if (depthMapExporter != null)
+            {
+                depthMapExporter.IsExportEnabled = recordDepthMaps;
+                if (recordDepthMaps)
+                {
+                    depthMapExporter.StartExport();
+                }
+            }
             foreach (var logger in poseLoggers)
+            {
+                logger.StartLogging();
+            }
+            foreach (var logger in imuLoggers)
             {
                 logger.StartLogging();
             }
@@ -137,8 +166,15 @@ namespace RealityLog
             captureTimer.StopCapture();
 
             // Step 2: Close file writers and cleanup
-            depthMapExporter.StopExport();
+            if (recordDepthMaps && depthMapExporter != null)
+            {
+                depthMapExporter.StopExport();
+            }
             foreach (var logger in poseLoggers)
+            {
+                logger.StopLogging();
+            }
+            foreach (var logger in imuLoggers)
             {
                 logger.StopLogging();
             }
@@ -173,8 +209,8 @@ namespace RealityLog
         private void OnValidate()
         {
             // Validate required references in editor
-            if (depthMapExporter == null)
-                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Missing DepthMapExporter reference!");
+            if (recordDepthMaps && depthMapExporter == null)
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: recordDepthMaps is enabled but DepthMapExporter is missing!");
             
             if (cameraProviders == null || cameraProviders.Length == 0)
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: No ImageReaderSurfaceProviders assigned! Add left and right camera providers.");
