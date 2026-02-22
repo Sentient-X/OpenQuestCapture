@@ -21,7 +21,7 @@ namespace RealityLog
         [SerializeField] private DepthMapExporter? depthMapExporter = default!;
         
         [Tooltip("Manages camera image capture (left, right, etc.)")]
-        [SerializeField] private ImageReaderSurfaceProvider[] cameraProviders = default!;
+        [SerializeField] private SurfaceProviderBase[] cameraProviders = default!;
         
         [Tooltip("Manages pose logging (HMD, controllers, etc.)")]
         [SerializeField] private PoseLogger[] poseLoggers = default!;
@@ -85,7 +85,7 @@ namespace RealityLog
                 }
                 foreach (var provider in cameraProviders)
                 {
-                    provider.DataDirectoryName = timestamp;
+                    provider.SetDataDirectoryName(timestamp);
                 }
                 foreach (var logger in poseLoggers)
                 {
@@ -96,8 +96,24 @@ namespace RealityLog
                     logger.DirectoryName = timestamp;
                 }
             }
+            else
             {
-                currentSessionDirectory = recordDepthMaps && depthMapExporter != null ? depthMapExporter.DirectoryName : "manual_session";
+                currentSessionDirectory = recordDepthMaps && depthMapExporter != null && !string.IsNullOrEmpty(depthMapExporter.DirectoryName)
+                    ? depthMapExporter.DirectoryName
+                    : "manual_session";
+
+                foreach (var provider in cameraProviders)
+                {
+                    provider.SetDataDirectoryName(currentSessionDirectory);
+                }
+                foreach (var logger in poseLoggers)
+                {
+                    logger.DirectoryName = currentSessionDirectory;
+                }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.DirectoryName = currentSessionDirectory;
+                }
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
@@ -106,7 +122,7 @@ namespace RealityLog
             // This ensures format info and images are written to the new directory
             foreach (var provider in cameraProviders)
             {
-                provider.UpdateDirectoryPaths();
+                provider.PrepareRecordingSession();
             }
 
             // Step 2: Setup file writers and directories
@@ -126,6 +142,11 @@ namespace RealityLog
             foreach (var logger in imuLoggers)
             {
                 logger.StartLogging();
+            }
+
+            foreach (var provider in cameraProviders)
+            {
+                provider.StartRecordingSession();
             }
             
             // Optional: Reset camera base time to sync with depth timestamps
@@ -164,6 +185,11 @@ namespace RealityLog
             // Stop in reverse order
             // Step 1: Stop capture loop first
             captureTimer.StopCapture();
+
+            foreach (var provider in cameraProviders)
+            {
+                provider.StopRecordingSession();
+            }
 
             // Step 2: Close file writers and cleanup
             if (recordDepthMaps && depthMapExporter != null)
@@ -213,7 +239,7 @@ namespace RealityLog
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: recordDepthMaps is enabled but DepthMapExporter is missing!");
             
             if (cameraProviders == null || cameraProviders.Length == 0)
-                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: No ImageReaderSurfaceProviders assigned! Add left and right camera providers.");
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: No camera surface providers assigned!");
             
             if (poseLoggers == null || poseLoggers.Length == 0)
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: No PoseLoggers assigned! Add HMD, controllers, etc.");
@@ -230,4 +256,3 @@ namespace RealityLog
         }
     }
 }
-

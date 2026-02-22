@@ -25,6 +25,24 @@ namespace RealityLog.Camera
         private Coroutine? resumeCoroutine;
         private const float RESUME_DELAY = 0.5f; // Wait 0.5s before reopening to avoid rapid pause/resume cycles
 
+        public void ReopenSession()
+        {
+#if UNITY_ANDROID
+            DestroyInstance();
+            var cameraManagerJavaInstance = cameraPermissionManager.CameraManagerJavaInstance;
+            if (cameraManagerJavaInstance != null)
+            {
+                Instantiate(cameraManagerJavaInstance);
+            }
+            else
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] Cannot reopen camera -- CameraManager not available");
+            }
+#else
+            Debug.Log($"[{Constants.LOG_TAG}] ReopenSession is only available on Android runtime.");
+#endif
+        }
+
 # if UNITY_ANDROID
         private void OnEnable()
         {

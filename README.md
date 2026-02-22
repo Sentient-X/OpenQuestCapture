@@ -21,19 +21,15 @@ Huge thanks to the original author for their excellent work in making Quest sens
 
 ## 📖 Overview
 
-`OpenQuestCapture` is a Unity-based data logging and visualization tool designed for the Meta Quest 3. It captures synchronized, high-fidelity real-world data—including headset poses, stereo passthrough images, camera intrinsics, and depth maps—organized into session-based logs.
+`OpenQuestCapture` is a Unity-based data logging tool for Meta Quest 3 focused on long-duration robotics data collection.  
+The default capture pipeline now records:
 
-Beyond data capture, the app features **real-time depth point cloud visualization**, allowing users to see the captured environment and verify coverage directly within the headset. This ensures high-quality data collection for downstream tasks like 3D reconstruction and SLAM.
+* one compressed passthrough camera video (`.mp4`, left camera stream)
+* synchronized pose logs (`hmd_poses.csv`, controller poses)
+* synchronized IMU logs (`imu.csv`)
+* camera characteristics JSON
 
-For **data parsing, visualization, and reconstruction** into COLMAP format, refer to the companion project:
-**[Meta Quest 3D Reconstruction](https://github.com/samuelm2/quest-3d-reconstruction)**
-
-This includes:
-
-* Scripts for **loading and decoding** camera poses, intrinsics, and depth descriptors
-* Conversions of **raw YUV images** and **depth maps** to usable formats (RGB, point clouds)
-* Utilities for **reconstructing 3D scenes** using [Open3D](http://www.open3d.org/)
-* Export pipelines to prepare data for **SfM/SLAM tools** like **COLMAP**
+Depth capture and dual raw-YUV capture are disabled by default to reduce storage pressure for multi-hour recording shifts.
 
 ---
 
@@ -41,16 +37,11 @@ This includes:
 
 ## ✅ Features
 
-* Records HMD and controller poses (in Unity coordinate system)
-* Captures **YUV passthrough images** from **both left and right cameras**
-* Logs **Camera2 API characteristics** and image format information
-* Saves **depth maps** and **depth descriptors** from both cameras
-* **Synchronized capture** with configurable frame rate for depth and camera images (default: 3 FPS)
-* **Perfect timestamp alignment** between camera images and depth maps
-* **Real-time Depth Point Cloud Visualization**:
-  * Visualizes depth coverage using a particle system.
-  * **Color-coded feedback**: Different colors indicate different angles at which the point was captured. White indicates head-on coverage, while vivid colors indicate grazing angles.
-* Automatically organizes logs into timestamped folders on internal storage
+* Records HMD/controller poses and IMU data (session-based)
+* Captures one compressed passthrough camera stream to `center_camera.mp4`
+* Logs Camera2 characteristics for the selected camera stream
+* Uses timestamped session directories for long-run collection
+* Keeps recording menu export/delete flows for storage management
 
 
 ### Quick Start Guide
@@ -61,18 +52,15 @@ This includes:
 4. **Stop recording**: To stop, press the left controller's Menu button again.
 5. **Move the data from your Quest to your computer**: The data is stored on the Quest's internal storage. You can move it to your computer using a USB cable by connecting the Quest to your computer and using Windows File Explorer. The data is stored in the `/Quest 3/Internal Shared Storage/data/com.samusynth.OpenQuestCapture/files` directory.
 Or, you can use press the Y button on the left controller to toggle the Recording Menu. Select "Export Data" to export the data to a zip file in the Quest 3 Download folder which can be uploaded to Google Drive or other cloud storage services.
-6. **Reconstruct the scene**: Use the companion project [Meta Quest 3D Reconstruction](https://github.com/samuelm2/quest-3d-reconstruction) to reconstruct a COLMAP sparse point cloud from the captured data. Or, if you prefer a cloud-based, end-to-end solution, you can go to [vid2scene.com/upload/quest](https://vid2scene.com/upload/quest) and upload the Quest raw data zip file to create a 3DGS reconstruction on the cloud.
+6. **Post-process on laptop**: Combine `center_camera.mp4` + pose/IMU CSV files into your downstream format (for example, MCAP/Foxglove pipelines).
 
 ### 📸 How to take a good capture
 
-To ensure the best possible 3D reconstruction results:
+To ensure stable long-form robotics capture:
 
 1.  **Lighting**: Ensure the environment is well-lit and consistent. Avoid extreme shadows or blinding lights.
-2.  **Coverage**: Use the **Depth Point Cloud Visualization** to verify you have covered all surfaces.
-    *   The point visualization point color is determined by the angle at which the point was captured. White indicates head-on coverage, while vivid colors different indicate grazing angles. For best capture, try to make sure the surface has points with many different colors. This indicates it has been captured from many different angles. 
-    *   Note: the point cloud visualization is for reference only. In reality, scenes are reconstructed from thousands more points than what is visible in the visualization.
-3.  **Movement**: Move slowly and steadily. Avoid rapid head movements which can cause motion blur.
-4.  **How long**: From my testing, the best captures usually are within the 1 to 3 minute range.
+2.  **Movement**: Move steadily and avoid rapid head snaps that cause motion blur.
+3.  **Session length**: For shift workflows, run longer sessions and export/delete regularly from the recording menu.
 
 ---
 
@@ -89,31 +77,13 @@ Example structure:
 ```
 /sdcard/Android/data/com.samusynth.OpenQuestCapture/files
 └── YYYYMMDD_hhmmss/
+    ├── center_camera.mp4
+    ├── left_camera_characteristics.json
+    │
     ├── hmd_poses.csv
     ├── left_controller_poses.csv
     ├── right_controller_poses.csv
-    │
-    ├── left_camera_raw/
-    │   ├── <unixtimeMs>.yuv
-    │   └── ...
-    ├── right_camera_raw/
-    │   ├── <unixtimeMs>.yuv
-    │   └── ...
-    │
-    ├── left_camera_image_format.json
-    ├── right_camera_image_format.json
-    ├── left_camera_characteristics.json
-    ├── right_camera_characteristics.json
-    │
-    ├── left_depth/
-    │   ├── <unixtimeMs>.raw
-    │   └── ...
-    ├── right_depth/
-    │   ├── <unixtimeMs>.raw
-    │   └── ...
-    │
-    ├── left_depth_descriptors.csv
-    └── right_depth_descriptors.csv
+    └── imu.csv
 ```
 
 ---
@@ -134,32 +104,11 @@ Example structure:
 * Obtained via Android Camera2 API
 * Includes pose, intrinsics (fx, fy, cx, cy), sensor info, etc.
 
-### Image Format (JSON)
+### Camera Video (MP4)
 
-* Includes resolution, format (e.g., `YUV_420_888`), per-plane buffer info
-* Contains baseMonoTimeNs and baseUnixTimeMs for timestamp alignment
-
-### Passthrough Camera (Raw YUV)
-- Raw YUV frames are stored as `.yuv` files under `left_camera_raw/` and `right_camera_raw/`.
-- Image format and buffer information are provided in the accompanying `*_camera_image_format.json` files.
-
-To convert passthrough YUV (YUV_420_888) images to RGB for visualization or reconstruction, see: [Meta Quest 3D Reconstruction](https://github.com/samuelm2/quest-3d-reconstruction)
-
-### Depth Map Descriptor CSV
-
-* Format:
-
-  ```
-  timestamp_ms,ovr_timestamp,create_pose_location_x, ..., create_pose_rotation_w,
-  fov_left_angle_tangent,fov_right_angle_tangent,fov_top_angle_tangent,fov_down_angle_tangent,
-  near_z,far_z,width,height
-  ```
-
-### Depth Map
-
-* Raw `.float32` depth images (1D float per pixel)
-
-To convert raw depth maps into linear or 3D form, refer to the companion project: [Meta Quest 3D Reconstruction](https://github.com/samuelm2/quest-3d-reconstruction)
+* File: `center_camera.mp4`
+* Codec: H.264 inside MP4 container
+* Intended for long-duration collection where storage efficiency is critical
 
 ---
 

@@ -6935,7 +6935,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 2147483647
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &800648182
 Transform:
   m_ObjectHideFlags: 0
@@ -7289,15 +7289,16 @@ MonoBehaviour:
   m_GameObject: {fileID: 918867448}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: d437d29942d291941a15449b424bfd2f, type: 3}
+  m_Script: {fileID: 11500000, guid: 56b7843afc4c4ad3810bdeebfe923bdb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   dataDirectoryName: 
-  imageSubdirName: left_camera_raw
+  outputVideoFileName: center_camera.mp4
   cameraMetaDataFileName: left_camera_characteristics.json
-  formatInfoFileName: left_camera_image_format.json
-  bufferPoolSize: 5
-  captureTimer: {fileID: 1964602098}
+  targetFrameRate: 30
+  targetBitrateMbps: 8
+  iFrameIntervalSeconds: 1
+  cameraSessionManager: {fileID: 918867451}
 --- !u!114 &918867451
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -7314,7 +7315,7 @@ MonoBehaviour:
   surfaceProviders:
   - {fileID: 918867450}
   cameraPosition: 0
-  useCase: 1
+  useCase: 2
 --- !u!1 &990090417
 GameObject:
   m_ObjectHideFlags: 0
@@ -7552,7 +7553,6 @@ MonoBehaviour:
   depthMapExporter: {fileID: 138327926}
   cameraProviders:
   - {fileID: 918867450}
-  - {fileID: 800648183}
   poseLoggers:
   - {fileID: 692325389}
   - {fileID: 543200301}
@@ -7561,7 +7561,7 @@ MonoBehaviour:
   - {fileID: 1550360849}
   captureTimer: {fileID: 1964602098}
   generateTimestampedDirectories: 1
-  recordDepthMaps: 1
+  recordDepthMaps: 0
   onRecordingSaved:
     m_PersistentCalls:
       m_Calls:
@@ -9269,7 +9269,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 29213cb0f1f1ea149abba5dca8a2c97c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: RealityLog.Common::RealityLog.Common.CaptureTimer
-  targetCaptureFPS: 0
+  targetCaptureFPS: 30
 --- !u!4 &1964602099
 Transform:
   m_ObjectHideFlags: 0

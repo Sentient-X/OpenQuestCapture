@@ -34,6 +34,16 @@ namespace RealityLog.Camera
             set => dataDirectoryName = value;
         }
 
+        public override void SetDataDirectoryName(string directoryName)
+        {
+            dataDirectoryName = directoryName;
+        }
+
+        public override void PrepareRecordingSession()
+        {
+            UpdateDirectoryPaths();
+        }
+
         public override AndroidJavaObject? GetJavaInstance(CameraMetadata metadata)
         {
             Close();

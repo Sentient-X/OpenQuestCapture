@@ -1,9 +1,9 @@
-<Solution>
+﻿<Solution>
   <Project Path="RealityLog.OVR.csproj" />
   <Project Path="RealityLog.Common.csproj" />
+  <Project Path="RealityLog.csproj" />
   <Project Path="RealityLog.FileOperations.csproj" />
   <Project Path="Assembly-CSharp-Editor.csproj" />
-  <Project Path="RealityLog.csproj" />
   <Project Path="RealityLog.UI.csproj" />
   <Project Path="RealityLog.Depth.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
