@@ -7561,7 +7561,7 @@ MonoBehaviour:
   - {fileID: 1550360849}
   captureTimer: {fileID: 1964602098}
   generateTimestampedDirectories: 1
-  recordDepthMaps: 1
+  recordDepthMaps: 0
   onRecordingSaved:
     m_PersistentCalls:
       m_Calls:
