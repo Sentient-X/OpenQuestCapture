@@ -43,7 +43,7 @@ namespace RealityLog.Depth
 
         private bool hasScenePermission = false;
         private bool depthSystemReady = false;
-        public bool IsExportEnabled { get; set; } = true;
+        public bool IsExportEnabled { get; set; } = false;
 
         public bool IsDepthSystemReady => depthSystemReady;
 

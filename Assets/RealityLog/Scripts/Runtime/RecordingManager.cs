@@ -34,7 +34,7 @@ namespace RealityLog
 
         [Header("Recording Settings")]
         [SerializeField] private bool generateTimestampedDirectories = true;
-        [SerializeField] private bool recordDepthMaps = true;
+        [SerializeField] private bool recordDepthMaps = false;
 
         [Header("Events")]
         [Tooltip("Invoked when recording stops and files are saved. Passes the directory name where files were saved.")]
