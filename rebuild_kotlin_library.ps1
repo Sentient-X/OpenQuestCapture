@@ -14,9 +14,9 @@ Write-Host "`n[1/3] Building Kotlin library..." -ForegroundColor Green
 Push-Location QuestCameraLib
 try {
     if ($IsWindows -or $env:OS -eq "Windows_NT") {
-        & .\gradlew.bat assembleRelease
+        & .\gradlew.bat :app:assembleRelease
     } else {
-        & ./gradlew assembleRelease
+        & ./gradlew :app:assembleRelease
     }
     
     if ($LASTEXITCODE -ne 0) {

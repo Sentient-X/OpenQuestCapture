@@ -14,6 +14,8 @@ namespace RealityLog.Camera
         private const string RESET_BASE_TIME_METHOD_NAME = "resetBaseTime";
         private const string UPDATE_DIRECTORY_PATHS_METHOD_NAME = "updateDirectoryPaths";
         private const string CAPTURE_NEXT_FRAME_METHOD_NAME = "captureNextFrame";
+        private const string SET_JPEG_COMPRESSION_METHOD_NAME = "setJpegCompression";
+        private const string SET_JPEG_QUALITY_METHOD_NAME = "setJpegQuality";
         private const string CLOSE_METHOD_NAME = "close";
 
         [SerializeField] private string dataDirectoryName = string.Empty;
@@ -21,6 +23,8 @@ namespace RealityLog.Camera
         [SerializeField] private string cameraMetaDataFileName = "left_camera_characteristics.json";
         [SerializeField] private string formatInfoFileName = "left_camera_image_format.json";
         [SerializeField] private int bufferPoolSize = 5;
+        [SerializeField] private bool useJpegCompression = true;
+        [SerializeField] private int jpegQuality = 90;
         [Header("Synchronized Capture")]
         [Tooltip("Required: Reference to CaptureTimer for FPS-based capture timing.")]
         [SerializeField] private CaptureTimer captureTimer = default!;
@@ -55,7 +59,9 @@ namespace RealityLog.Camera
                 size.height,
                 imageFileDirPath,
                 formatInfoFilePath,
-                bufferPoolSize
+                bufferPoolSize,
+                useJpegCompression,
+                jpegQuality
             );
 
             Debug.Log($"[ImageReaderSurfaceProvider] Camera initialized -- will respond to capture signals from CaptureTimer");
