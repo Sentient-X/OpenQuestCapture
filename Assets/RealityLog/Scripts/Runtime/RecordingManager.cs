@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Events;
 using RealityLog.Camera;
@@ -46,6 +47,15 @@ namespace RealityLog
         private bool isRecording = false;
         private float recordingStartTime = 0f;
         private string? currentSessionDirectory = null;
+        private const long MinExpectedVideoBytes = 1024;
+
+        private static readonly string[] MotionFileNames = new[]
+        {
+            "imu.csv",
+            "hmd_poses.csv",
+            "left_controller_poses.csv",
+            "right_controller_poses.csv",
+        };
 
         public bool IsRecording => isRecording;
         
@@ -216,6 +226,7 @@ namespace RealityLog
             if (!string.IsNullOrEmpty(savedDirectory))
             {
                 onRecordingSaved?.Invoke(savedDirectory);
+                ValidateSavedSession(savedDirectory);
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped successfully. Files saved to '{savedDirectory}'");
@@ -253,6 +264,78 @@ namespace RealityLog
             // Safety: ensure recording stops on cleanup
             if (isRecording)
                 StopRecording();
+        }
+
+        private void OnApplicationPause(bool pauseStatus)
+        {
+            if (!pauseStatus)
+            {
+                return;
+            }
+
+            StopRecordingForInterruption("pause");
+        }
+
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            if (hasFocus)
+            {
+                return;
+            }
+
+            StopRecordingForInterruption("focus_loss");
+        }
+
+        private void StopRecordingForInterruption(string reason)
+        {
+            if (!isRecording)
+            {
+                return;
+            }
+
+            Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App interruption ({reason}) during recording; forcing stop to finalize files.");
+            StopRecording();
+        }
+
+        private void ValidateSavedSession(string sessionDirectoryName)
+        {
+            try
+            {
+                var sessionDir = Path.Join(Application.persistentDataPath, sessionDirectoryName);
+                var videoPath = Path.Join(sessionDir, "center_camera.mp4");
+
+                var videoOk = File.Exists(videoPath) && new FileInfo(videoPath).Length >= MinExpectedVideoBytes;
+                var motionOk = false;
+                foreach (var fileName in MotionFileNames)
+                {
+                    var motionPath = Path.Join(sessionDir, fileName);
+                    if (!File.Exists(motionPath))
+                    {
+                        continue;
+                    }
+
+                    if (new FileInfo(motionPath).Length > 0)
+                    {
+                        motionOk = true;
+                        break;
+                    }
+                }
+
+                if (videoOk && motionOk)
+                {
+                    return;
+                }
+
+                var videoBytes = File.Exists(videoPath) ? new FileInfo(videoPath).Length : 0L;
+                Debug.LogWarning(
+                    $"[{Constants.LOG_TAG}] RecordingManager: Session integrity warning for '{sessionDirectoryName}'. " +
+                    $"video_bytes={videoBytes}, has_motion_stream={motionOk}"
+                );
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Failed to validate session '{sessionDirectoryName}': {ex.Message}");
+            }
         }
     }
 }

@@ -8577,7 +8577,7 @@ MonoBehaviour:
   node: 9
   fileName: imu.csv
   directoryName: data
-  startLoggingOnStart: 1
+  startLoggingOnStart: 0
   samplingRateHz: 200
 --- !u!1 &1605832081
 GameObject:

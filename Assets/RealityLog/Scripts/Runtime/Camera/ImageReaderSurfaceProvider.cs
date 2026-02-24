@@ -24,6 +24,7 @@ namespace RealityLog.Camera
         [Header("Synchronized Capture")]
         [Tooltip("Required: Reference to CaptureTimer for FPS-based capture timing.")]
         [SerializeField] private CaptureTimer captureTimer = default!;
+        [SerializeField] private bool verboseCaptureLogs = false;
 
         private AndroidJavaObject? currentInstance;
         private CameraMetadata? cameraMetadata;
@@ -130,7 +131,10 @@ namespace RealityLog.Camera
             // This ensures camera and depth are triggered at the exact same Unity frame
             if (captureTimer.IsCapturing && captureTimer.ShouldCaptureThisFrame)
             {
-                Debug.Log($"[ImageReader] Signaling camera capture at Unity time={Time.unscaledTime:F3}s");
+                if (verboseCaptureLogs)
+                {
+                    Debug.Log($"[ImageReader] Signaling camera capture at Unity time={Time.unscaledTime:F3}s");
+                }
                 currentInstance.Call(CAPTURE_NEXT_FRAME_METHOD_NAME);
             }
         }

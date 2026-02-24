@@ -13,6 +13,7 @@ namespace RealityLog.Common
         [Header("Capture Timing")]
         [Tooltip("Target FPS for synchronized camera and depth capture. Set to 0 to capture at maximum rate (~25 FPS)")]
         [SerializeField] private float targetCaptureFPS = 30f;
+        [SerializeField] private bool verboseTimingLogs = false;
 
         private float lastCaptureTime = 0f;
         private float captureInterval = 0f;
@@ -46,8 +47,11 @@ namespace RealityLog.Common
             // This ensures lastCaptureTime is properly set when first capture happens
             lastCaptureTime = Time.unscaledTime - captureInterval;
             shouldCaptureThisFrame = false; // Let Update() handle the first capture properly
-            
-            Debug.Log($"[CaptureTimer] Started at {targetCaptureFPS} FPS (interval: {captureInterval}s)");
+
+            if (verboseTimingLogs)
+            {
+                Debug.Log($"[CaptureTimer] Started at {targetCaptureFPS} FPS (interval: {captureInterval}s)");
+            }
         }
 
         /// <summary>
@@ -57,8 +61,11 @@ namespace RealityLog.Common
         {
             isCapturing = false;
             shouldCaptureThisFrame = false;
-            
-            Debug.Log($"[CaptureTimer] Stopped");
+
+            if (verboseTimingLogs)
+            {
+                Debug.Log($"[CaptureTimer] Stopped");
+            }
         }
 
         private void Update()
@@ -84,7 +91,10 @@ namespace RealityLog.Common
                 {
                     shouldCaptureThisFrame = true;
                     lastCaptureTime = currentTime;
-                    Debug.Log($"[CaptureTimer] Capture signal at time={currentTime:F3}s (interval={captureInterval:F3}s)");
+                    if (verboseTimingLogs)
+                    {
+                        Debug.Log($"[CaptureTimer] Capture signal at time={currentTime:F3}s (interval={captureInterval:F3}s)");
+                    }
                 }
                 else
                 {
@@ -93,4 +103,3 @@ namespace RealityLog.Common
         }
     }
 }
-

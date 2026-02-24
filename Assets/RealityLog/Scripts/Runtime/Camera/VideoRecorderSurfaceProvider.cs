@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using System.Collections;
 using System.IO;
 using UnityEngine;
 using RealityLog.Common;
@@ -22,9 +23,14 @@ namespace RealityLog.Camera
         [SerializeField] private int targetBitrateMbps = 8;
         [SerializeField] private int iFrameIntervalSeconds = 1;
         [SerializeField] private CameraSessionManager? cameraSessionManager = default!;
+        [SerializeField] private float recorderStartDelayAfterReopenSeconds = 0.25f;
+        [SerializeField] private float maxWaitForCameraOpenSeconds = 1.5f;
 
         private AndroidJavaObject? currentInstance;
         private CameraMetadata? cameraMetadata;
+        private bool isRecordingSessionActive;
+        private bool waitingForCameraReopen;
+        private Coroutine? delayedStartCoroutine;
 
         public override AndroidJavaObject? GetJavaInstance(CameraMetadata metadata)
         {
@@ -76,6 +82,7 @@ namespace RealityLog.Camera
             {
                 currentInstance.Call(UPDATE_OUTPUT_FILE_METHOD_NAME, outputFilePath);
                 WriteCameraMetadataFile();
+                waitingForCameraReopen = true;
                 cameraSessionManager?.ReopenSession();
                 Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider prepared output: {outputFilePath}");
             }
@@ -92,18 +99,30 @@ namespace RealityLog.Camera
                 return;
             }
 
-            try
+            if (delayedStartCoroutine != null)
             {
-                currentInstance.Call(START_RECORDING_METHOD_NAME);
+                StopCoroutine(delayedStartCoroutine);
+                delayedStartCoroutine = null;
             }
-            catch (Exception ex)
+
+            if (waitingForCameraReopen)
             {
-                Debug.LogException(ex);
+                delayedStartCoroutine = StartCoroutine(StartRecordingWhenCameraReady());
+                return;
             }
+
+            StartRecordingNow();
         }
 
         public override void StopRecordingSession()
         {
+            if (delayedStartCoroutine != null)
+            {
+                StopCoroutine(delayedStartCoroutine);
+                delayedStartCoroutine = null;
+            }
+            waitingForCameraReopen = false;
+
             if (currentInstance == null)
             {
                 return;
@@ -112,6 +131,52 @@ namespace RealityLog.Camera
             try
             {
                 currentInstance.Call(STOP_RECORDING_METHOD_NAME);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
+            finally
+            {
+                isRecordingSessionActive = false;
+            }
+        }
+
+        private IEnumerator StartRecordingWhenCameraReady()
+        {
+            var delay = Mathf.Max(0f, recorderStartDelayAfterReopenSeconds);
+            if (delay > 0f)
+            {
+                yield return new WaitForSecondsRealtime(delay);
+            }
+
+            var waitDeadline = Time.realtimeSinceStartup + Mathf.Max(0f, maxWaitForCameraOpenSeconds);
+            while (cameraSessionManager != null && !cameraSessionManager.IsSessionOpen)
+            {
+                if (Time.realtimeSinceStartup >= waitDeadline)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider start wait timed out; attempting start anyway.");
+                    break;
+                }
+                yield return null;
+            }
+
+            waitingForCameraReopen = false;
+            delayedStartCoroutine = null;
+            StartRecordingNow();
+        }
+
+        private void StartRecordingNow()
+        {
+            if (currentInstance == null)
+            {
+                return;
+            }
+
+            try
+            {
+                currentInstance.Call(START_RECORDING_METHOD_NAME);
+                isRecordingSessionActive = true;
             }
             catch (Exception ex)
             {
@@ -148,6 +213,13 @@ namespace RealityLog.Camera
 
         private void Close()
         {
+            if (delayedStartCoroutine != null)
+            {
+                StopCoroutine(delayedStartCoroutine);
+                delayedStartCoroutine = null;
+            }
+            waitingForCameraReopen = false;
+
             if (currentInstance == null)
             {
                 return;
@@ -155,6 +227,21 @@ namespace RealityLog.Camera
 
             try
             {
+                if (isRecordingSessionActive)
+                {
+                    try
+                    {
+                        currentInstance.Call(STOP_RECORDING_METHOD_NAME);
+                    }
+                    catch (Exception stopEx)
+                    {
+                        Debug.LogException(stopEx);
+                    }
+                    finally
+                    {
+                        isRecordingSessionActive = false;
+                    }
+                }
                 currentInstance.Call(CLOSE_METHOD_NAME);
             }
             catch (Exception ex)
@@ -165,6 +252,7 @@ namespace RealityLog.Camera
             {
                 currentInstance.Dispose();
                 currentInstance = null;
+                isRecordingSessionActive = false;
             }
         }
     }

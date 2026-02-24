@@ -13,6 +13,7 @@ namespace RealityLog.Camera
         private const string REGISTER_SURFACE_PROVIDER_METHOD_NAME = "registerSurfaceProvider";
         private const string SET_CAPTURE_TEMPLATE_METHOD_NAME = "setCaptureTemplateFromString";
         private const string OPEN_CAMERA_METHOD_NAME = "openCamera";
+        private const string IS_OPEN_METHOD_NAME = "isOpen";
         private const string CLOSE_METHOD_NAME = "close";
 
         [SerializeField] private CameraPermissionManager cameraPermissionManager = default!;
@@ -21,6 +22,17 @@ namespace RealityLog.Camera
         [SerializeField] private CameraUseCase useCase = CameraUseCase.STILL_CAPTURE;
 
         public AndroidJavaObject? SessionManagerJavaInstance { get; private set; }
+        public bool IsSessionOpen
+        {
+            get
+            {
+#if UNITY_ANDROID
+                return SessionManagerJavaInstance?.Call<bool>(IS_OPEN_METHOD_NAME) ?? false;
+#else
+                return false;
+#endif
+            }
+        }
         
         private Coroutine? resumeCoroutine;
         private const float RESUME_DELAY = 0.5f; // Wait 0.5s before reopening to avoid rapid pause/resume cycles
@@ -76,7 +88,13 @@ namespace RealityLog.Camera
                     StopCoroutine(resumeCoroutine);
                     resumeCoroutine = null;
                 }
-                
+
+                // Force any active recorder surface to stop before camera teardown.
+                foreach (var provider in surfaceProviders)
+                {
+                    provider.StopRecordingSession();
+                }
+
                 Debug.Log($"[{Constants.LOG_TAG}] App pausing - closing camera session");
                 DestroyInstance();
             }

@@ -34,6 +34,7 @@ namespace RealityLog.Depth
         [Header("Synchronized Capture")]
         [Tooltip("Required: Reference to CaptureTimer for FPS-based capture timing.")]
         [SerializeField] private CaptureTimer captureTimer = default!;
+        [SerializeField] private bool verboseCaptureLogs = false;
 
         private DepthDataExtractor? depthDataExtractor;
 
@@ -184,9 +185,11 @@ namespace RealityLog.Depth
             {
                 return;
             }
-            
-            // Debug: Log when we're about to capture
-            Debug.Log($"[DepthExporter] Capturing depth at Unity time={Time.unscaledTime:F3}s");
+
+            if (verboseCaptureLogs)
+            {
+                Debug.Log($"[DepthExporter] Capturing depth at Unity time={Time.unscaledTime:F3}s");
+            }
 
             if (!hasScenePermission)
             {
