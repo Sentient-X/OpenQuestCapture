@@ -7511,6 +7511,7 @@ GameObject:
   - component: {fileID: 1104910059}
   - component: {fileID: 1104910060}
   - component: {fileID: 1104910061}
+  - component: {fileID: 1104910062}
   m_Layer: 0
   m_Name: RealityLog
   m_TagString: Untagged
@@ -7559,6 +7560,8 @@ MonoBehaviour:
   - {fileID: 1206027370}
   imuLoggers:
   - {fileID: 1550360849}
+  bodyTrackingLoggers:
+  - {fileID: 1104910062}
   captureTimer: {fileID: 1964602098}
   generateTimestampedDirectories: 1
   recordDepthMaps: 0
@@ -7640,6 +7643,21 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: meta.xr.mrutilitykit::Meta.XR.EnvironmentRaycastManager
   CustomTrackingSpace: {fileID: 0}
+--- !u!114 &1104910062
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1104910057}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a3b7c9d2e4f6518790a2b4c6d8e0f123, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: RealityLog.OVR::RealityLog.OVR.BodyTrackingLogger
+  fileName: body_tracking.csv
+  directoryName:
+  startLoggingOnStart: 0
 --- !u!1 &1142010763
 GameObject:
   m_ObjectHideFlags: 0

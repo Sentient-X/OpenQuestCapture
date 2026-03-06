@@ -29,7 +29,10 @@ namespace RealityLog
         
         [Tooltip("Manages IMU logging (accelerometer, gyroscope)")]
         [SerializeField] private IMULogger[] imuLoggers = default!;
-        
+
+        [Tooltip("Manages body tracking logging (full body skeleton)")]
+        [SerializeField] private BodyTrackingLogger[] bodyTrackingLoggers = default!;
+
         [Tooltip("Manages FPS timing for synchronized capture")]
         [SerializeField] private CaptureTimer captureTimer = default!;
 
@@ -67,6 +70,16 @@ namespace RealityLog
 
         private void Start()
         {
+            // Auto-discover body tracking loggers if not assigned in Inspector
+            if (bodyTrackingLoggers == null || bodyTrackingLoggers.Length == 0)
+            {
+                bodyTrackingLoggers = FindObjectsByType<BodyTrackingLogger>(FindObjectsSortMode.None);
+                if (bodyTrackingLoggers.Length > 0)
+                {
+                    Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Auto-discovered {bodyTrackingLoggers.Length} BodyTrackingLogger(s)");
+                }
+            }
+
             if (depthMapExporter != null)
             {
                 depthMapExporter.IsExportEnabled = recordDepthMaps;
@@ -105,6 +118,10 @@ namespace RealityLog
                 {
                     logger.DirectoryName = timestamp;
                 }
+                foreach (var logger in bodyTrackingLoggers)
+                {
+                    logger.DirectoryName = timestamp;
+                }
             }
             else
             {
@@ -121,6 +138,10 @@ namespace RealityLog
                     logger.DirectoryName = currentSessionDirectory;
                 }
                 foreach (var logger in imuLoggers)
+                {
+                    logger.DirectoryName = currentSessionDirectory;
+                }
+                foreach (var logger in bodyTrackingLoggers)
                 {
                     logger.DirectoryName = currentSessionDirectory;
                 }
@@ -150,6 +171,10 @@ namespace RealityLog
                 logger.StartLogging();
             }
             foreach (var logger in imuLoggers)
+            {
+                logger.StartLogging();
+            }
+            foreach (var logger in bodyTrackingLoggers)
             {
                 logger.StartLogging();
             }
@@ -211,6 +236,10 @@ namespace RealityLog
                 logger.StopLogging();
             }
             foreach (var logger in imuLoggers)
+            {
+                logger.StopLogging();
+            }
+            foreach (var logger in bodyTrackingLoggers)
             {
                 logger.StopLogging();
             }

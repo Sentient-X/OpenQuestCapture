@@ -77,9 +77,6 @@ namespace RealityLog.Depth
             hitCount = 0;
             totalRaycastCount = 0;
 
-            Debug.Log($"[{Constants.LOG_TAG}] DepthPointCloudRenderer - Casting {gridWidth * gridHeight} rays...");
-
-            
             for (int y = 0; y < gridHeight; y++)
             {
                 for (int x = 0; x < gridWidth; x++)
@@ -107,11 +104,6 @@ namespace RealityLog.Depth
 
                         hitCount++;
 
-                        if (showDebugLines && x == gridWidth / 2 && y == gridHeight / 2)
-                        {
-                            Debug.Log($"[{Constants.LOG_TAG}] Depth Hit - Dist: {distance:F2}m, Pos: {hit.point}");
-                            Debug.Log($"[{Constants.LOG_TAG}] Camera Pos: {camera.transform.position}");
-                        }
                         Color pointColor = GetColorFromSurfaceNormal(hit.point, camera.transform.position, hit.normal);
                         
                         // Emit particle
