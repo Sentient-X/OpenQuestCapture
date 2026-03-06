@@ -12,7 +12,11 @@
 /[Uu]ser[Ss]ettings/
 *.log
 
-# MemoryCaptures can get excessive in size.
+# Node artifacts
+tools/*/node_modules/
+tools/*/package-lock.json
+tools/*/yarn.lock
+tools/*/*.lock
 # They also could contain extremely sensitive data
 /[Mm]emoryCaptures/
 
