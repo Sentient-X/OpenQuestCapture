@@ -33,6 +33,16 @@ A skill is a set of local instructions stored in a `SKILL.md` file. Use the skil
 - Fallback:
   - If a skill file is missing or unreadable, state the issue and continue with best-effort repository inspection.
 
+## Controller-to-Gripper Calibration
+
+Quest 3 controllers are **permanently mounted** to Genrobot gripper bodies via 3D-printed fixtures + super glue. Each gripper (left and right) has a unique rigid transform from the controller tracking frame to the gripper TCP.
+
+- Calibration data: `calibration/controller_to_gripper_transforms.json`
+- Documentation: `calibration/README.md`
+- `PoseLogger` records raw controller poses (`HandLeft` / `HandRight` nodes). To obtain gripper TCP poses, apply the calibrated `T_controller_to_gripper` transform.
+- Transforms are **per-physical-gripper** — they only change if a fixture is rebuilt or a controller is remounted.
+- Left and right transforms are independent and distinct.
+
 ## Repo Guardrails
 
 - Do not hand-edit Unity `.meta` GUID values.

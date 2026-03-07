@@ -61,6 +61,7 @@ namespace RealityLog
         };
 
         public bool IsRecording => isRecording;
+        public string? CurrentSessionDirectory => currentSessionDirectory;
         
         /// <summary>
         /// Gets the elapsed recording time in seconds.

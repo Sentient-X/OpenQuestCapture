@@ -18,6 +18,10 @@ namespace RealityLog.UI
         [Tooltip("WorldSpaceMenuPositioner component to position menu in front of player when opened")]
         [SerializeField] private WorldSpaceMenuPositioner? menuPositioner = default!;
 
+        [Header("Calibration")]
+        [SerializeField] private CalibrationSession? calibrationSession;
+        [SerializeField] private CalibrationOverlayUI? calibrationOverlay;
+
         [Header("Input Settings")]
         [Tooltip("Button to toggle menu (Y button on Quest controllers)")]
         [SerializeField] private OVRInput.Button toggleButton = OVRInput.Button.Four;
@@ -114,6 +118,18 @@ namespace RealityLog.UI
             {
                 ToggleMenu();
             }
+        }
+
+        /// <summary>
+        /// Starts the guided calibration sequence.
+        /// Hides the menu and shows the calibration overlay.
+        /// </summary>
+        public void StartCalibration()
+        {
+            if (calibrationSession == null || calibrationSession.IsRunning) return;
+            HideMenu();
+            calibrationOverlay?.Show();
+            calibrationSession.StartCalibration();
         }
 
         /// <summary>

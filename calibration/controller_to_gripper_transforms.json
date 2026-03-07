@@ -1,0 +1,26 @@
+{
+  "description": "Rigid transforms from Quest controller frame to Genrobot gripper TCP frame",
+  "coordinate_system": "unity_left_handed_y_up",
+  "units": {
+    "translation": "meters",
+    "rotation": "quaternion_xyzw"
+  },
+  "left": {
+    "controller_node": "HandLeft",
+    "gripper": "genrobot_left",
+    "translation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 },
+    "calibrated": false,
+    "calibration_date": null,
+    "notes": "Placeholder — needs calibration"
+  },
+  "right": {
+    "controller_node": "HandRight",
+    "gripper": "genrobot_right",
+    "translation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 },
+    "calibrated": false,
+    "calibration_date": null,
+    "notes": "Placeholder — needs calibration"
+  }
+}

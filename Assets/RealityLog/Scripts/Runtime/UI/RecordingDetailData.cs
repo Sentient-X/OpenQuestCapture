@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using RealityLog.FileOperations;
 
 namespace RealityLog.UI
 {
@@ -11,7 +12,8 @@ namespace RealityLog.UI
     {
         Good,
         Warning,
-        Error
+        Error,
+        Processing
     }
 
     [Serializable]
@@ -59,6 +61,8 @@ namespace RealityLog.UI
         public int ConfiguredFps { get; private set; } = 30;
         public HealthLevel OverallHealth { get; private set; } = HealthLevel.Good;
         public List<string> Issues { get; private set; } = new List<string>();
+        public string UploadStatusText { get; private set; } = "";
+        public long UploadSizeBytes { get; private set; }
 
         public string FormattedDuration
         {
@@ -236,6 +240,36 @@ namespace RealityLog.UI
                 {
                     data.Issues.Add($"{file.FileName}: {(string.IsNullOrEmpty(file.Issue) ? "Warning" : file.Issue)}");
                     data.RaiseHealth(HealthLevel.Warning);
+                }
+            }
+
+            // Check upload status — override health to Processing if workflow is active
+            var uploadStatus = UploadStatus.Read(fullPath);
+            if (uploadStatus != null)
+            {
+                data.UploadStatusText = uploadStatus.status;
+                data.UploadSizeBytes = uploadStatus.sizeBytes;
+
+                switch (uploadStatus.status)
+                {
+                    case "compressing":
+                        data.OverallHealth = HealthLevel.Processing;
+                        data.Issues.Insert(0, "Compressing for upload...");
+                        break;
+                    case "uploading":
+                        data.OverallHealth = HealthLevel.Processing;
+                        data.Issues.Insert(0, "Uploading to cloud...");
+                        break;
+                    case "pending":
+                        data.OverallHealth = HealthLevel.Processing;
+                        data.Issues.Insert(0, "Queued for upload");
+                        break;
+                    case "uploaded":
+                        data.Issues.Insert(0, "Uploaded to cloud");
+                        break;
+                    case "failed":
+                        data.Issues.Insert(0, $"Upload failed: {uploadStatus.errorMessage}");
+                        break;
                 }
             }
 

@@ -76,7 +76,18 @@ namespace RealityLog.UI
                 dateText.text = info.FormattedDate;
 
             if (sizeText != null)
-                sizeText.text = $"{info.FormattedSize} | {info.FormattedDuration}";
+            {
+                string statusSuffix = info.UploadStatusText switch
+                {
+                    "compressing" => " | Compressing...",
+                    "uploading" => " | Uploading...",
+                    "pending" => " | Pending upload",
+                    "uploaded" => " | Uploaded",
+                    "failed" => " | Upload failed",
+                    _ => ""
+                };
+                sizeText.text = $"{info.FormattedSize} | {info.FormattedDuration}{statusSuffix}";
+            }
 
             // Create health dot next to the directory name
             if (healthDotObj != null)

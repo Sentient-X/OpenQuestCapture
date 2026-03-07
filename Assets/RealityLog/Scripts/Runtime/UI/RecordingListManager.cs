@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using RealityLog.Common;
+using RealityLog.FileOperations;
 
 namespace RealityLog.UI
 {
@@ -31,6 +32,7 @@ namespace RealityLog.UI
             public DateTime CreationTime { get; set; }
             public long SizeBytes { get; set; }
             public HealthLevel QuickHealth { get; set; } = HealthLevel.Good;
+            public string UploadStatusText { get; set; } = "";
             public double DurationSeconds { get; set; } = -1;
             public string FormattedSize => FormatBytes(SizeBytes);
             public string FormattedDate => CreationTime.ToString("yyyy-MM-dd HH:mm:ss");
@@ -101,13 +103,15 @@ namespace RealityLog.UI
                         try
                         {
                             var info = new DirectoryInfo(dirPath);
+                            var uploadStatus = UploadStatus.Read(dirPath);
                             var recordingInfo = new RecordingInfo
                             {
                                 DirectoryName = dirName,
                                 FullPath = dirPath,
                                 CreationTime = info.CreationTime,
                                 SizeBytes = CalculateDirectorySize(dirPath),
-                                QuickHealth = QuickHealthCheck(dirPath),
+                                QuickHealth = QuickHealthCheck(dirPath, uploadStatus),
+                                UploadStatusText = uploadStatus?.status ?? "",
                                 DurationSeconds = QuickParseDuration(dirPath)
                             };
 
@@ -169,8 +173,13 @@ namespace RealityLog.UI
             public long recording_stop_unix_ms;
         }
 
-        private static HealthLevel QuickHealthCheck(string dirPath)
+        private static HealthLevel QuickHealthCheck(string dirPath, UploadStatus? uploadStatus)
         {
+            // If an upload workflow is actively running, show Processing instead of file-level errors
+            // (files may still be finalizing during compression)
+            if (uploadStatus != null && uploadStatus.status is "compressing" or "uploading" or "pending")
+                return HealthLevel.Processing;
+
             // Check video exists and has reasonable size
             string videoPath = Path.Combine(dirPath, "center_camera.mp4");
             bool videoOk = File.Exists(videoPath);
