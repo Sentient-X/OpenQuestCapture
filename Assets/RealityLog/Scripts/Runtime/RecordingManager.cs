@@ -307,12 +307,10 @@ namespace RealityLog
 
         private void OnApplicationFocus(bool hasFocus)
         {
-            if (hasFocus)
-            {
-                return;
-            }
-
-            StopRecordingForInterruption("focus_loss");
+            // Do NOT stop recording on focus loss. On Quest, focus loss is frequent
+            // (guardian boundary, quick settings, notifications) and the camera keeps
+            // delivering frames. Only OnApplicationPause (headset removal, app switch)
+            // requires stopping the recording.
         }
 
         private void StopRecordingForInterruption(string reason)

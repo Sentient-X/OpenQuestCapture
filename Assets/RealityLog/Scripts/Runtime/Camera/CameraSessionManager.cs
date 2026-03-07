@@ -81,20 +81,19 @@ namespace RealityLog.Camera
         {
             if (pauseStatus)
             {
-                // App is going to background/sleep - close camera to release resources
-                // Cancel any pending resume operations
+                // App is going to background/sleep - close camera to release resources.
+                // Cancel any pending resume operations.
                 if (resumeCoroutine != null)
                 {
                     StopCoroutine(resumeCoroutine);
                     resumeCoroutine = null;
                 }
 
-                // Force any active recorder surface to stop before camera teardown.
-                foreach (var provider in surfaceProviders)
-                {
-                    provider.StopRecordingSession();
-                }
-
+                // NOTE: Do NOT call StopRecordingSession() on providers here.
+                // RecordingManager owns the recording lifecycle and handles stopping
+                // via its own OnApplicationPause. Stopping here would cause a
+                // double-stop race where the camera surface is released before
+                // RecordingManager finalizes the recording.
                 Debug.Log($"[{Constants.LOG_TAG}] App pausing - closing camera session");
                 DestroyInstance();
             }
