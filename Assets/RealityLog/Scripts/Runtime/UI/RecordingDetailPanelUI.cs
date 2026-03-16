@@ -25,7 +25,6 @@ namespace RealityLog.UI
         private static readonly Color ErrorColor = new Color(0.95f, 0.25f, 0.2f);
         private static readonly Color TextColor = new Color(0.9f, 0.9f, 0.9f);
         private static readonly Color DimTextColor = new Color(0.6f, 0.6f, 0.6f);
-        private static readonly Color ProcessingColor = new Color(0.3f, 0.6f, 1f);
         private static readonly Color DeleteBtnColor = new Color(0.8f, 0.2f, 0.2f);
         private static readonly Color ExportBtnColor = new Color(0.2f, 0.5f, 0.85f);
 
@@ -57,16 +56,10 @@ namespace RealityLog.UI
             // 3. File inventory
             BuildFileInventory(data, font);
 
-            // 4. Upload status (if any workflow is active)
-            if (!string.IsNullOrEmpty(data.UploadStatusText))
-            {
-                BuildUploadStatusSection(data, font);
-            }
-
-            // 5. Video preview
+            // 4. Video preview
             BuildVideoPreview(data);
 
-            // 6. Action buttons
+            // 5. Action buttons
             BuildActionButtons(font);
         }
 
@@ -79,7 +72,6 @@ namespace RealityLog.UI
                 HealthLevel.Good => GoodColor,
                 HealthLevel.Warning => WarningColor,
                 HealthLevel.Error => ErrorColor,
-                HealthLevel.Processing => ProcessingColor,
                 _ => GoodColor
             };
 
@@ -88,7 +80,6 @@ namespace RealityLog.UI
                 HealthLevel.Good => "GOOD",
                 HealthLevel.Warning => "WARNING",
                 HealthLevel.Error => "ERROR",
-                HealthLevel.Processing => "PROCESSING",
                 _ => "UNKNOWN"
             };
 
@@ -159,43 +150,6 @@ namespace RealityLog.UI
                 }
                 var sizeLayout = sizeGo.AddComponent<LayoutElement>();
                 sizeLayout.minWidth = 80;
-            }
-        }
-
-        private void BuildUploadStatusSection(RecordingDetailData data, TMP_FontAsset? font)
-        {
-            var section = CreateSection("UploadStatus");
-
-            string label = data.UploadStatusText switch
-            {
-                "pending" => "Upload: Queued",
-                "compressing" => "Upload: Compressing...",
-                "uploading" => "Upload: Uploading...",
-                "uploaded" => "Upload: Complete",
-                "failed" => "Upload: Failed",
-                _ => $"Upload: {data.UploadStatusText}"
-            };
-
-            Color statusColor = data.UploadStatusText switch
-            {
-                "uploaded" => GoodColor,
-                "failed" => ErrorColor,
-                _ => ProcessingColor
-            };
-
-            var headerGo = CreateText(label, font, 16, FontStyles.Bold, section.transform);
-            var headerTmp = headerGo.GetComponent<TextMeshProUGUI>();
-            if (headerTmp != null) headerTmp.color = statusColor;
-
-            if (data.UploadSizeBytes > 0)
-            {
-                string[] sizes = { "B", "KB", "MB", "GB" };
-                double len = data.UploadSizeBytes;
-                int order = 0;
-                while (len >= 1024 && order < sizes.Length - 1) { order++; len /= 1024; }
-                var sizeGo = CreateText($"  ZIP size: {len:0.##} {sizes[order]}", font, 13, FontStyles.Normal, section.transform);
-                var sizeTmp = sizeGo.GetComponent<TextMeshProUGUI>();
-                if (sizeTmp != null) sizeTmp.color = DimTextColor;
             }
         }
 

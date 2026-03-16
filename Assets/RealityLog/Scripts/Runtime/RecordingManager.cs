@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using System.Collections;
 using System.IO;
 using UnityEngine;
 using UnityEngine.Events;
@@ -50,6 +51,7 @@ namespace RealityLog
         private bool isRecording = false;
         private float recordingStartTime = 0f;
         private string? currentSessionDirectory = null;
+        private Coroutine? stopCoroutine;
         private const long MinExpectedVideoBytes = 1024;
 
         private static readonly string[] MotionFileNames = new[]
@@ -200,6 +202,9 @@ namespace RealityLog
             isRecording = true;
             recordingStartTime = Time.time;
 
+            WriteVideoStartTime();
+            DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
+
             onRecordingStarted?.Invoke();
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
@@ -207,6 +212,8 @@ namespace RealityLog
 
         /// <summary>
         /// Stops recording from all subsystems in the proper order.
+        /// Video finalization (OS flushing the MP4) runs on a background thread;
+        /// a coroutine waits for it to complete before firing saved events.
         /// </summary>
         public void StopRecording()
         {
@@ -252,14 +259,43 @@ namespace RealityLog
             recordingStartTime = 0f;
             currentSessionDirectory = null;
 
-            // Invoke event after files are saved
+            // Wait for video finalization on a background thread, then fire events
             if (!string.IsNullOrEmpty(savedDirectory))
             {
-                onRecordingSaved?.Invoke(savedDirectory);
-                ValidateSavedSession(savedDirectory);
+                if (stopCoroutine != null)
+                    StopCoroutine(stopCoroutine);
+                stopCoroutine = StartCoroutine(WaitForFinalizationThenNotify(savedDirectory));
+            }
+            else
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped (no session directory)");
+            }
+        }
+
+        private IEnumerator WaitForFinalizationThenNotify(string savedDirectory)
+        {
+            // Yield until all video providers finish background finalization
+            bool anyFinalizing = true;
+            while (anyFinalizing)
+            {
+                anyFinalizing = false;
+                foreach (var provider in cameraProviders)
+                {
+                    if (provider is VideoRecorderSurfaceProvider vp && vp.IsFinalizingVideo)
+                    {
+                        anyFinalizing = true;
+                        break;
+                    }
+                }
+                if (anyFinalizing)
+                    yield return null;
             }
 
+            onRecordingSaved?.Invoke(savedDirectory);
+            ValidateSavedSession(savedDirectory);
+
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped successfully. Files saved to '{savedDirectory}'");
+            stopCoroutine = null;
         }
 
         /// <summary>
@@ -291,9 +327,49 @@ namespace RealityLog
 
         private void OnDestroy()
         {
-            // Safety: ensure recording stops on cleanup
+            // Safety: ensure recording stops on cleanup.
+            // Can't rely on the coroutine here since Unity is tearing down the
+            // MonoBehaviour — do a synchronous stop and validate immediately.
+            // MediaRecorder.stop() is already synchronous, and the bg poll is
+            // just a verification safety net, so skipping it on destroy is fine.
             if (isRecording)
-                StopRecording();
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
+
+                captureTimer.StopCapture();
+
+                foreach (var provider in cameraProviders)
+                    provider.StopRecordingSession();
+
+                if (recordDepthMaps && depthMapExporter != null)
+                    depthMapExporter.StopExport();
+                foreach (var logger in poseLoggers)
+                    logger.StopLogging();
+                foreach (var logger in imuLoggers)
+                    logger.StopLogging();
+                foreach (var logger in bodyTrackingLoggers)
+                    logger.StopLogging();
+
+                string savedDirectory = currentSessionDirectory ?? string.Empty;
+                isRecording = false;
+                recordingStartTime = 0f;
+                currentSessionDirectory = null;
+
+                if (!string.IsNullOrEmpty(savedDirectory))
+                {
+                    onRecordingSaved?.Invoke(savedDirectory);
+                    ValidateSavedSession(savedDirectory);
+                }
+            }
+            else if (stopCoroutine != null)
+            {
+                // A finalization coroutine from a prior StopRecording() is still waiting.
+                // The bg thread will finish on its own; fire the events synchronously now
+                // since the coroutine won't survive OnDestroy.
+                // (savedDirectory was already cleared, so nothing further to do — the bg
+                //  thread's PollVideoFinalization will still log its result.)
+                stopCoroutine = null;
+            }
         }
 
         private void OnApplicationPause(bool pauseStatus)
@@ -323,6 +399,41 @@ namespace RealityLog
 
             Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App interruption ({reason}) during recording; forcing stop to finalize files.");
             StopRecording();
+        }
+
+        private void WriteVideoStartTime()
+        {
+            long videoStartMs = 0;
+            foreach (var provider in cameraProviders)
+            {
+                if (provider is VideoRecorderSurfaceProvider videoProvider
+                    && videoProvider.VideoStartUnixTimeMs > 0)
+                {
+                    videoStartMs = videoProvider.VideoStartUnixTimeMs;
+                    break;
+                }
+            }
+
+            if (videoStartMs <= 0)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] No video start timestamp available");
+                return;
+            }
+
+            try
+            {
+                var filePath = Path.Combine(
+                    Application.persistentDataPath,
+                    currentSessionDirectory ?? "",
+                    "video_start_time.txt"
+                );
+                File.WriteAllText(filePath, videoStartMs.ToString());
+                Debug.Log($"[{Constants.LOG_TAG}] Wrote video_start_time.txt: {videoStartMs}ms");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] Failed to write video_start_time.txt: {ex.Message}");
+            }
         }
 
         private void ValidateSavedSession(string sessionDirectoryName)

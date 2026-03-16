@@ -82,16 +82,7 @@ namespace RealityLog.UI
 
             if (sizeText != null)
             {
-                string statusSuffix = info.UploadStatusText switch
-                {
-                    "compressing" => " | Compressing...",
-                    "uploading" => " | Uploading...",
-                    "pending" => " | Pending upload",
-                    "uploaded" => " | Uploaded",
-                    "failed" => " | Upload failed",
-                    _ => ""
-                };
-                sizeText.text = $"{info.FormattedSize}{statusSuffix}";
+                sizeText.text = info.FormattedSize;
             }
 
             // Create health dot next to the directory name

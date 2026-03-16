@@ -21,9 +21,6 @@ namespace RealityLog.UI
         [Tooltip("RecordingOperations to perform file operations")]
         [SerializeField] private RecordingOperations operations = default!;
 
-        [Tooltip("R2Uploader for upload status updates (optional)")]
-        [SerializeField] private R2Uploader? r2Uploader;
-
         [Header("UI Elements")]
         [Tooltip("Container/ScrollView content for recording list items")]
         [SerializeField] private Transform listContainer = default!;
@@ -56,12 +53,6 @@ namespace RealityLog.UI
                 operations.OnOperationProgress += OnOperationProgress;
             }
 
-            if (r2Uploader != null)
-            {
-                r2Uploader.OnUploadProgress.AddListener(OnR2UploadProgress);
-                r2Uploader.OnUploadComplete.AddListener(OnR2UploadComplete);
-            }
-
             // Ensure status text is hidden initially
             if (statusText != null)
             {
@@ -84,11 +75,6 @@ namespace RealityLog.UI
                 operations.OnOperationProgress -= OnOperationProgress;
             }
 
-            if (r2Uploader != null)
-            {
-                r2Uploader.OnUploadProgress.RemoveListener(OnR2UploadProgress);
-                r2Uploader.OnUploadComplete.RemoveListener(OnR2UploadComplete);
-            }
         }
 
         /// <summary>
@@ -347,20 +333,6 @@ namespace RealityLog.UI
                 statusText.text = string.Empty;
             }
             statusHideCoroutine = null;
-        }
-
-        private void OnR2UploadProgress(string directoryName, float progress)
-        {
-            string phase = progress < 0.5f ? "Compressing" : "Uploading";
-            float displayProgress = progress < 0.5f ? progress * 2f : (progress - 0.5f) * 2f;
-            ShowStatus($"{directoryName}: {phase} {displayProgress:P0}", true, 30f);
-        }
-
-        private void OnR2UploadComplete(string directoryName, bool success, string message)
-        {
-            ShowStatus($"Upload {directoryName}: {message}", success);
-            // Refresh the list so health dots update (Processing → Good/uploaded)
-            RefreshList();
         }
 
         private void OnValidate()

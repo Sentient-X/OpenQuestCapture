@@ -3,6 +3,7 @@
 using System;
 using System.Collections;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEngine;
 using RealityLog.Common;
 
@@ -35,7 +36,14 @@ namespace RealityLog.Camera
         private bool isRecordingSessionActive;
         private bool waitingForCameraReopen;
         private Coroutine? delayedStartCoroutine;
-        private long recordingStartUnixMs;
+
+        public long VideoStartUnixTimeMs { get; private set; }
+
+        /// <summary>
+        /// True while the video file is still being finalized by the OS after stopRecording().
+        /// RecordingManager should wait for this to become false before validating files.
+        /// </summary>
+        public bool IsFinalizingVideo { get; private set; }
 
         public override AndroidJavaObject? GetJavaInstance(CameraMetadata metadata)
         {
@@ -80,6 +88,8 @@ namespace RealityLog.Camera
 
         public override void PrepareRecordingSession()
         {
+            VideoStartUnixTimeMs = 0;
+
             if (currentInstance == null)
             {
                 return;
@@ -122,6 +132,9 @@ namespace RealityLog.Camera
             StartRecordingNow();
         }
 
+        private const int MaxVideoFinalizeWaitMs = 3000;
+        private const int VideoFinalizeCheckIntervalMs = 50;
+
         public override void StopRecordingSession()
         {
             if (delayedStartCoroutine != null)
@@ -136,18 +149,82 @@ namespace RealityLog.Camera
                 return;
             }
 
+            bool stopSucceeded = false;
             try
             {
                 currentInstance.Call(STOP_RECORDING_METHOD_NAME);
-                WriteVideoMetadata();
+                stopSucceeded = true;
             }
             catch (Exception ex)
             {
-                Debug.LogException(ex);
+                Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: stopRecording threw: {ex.Message}");
             }
             finally
             {
                 isRecordingSessionActive = false;
+            }
+
+            WriteVideoMetadata();
+
+            if (stopSucceeded)
+            {
+                var videoPath = BuildVideoOutputPath();
+                IsFinalizingVideo = true;
+                Task.Run(() => PollVideoFinalization(videoPath));
+            }
+        }
+
+        /// <summary>
+        /// Runs on a background thread. Polls the video file size until it stabilizes
+        /// at >0 bytes, meaning Android's MediaRecorder has finished flushing the MP4.
+        /// </summary>
+        private void PollVideoFinalization(string videoPath)
+        {
+            try
+            {
+                if (!File.Exists(videoPath))
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: Video file does not exist after stop: {videoPath}");
+                    return;
+                }
+
+                int elapsed = 0;
+                long lastSize = -1;
+                while (elapsed < MaxVideoFinalizeWaitMs)
+                {
+                    try
+                    {
+                        var currentSize = new FileInfo(videoPath).Length;
+                        if (currentSize > 0 && currentSize == lastSize)
+                        {
+                            Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: Video finalized ({currentSize} bytes, waited {elapsed}ms)");
+                            return;
+                        }
+                        lastSize = currentSize;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: File check error: {ex.Message}");
+                    }
+
+                    System.Threading.Thread.Sleep(VideoFinalizeCheckIntervalMs);
+                    elapsed += VideoFinalizeCheckIntervalMs;
+                }
+
+                long finalSize = 0;
+                try { finalSize = File.Exists(videoPath) ? new FileInfo(videoPath).Length : 0; } catch { }
+                if (finalSize == 0)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: Video file is STILL 0 bytes after {MaxVideoFinalizeWaitMs}ms wait!");
+                }
+                else
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: Video file size still changing after {MaxVideoFinalizeWaitMs}ms ({finalSize} bytes). Proceeding anyway.");
+                }
+            }
+            finally
+            {
+                IsFinalizingVideo = false;
             }
         }
 
@@ -184,8 +261,8 @@ namespace RealityLog.Camera
 
             try
             {
+                VideoStartUnixTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 currentInstance.Call(START_RECORDING_METHOD_NAME);
-                recordingStartUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 isRecordingSessionActive = true;
             }
             catch (Exception ex)
@@ -211,7 +288,7 @@ namespace RealityLog.Camera
                 var metadataPath = Path.Join(dataDirPath, VIDEO_METADATA_FILE_NAME);
 
                 var json = $"{{\n" +
-                    $"  \"recording_start_unix_ms\": {recordingStartUnixMs},\n" +
+                    $"  \"recording_start_unix_ms\": {VideoStartUnixTimeMs},\n" +
                     $"  \"recording_stop_unix_ms\": {stopUnixMs},\n" +
                     $"  \"configured_fps\": {targetFrameRate},\n" +
                     $"  \"video_file\": \"{outputVideoFileName}\"\n" +

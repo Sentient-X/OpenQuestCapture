@@ -12,7 +12,6 @@ namespace RealityLog.UI
         private static readonly Color GoodColor = new Color(0.2f, 0.85f, 0.3f);
         private static readonly Color WarningColor = new Color(1f, 0.8f, 0.2f);
         private static readonly Color ErrorColor = new Color(0.95f, 0.25f, 0.2f);
-        private static readonly Color ProcessingColor = new Color(0.3f, 0.6f, 1f);
 
         private void Awake()
         {
@@ -31,7 +30,6 @@ namespace RealityLog.UI
                     HealthLevel.Good => GoodColor,
                     HealthLevel.Warning => WarningColor,
                     HealthLevel.Error => ErrorColor,
-                    HealthLevel.Processing => ProcessingColor,
                     _ => GoodColor
                 };
             }
