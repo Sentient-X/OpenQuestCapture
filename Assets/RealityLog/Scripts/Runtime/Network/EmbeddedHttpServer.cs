@@ -117,13 +117,40 @@ namespace RealityLog.Network
                 listener.Start();
                 Debug.Log($"[{Constants.LOG_TAG}] EmbeddedHttpServer: Listening on 0.0.0.0:{Port}");
 
+                // Log all network interfaces so we know what IPs the Quest has
+                try
+                {
+                    var hostName = Dns.GetHostName();
+                    Debug.Log($"[{Constants.LOG_TAG}] EmbeddedHttpServer: Hostname: {hostName}");
+                    var addresses = Dns.GetHostAddresses(hostName);
+                    foreach (var addr in addresses)
+                    {
+                        if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        {
+                            Debug.Log($"[{Constants.LOG_TAG}] EmbeddedHttpServer: IPv4 interface: {addr}:{Port}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] EmbeddedHttpServer: Could not enumerate interfaces: {ex.Message}");
+                }
+
+                int connectionCount = 0;
+
                 while (running)
                 {
                     try
                     {
                         var client = listener.AcceptTcpClient();
+                        connectionCount++;
                         client.ReceiveTimeout = 5000;
                         client.SendTimeout = 10000;
+
+                        // Log every incoming connection with client IP
+                        var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+                        Debug.Log($"[{Constants.LOG_TAG}] EmbeddedHttpServer: Connection #{connectionCount} from {remoteEndpoint}");
+
                         ThreadPool.QueueUserWorkItem(_ => HandleClient(client));
                     }
                     catch (SocketException) when (!running)
@@ -263,6 +290,8 @@ namespace RealityLog.Network
         {
             try
             {
+                Debug.Log($"[{Constants.LOG_TAG}] HTTP: {request.Method} {request.Path}");
+
                 // Try exact match first
                 Dictionary<string, Func<HttpRequest, HttpResponse>>? routes = request.Method switch
                 {

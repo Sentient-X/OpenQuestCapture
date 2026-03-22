@@ -58,6 +58,12 @@ namespace RealityLog.Network
         private float cachedDuration = 0f;
         private string cachedAppVersion = "1.2.0";
         private float lastStorageRefresh = 0f;
+        private float lastHeartbeat = 0f;
+
+        // Keep-awake: wake lock handle to prevent Quest from sleeping when headset is removed
+#if UNITY_ANDROID && !UNITY_EDITOR
+        private AndroidJavaObject? wakeLock;
+#endif
 
         private void Awake()
         {
@@ -79,6 +85,10 @@ namespace RealityLog.Network
             server = new EmbeddedHttpServer(port);
             RegisterRoutes();
             server.Start();
+
+            // Auto-apply keep-awake so Quest never sleeps when headset is removed
+            ApplyKeepAwakeSettings();
+            Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Auto-applied on startup");
         }
 
         private void Update()
@@ -98,11 +108,46 @@ namespace RealityLog.Network
                 cachedAppVersion = Application.version;
                 lastStorageRefresh = Time.realtimeSinceStartup;
             }
+
+            // Heartbeat log every 60 seconds — confirms server is alive and shows IP info
+            if (Time.realtimeSinceStartup - lastHeartbeat > 60f)
+            {
+                lastHeartbeat = Time.realtimeSinceStartup;
+                try
+                {
+                    var ips = new List<string>();
+                    var hostName = System.Net.Dns.GetHostName();
+                    foreach (var addr in System.Net.Dns.GetHostAddresses(hostName))
+                    {
+                        if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                            ips.Add(addr.ToString());
+                    }
+                    Debug.Log($"[{Constants.LOG_TAG}] HEARTBEAT: Server alive on port {port} | IPs: {string.Join(", ", ips)} | Battery: {cachedBattery}% | Recording: {cachedIsRecording}");
+                }
+                catch (Exception ex)
+                {
+                    Debug.Log($"[{Constants.LOG_TAG}] HEARTBEAT: Server alive on port {port} | IP lookup failed: {ex.Message}");
+                }
+            }
         }
 
         private void OnDestroy()
         {
             server?.Stop();
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                if (wakeLock != null)
+                {
+                    wakeLock.Call("release");
+                    wakeLock.Dispose();
+                    wakeLock = null;
+                    Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Wake lock released");
+                }
+            }
+            catch { }
+#endif
         }
 
         private void OnApplicationPause(bool paused)
@@ -122,6 +167,8 @@ namespace RealityLog.Network
             server.Get("/api/recordings", HandleListRecordings);
             server.WildcardGet("/api/recordings/", HandleStreamRecording);
             server.WildcardDelete("/api/recordings/", HandleDeleteRecording);
+            server.Post("/api/keep-awake", HandleKeepAwake);
+            server.Get("/api/diagnostics", HandleDiagnostics);
         }
 
         // ── GET /api/status ──
@@ -458,6 +505,159 @@ namespace RealityLog.Network
                 $"  \"freedBytes\": {freedBytes}\n" +
                 "}";
 
+            return HttpResponse.Ok(json);
+        }
+
+        // ── POST /api/keep-awake ──
+        // Called by the phone app on every connection to ensure Quest stays awake
+        // even when the headset is removed (proximity sensor disabled).
+
+        private HttpResponse HandleKeepAwake(HttpRequest request)
+        {
+            bool success = false;
+            string errorMessage = "";
+            var applied = new List<string>();
+
+            var signal = server!.EnqueueOnMainThread(() =>
+            {
+                try
+                {
+                    ApplyKeepAwakeSettings(applied);
+                    success = true;
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = ex.Message;
+                    Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: KeepAwake error: {ex}");
+                }
+            });
+            signal.Wait(5000);
+
+            if (!success)
+            {
+                return HttpResponse.InternalError(errorMessage);
+            }
+
+            var appliedJson = string.Join(", ", applied.Select(a => $"\"{EscapeJson(a)}\""));
+            var json = "{\n" +
+                $"  \"status\": \"applied\",\n" +
+                $"  \"settings\": [{appliedJson}]\n" +
+                "}";
+
+            return HttpResponse.Ok(json);
+        }
+
+        /// <summary>
+        /// Apply Android system settings to prevent the Quest from sleeping
+        /// when the headset is removed. Safe to call multiple times (idempotent).
+        /// </summary>
+        private void ApplyKeepAwakeSettings(List<string>? log = null)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // 1. Acquire partial wake lock — keeps CPU alive even when display off
+            try
+            {
+                if (wakeLock == null)
+                {
+                    using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                    using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                    using var powerManager = activity.Call<AndroidJavaObject>("getSystemService", "power");
+                    wakeLock = powerManager.Call<AndroidJavaObject>("newWakeLock", 1 /* PARTIAL_WAKE_LOCK */, "RealityLog:KeepAwake");
+                    wakeLock.Call("acquire");
+                    log?.Add("wake_lock_acquired");
+                    Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Wake lock acquired");
+                }
+                else
+                {
+                    log?.Add("wake_lock_already_held");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: Wake lock failed: {ex.Message}");
+            }
+
+            // 2. Keep screen on via Window flag (FLAG_KEEP_SCREEN_ON = 128)
+            try
+            {
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var window = activity.Call<AndroidJavaObject>("getWindow");
+                window.Call("addFlags", 128);
+                log?.Add("flag_keep_screen_on");
+                Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: FLAG_KEEP_SCREEN_ON set");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: Window flag failed: {ex.Message}");
+            }
+
+            // 3. Disable proximity sensor via system property + set power settings
+            try
+            {
+                using var processClass = new AndroidJavaClass("java.lang.Runtime");
+                using var runtime = processClass.CallStatic<AndroidJavaObject>("getRuntime");
+
+                // Disable proximity-triggered sleep — THE key fix
+                using var p1 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/setprop", "debug.oculus.proximityDisabled", "1" });
+                p1.Call<int>("waitFor");
+                log?.Add("proximity_sensor_disabled");
+                Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Proximity sensor disabled");
+
+                // Set screen timeout to max
+                using var p2 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/settings", "put", "system", "screen_off_timeout", "2147483647" });
+                p2.Call<int>("waitFor");
+                log?.Add("screen_timeout_max");
+
+                // Stay on while plugged in (all sources: AC=1 + USB=2 + Wireless=4 = 7)
+                using var p3 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/settings", "put", "global", "stay_on_while_plugged_in", "7" });
+                p3.Call<int>("waitFor");
+                log?.Add("stay_on_while_plugged");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: System settings failed: {ex.Message}");
+            }
+#else
+            log?.Add("editor_mock_applied");
+#endif
+        }
+
+        // ── GET /api/diagnostics ──
+        // Returns all network interfaces, server state, and connection info for debugging
+
+        private HttpResponse HandleDiagnostics(HttpRequest request)
+        {
+            var interfaces = new List<string>();
+            try
+            {
+                var hostName = System.Net.Dns.GetHostName();
+                var addresses = System.Net.Dns.GetHostAddresses(hostName);
+                foreach (var addr in addresses)
+                {
+                    if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                    {
+                        interfaces.Add($"\"{addr}\"");
+                    }
+                }
+            }
+            catch { }
+
+            long uptimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - appStartUnixMs;
+
+            var json = "{\n" +
+                $"  \"device\": \"MetaQuest3\",\n" +
+                $"  \"hostname\": \"{EscapeJson(System.Net.Dns.GetHostName())}\",\n" +
+                $"  \"serverPort\": {port},\n" +
+                $"  \"ipAddresses\": [{string.Join(", ", interfaces)}],\n" +
+                $"  \"uptimeMs\": {uptimeMs},\n" +
+                $"  \"batteryPercent\": {cachedBattery},\n" +
+                $"  \"isRecording\": {(cachedIsRecording ? "true" : "false")},\n" +
+                $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
+                $"  \"timestamp\": \"{DateTimeOffset.UtcNow:O}\"\n" +
+                "}";
+
+            Debug.Log($"[{Constants.LOG_TAG}] Diagnostics requested — IPs: {string.Join(", ", interfaces)}");
             return HttpResponse.Ok(json);
         }
 
