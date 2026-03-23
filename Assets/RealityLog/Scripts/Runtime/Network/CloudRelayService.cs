@@ -28,6 +28,8 @@ namespace RealityLog.Network
         private string deviceLabel = "";
         private RecordingManager? recordingManager;
         private HttpServerController? httpController;
+        private int assignedDeviceNumber = 0;
+        private TextMesh? deviceNumberLabel;
 
         // Recording state tracked for response metadata (mirrors HttpServerController pattern)
         private string? currentRecordingFile;
@@ -166,6 +168,14 @@ namespace RealityLog.Network
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] CloudRelay: Failed to parse heartbeat response: {ex.Message}");
                 yield break;
+            }
+
+            // Update device number display
+            if (response != null && response.deviceNumber > 0 && response.deviceNumber != assignedDeviceNumber)
+            {
+                assignedDeviceNumber = response.deviceNumber;
+                Debug.Log($"[{Constants.LOG_TAG}] CloudRelay: Assigned device number VR-{assignedDeviceNumber}");
+                UpdateDeviceNumberLabel();
             }
 
             if (response?.commands == null || response.commands.Length == 0)
@@ -393,6 +403,42 @@ namespace RealityLog.Network
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
         }
 
+        // ── Device number HUD ──
+
+        private void UpdateDeviceNumberLabel()
+        {
+            if (deviceNumberLabel == null)
+            {
+                var go = new GameObject("DeviceNumberHUD");
+                deviceNumberLabel = go.AddComponent<TextMesh>();
+                deviceNumberLabel.characterSize = 0.015f;
+                deviceNumberLabel.fontSize = 200;
+                deviceNumberLabel.anchor = TextAnchor.MiddleCenter;
+                deviceNumberLabel.alignment = TextAlignment.Center;
+                deviceNumberLabel.color = Color.white;
+
+                StartCoroutine(FollowCamera(go.transform));
+            }
+
+            deviceNumberLabel.text = $"VR-{assignedDeviceNumber}";
+        }
+
+        private IEnumerator FollowCamera(Transform hudTransform)
+        {
+            while (hudTransform != null)
+            {
+                var cam = UnityEngine.Camera.main;
+                if (cam != null)
+                {
+                    var pos = cam.transform.position + cam.transform.forward * 1.5f
+                              - cam.transform.up * 0.4f - cam.transform.right * 0.3f;
+                    hudTransform.position = Vector3.Lerp(hudTransform.position, pos, Time.deltaTime * 3f);
+                    hudTransform.rotation = Quaternion.LookRotation(hudTransform.position - cam.transform.position);
+                }
+                yield return null;
+            }
+        }
+
         // ── JSON Serialization Types ──
 
         [Serializable]
@@ -415,6 +461,7 @@ namespace RealityLog.Network
         {
             public bool ok;
             public RelayCommand[]? commands;
+            public int deviceNumber;
         }
 
         [Serializable]
