@@ -301,29 +301,12 @@ namespace RealityLog.Network
             currentRecordingFile = null;
             currentRecordingStartedAt = null;
 
-            // Get file size (wait briefly for finalization)
-            long fileSizeBytes = 0;
-            if (stoppedFile != null)
-            {
-                var videoPath = Path.Combine(Application.persistentDataPath, stoppedFile, "center_camera.mp4");
-                for (int i = 0; i < 20; i++)
-                {
-                    try
-                    {
-                        if (File.Exists(videoPath))
-                        {
-                            var size = new FileInfo(videoPath).Length;
-                            if (size > 0) { fileSizeBytes = size; break; }
-                        }
-                    }
-                    catch { }
-                    Thread.Sleep(100);
-                }
-            }
-
+            // Return immediately — don't block the main thread waiting for
+            // file finalization. File size is non-critical metadata and the
+            // Thread.Sleep loop was freezing the heartbeat/command pipeline.
             var stoppedAt = DateTimeOffset.UtcNow.ToString("O");
             return $"{{\"status\": \"stopped\", \"file\": \"{EscapeJson(stoppedFile ?? "")}\", " +
-                   $"\"durationMs\": {durationMs}, \"fileSizeBytes\": {fileSizeBytes}, " +
+                   $"\"durationMs\": {durationMs}, \"fileSizeBytes\": 0, " +
                    $"\"startedAt\": \"{EscapeJson(startedAt ?? "")}\", \"stoppedAt\": \"{EscapeJson(stoppedAt)}\"}}";
         }
 
