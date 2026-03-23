@@ -10,6 +10,7 @@ using System.Threading;
 using UnityEngine;
 using UnityEngine.Networking;
 using RealityLog.Common;
+using RealityLog.UI;
 
 namespace RealityLog.Network
 {
@@ -213,6 +214,10 @@ namespace RealityLog.Network
                         resultJson = BuildStatusJson();
                         break;
 
+                    case "mark-episode":
+                        resultJson = ExecuteMarkEpisode(cmd.payload);
+                        break;
+
                     case "keep-awake":
                         resultJson = "{\"status\": \"applied\"}";
                         // Keep-awake is already handled by KeepAwakeBootstrap
@@ -336,6 +341,29 @@ namespace RealityLog.Network
                    $"\"apkVersion\": \"{EscapeJson(cachedAppVersion)}\"}}";
         }
 
+        private string ExecuteMarkEpisode(string? payload)
+        {
+            int episodeNumber = 1;
+            if (!string.IsNullOrEmpty(payload))
+            {
+                try
+                {
+                    var data = JsonUtility.FromJson<MarkEpisodePayload>(payload);
+                    if (data.episodeNumber > 0) episodeNumber = data.episodeNumber;
+                }
+                catch { }
+            }
+
+            var marker = FindFirstObjectByType<EpisodeMarkerController>();
+            if (marker != null)
+            {
+                marker.MarkFromPhone(episodeNumber);
+                return $"{{\"status\": \"marked\", \"episodeNumber\": {episodeNumber}}}";
+            }
+
+            return "{\"error\": \"marker_not_found\", \"message\": \"EpisodeMarkerController not available\"}";
+        }
+
         // ── Report Result ──
 
         private IEnumerator ReportResult(string commandId, string status, string resultJson)
@@ -411,11 +439,11 @@ namespace RealityLog.Network
             {
                 var go = new GameObject("DeviceNumberHUD");
                 deviceNumberLabel = go.AddComponent<TextMesh>();
-                deviceNumberLabel.characterSize = 0.015f;
-                deviceNumberLabel.fontSize = 200;
+                deviceNumberLabel.characterSize = 0.005f;
+                deviceNumberLabel.fontSize = 100;
                 deviceNumberLabel.anchor = TextAnchor.MiddleCenter;
                 deviceNumberLabel.alignment = TextAlignment.Center;
-                deviceNumberLabel.color = Color.white;
+                deviceNumberLabel.color = new Color(1f, 1f, 1f, 0.35f);
 
                 StartCoroutine(FollowCamera(go.transform));
             }
@@ -431,7 +459,7 @@ namespace RealityLog.Network
                 if (cam != null)
                 {
                     var pos = cam.transform.position + cam.transform.forward * 1.5f
-                              - cam.transform.up * 0.4f - cam.transform.right * 0.3f;
+                              - cam.transform.up * 0.55f - cam.transform.right * 0.45f;
                     hudTransform.position = Vector3.Lerp(hudTransform.position, pos, Time.deltaTime * 3f);
                     hudTransform.rotation = Quaternion.LookRotation(hudTransform.position - cam.transform.position);
                 }
@@ -470,6 +498,12 @@ namespace RealityLog.Network
             public string id = "";
             public string type = "";
             public string? payload;
+        }
+
+        [Serializable]
+        private class MarkEpisodePayload
+        {
+            public int episodeNumber;
         }
     }
 }

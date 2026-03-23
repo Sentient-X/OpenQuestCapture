@@ -167,6 +167,7 @@ namespace RealityLog.Network
             server.Get("/api/recordings", HandleListRecordings);
             server.WildcardGet("/api/recordings/", HandleStreamRecording);
             server.WildcardDelete("/api/recordings/", HandleDeleteRecording);
+            server.Post("/api/mark-episode", HandleMarkEpisode);
             server.Post("/api/keep-awake", HandleKeepAwake);
             server.Get("/api/diagnostics", HandleDiagnostics);
         }
@@ -506,6 +507,66 @@ namespace RealityLog.Network
                 "}";
 
             return HttpResponse.Ok(json);
+        }
+
+        // ── POST /api/mark-episode ──
+        // Called by the phone app when the operator presses the Mark button.
+        // Shows a visual flash inside the VR headset so the wearer knows a new episode started.
+
+        private HttpResponse HandleMarkEpisode(HttpRequest request)
+        {
+            int episodeNumber = 0;
+            bool success = false;
+            string? errorMessage = null;
+
+            // Parse episode number from request body
+            if (!string.IsNullOrEmpty(request.Body))
+            {
+                try
+                {
+                    var payload = JsonUtility.FromJson<MarkEpisodePayload>(request.Body);
+                    episodeNumber = payload.episodeNumber;
+                }
+                catch { }
+            }
+
+            if (episodeNumber <= 0) episodeNumber = 1;
+
+            var signal = server!.EnqueueOnMainThread(() =>
+            {
+                try
+                {
+                    var marker = FindFirstObjectByType<EpisodeMarkerController>();
+                    if (marker != null)
+                    {
+                        marker.MarkFromPhone(episodeNumber);
+                        success = true;
+                    }
+                    else
+                    {
+                        errorMessage = "EpisodeMarkerController not found";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = ex.Message;
+                    Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: MarkEpisode error: {ex}");
+                }
+            });
+            signal.Wait(3000);
+
+            if (!success)
+            {
+                return HttpResponse.InternalError(errorMessage ?? "Failed to mark episode");
+            }
+
+            return HttpResponse.Ok($"{{\"status\": \"marked\", \"episodeNumber\": {episodeNumber}}}");
+        }
+
+        [Serializable]
+        private class MarkEpisodePayload
+        {
+            public int episodeNumber;
         }
 
         // ── POST /api/keep-awake ──
