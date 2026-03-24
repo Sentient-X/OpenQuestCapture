@@ -7,6 +7,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using RealityLog.Camera;
 using RealityLog.Common;
+using RealityLog.Core;
 using RealityLog.Depth;
 using RealityLog.OVR;
 
@@ -62,6 +63,10 @@ namespace RealityLog
             "right_controller_poses.csv",
         };
 
+        // Cached reference to InfoCanvas animator for hiding standby label during recording
+        private Animator? infoCanvasAnimator;
+        private static readonly int IsRunningParam = Animator.StringToHash("IsRunning");
+
         public bool IsRecording => isRecording;
         public string? CurrentSessionDirectory => currentSessionDirectory;
         
@@ -86,6 +91,14 @@ namespace RealityLog
             if (depthMapExporter != null)
             {
                 depthMapExporter.IsExportEnabled = recordDepthMaps;
+            }
+
+            // Find InfoCanvas animator so we can hide the standby label when recording
+            // starts from any source (cloud relay, HTTP, toggle, calibration)
+            var infoCanvas = GameObject.Find("InfoCanvas");
+            if (infoCanvas != null)
+            {
+                infoCanvasAnimator = infoCanvas.GetComponent<Animator>();
             }
         }
 
@@ -202,10 +215,14 @@ namespace RealityLog
             isRecording = true;
             recordingStartTime = Time.time;
 
+            // Hide the standby label (green instruction box) regardless of how recording was started
+            infoCanvasAnimator?.SetBool(IsRunningParam, true);
+
             WriteVideoStartTime();
             DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
 
             onRecordingStarted?.Invoke();
+            ForegroundServiceManager.UpdateNotification("Recording in progress");
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
         }
@@ -259,6 +276,9 @@ namespace RealityLog
             recordingStartTime = 0f;
             currentSessionDirectory = null;
 
+            // Show the standby label again now that recording has stopped
+            infoCanvasAnimator?.SetBool(IsRunningParam, false);
+
             // Wait for video finalization on a background thread, then fire events
             if (!string.IsNullOrEmpty(savedDirectory))
             {
@@ -293,6 +313,7 @@ namespace RealityLog
 
             onRecordingSaved?.Invoke(savedDirectory);
             ValidateSavedSession(savedDirectory);
+            ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped successfully. Files saved to '{savedDirectory}'");
             stopCoroutine = null;
@@ -354,12 +375,14 @@ namespace RealityLog
                 isRecording = false;
                 recordingStartTime = 0f;
                 currentSessionDirectory = null;
+                infoCanvasAnimator?.SetBool(IsRunningParam, false);
 
                 if (!string.IsNullOrEmpty(savedDirectory))
                 {
                     onRecordingSaved?.Invoke(savedDirectory);
                     ValidateSavedSession(savedDirectory);
                 }
+                ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
             }
             else if (stopCoroutine != null)
             {

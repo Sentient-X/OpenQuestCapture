@@ -188,6 +188,29 @@ namespace RealityLog.UI
             flashText.enableWordWrapping = false;
         }
 
+        /// <summary>
+        /// Called by HttpServerController or CloudRelayService when the phone
+        /// operator presses the Mark button. Records the marker, shows a visual
+        /// flash, and triggers haptic feedback so the VR wearer knows a new
+        /// episode has started.
+        /// </summary>
+        public void MarkFromPhone(int episodeNumber)
+        {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            markers.Add(timestamp);
+
+            // Write immediately for crash safety
+            WriteMarkers(pendingDirectory);
+
+            // Haptic feedback on right controller
+            StartCoroutine(HapticPulse(0.15f));
+
+            // Visual flash
+            ShowFlash($"EPISODE {episodeNumber} STARTED");
+
+            Debug.Log($"[{Constants.LOG_TAG}] EpisodeMarker: Phone mark — episode {episodeNumber} at {timestamp}");
+        }
+
         [Serializable]
         private struct EpisodeMarkersData
         {

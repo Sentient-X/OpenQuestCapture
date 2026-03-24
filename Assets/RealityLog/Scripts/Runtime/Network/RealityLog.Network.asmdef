@@ -1,0 +1,19 @@
+{
+    "name": "RealityLog.Network",
+    "rootNamespace": "RealityLog.Network",
+    "references": [
+        "GUID:e144d031c3c40ef4d960edaa656bd4ca",
+        "GUID:d0444c2808025b94fa59a06393315ebd",
+        "GUID:5a3f1bc592f12e5438ac3468bd134cd0",
+        "GUID:d990eb5c0bdb46b408cf48eac1916e76"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
