@@ -23,7 +23,7 @@ namespace RealityLog.Network
     {
         private const string API_BASE = "https://fielddata-pro-api.sarthak-46e.workers.dev";
         private const string API_KEY = "fielddata-pro-2024";
-        private const float POLL_INTERVAL = 0.1f;
+        private const float POLL_INTERVAL = 1.5f;
 
         private string deviceId = "";
         private string deviceLabel = "";
