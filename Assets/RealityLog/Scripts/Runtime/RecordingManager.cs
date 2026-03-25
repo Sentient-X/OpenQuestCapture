@@ -55,6 +55,12 @@ namespace RealityLog
         private Coroutine? stopCoroutine;
         private const long MinExpectedVideoBytes = 1024;
 
+        // Grace period: don't stop recording on a brief OS pause (proximity sensor misfire,
+        // system overlay, Guardian boundary glitch). Only stop if the pause lasts longer than
+        // this threshold. If the app is killed while paused, OnDestroy handles the stop.
+        private DateTime? recordingPauseStartTime;
+        private const double PauseGraceSeconds = 8.0;
+
         private static readonly string[] MotionFileNames = new[]
         {
             "imu.csv",
@@ -353,6 +359,8 @@ namespace RealityLog
             // MonoBehaviour — do a synchronous stop and validate immediately.
             // MediaRecorder.stop() is already synchronous, and the bg poll is
             // just a verification safety net, so skipping it on destroy is fine.
+            recordingPauseStartTime = null; // Clear any pending grace period on destroy.
+
             if (isRecording)
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
@@ -397,12 +405,42 @@ namespace RealityLog
 
         private void OnApplicationPause(bool pauseStatus)
         {
-            if (!pauseStatus)
+            if (pauseStatus)
             {
-                return;
+                // App is pausing. Don't stop immediately — brief pauses (proximity sensor
+                // misfire, system overlay, Guardian glitch) should not kill the recording.
+                // Record the real-world timestamp and decide on resume.
+                if (isRecording)
+                {
+                    recordingPauseStartTime = DateTime.UtcNow;
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App paused during recording — grace period is {PauseGraceSeconds}s.");
+                }
             }
+            else
+            {
+                // App is resuming. Decide whether the pause was long enough to warrant stopping.
+                if (recordingPauseStartTime.HasValue)
+                {
+                    var elapsed = (DateTime.UtcNow - recordingPauseStartTime.Value).TotalSeconds;
+                    recordingPauseStartTime = null;
 
-            StopRecordingForInterruption("pause");
+                    if (!isRecording)
+                    {
+                        // Recording was stopped by another path (e.g., user pressed stop via cloud relay).
+                        return;
+                    }
+
+                    if (elapsed > PauseGraceSeconds)
+                    {
+                        Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App was paused for {elapsed:F1}s (> {PauseGraceSeconds}s grace) — stopping recording.");
+                        StopRecordingForInterruption("extended_pause");
+                    }
+                    else
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: App resumed after {elapsed:F1}s (within grace period) — recording continues.");
+                    }
+                }
+            }
         }
 
         private void OnApplicationFocus(bool hasFocus)

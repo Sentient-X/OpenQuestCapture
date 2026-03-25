@@ -667,9 +667,17 @@ namespace RealityLog.Network
 
                 // Disable proximity-triggered sleep — THE key fix
                 using var p1 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/setprop", "debug.oculus.proximityDisabled", "1" });
-                p1.Call<int>("waitFor");
-                log?.Add("proximity_sensor_disabled");
-                Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Proximity sensor disabled");
+                int p1Exit = p1.Call<int>("waitFor");
+                if (p1Exit == 0)
+                {
+                    log?.Add("proximity_sensor_disabled");
+                    Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Proximity sensor disabled");
+                }
+                else
+                {
+                    log?.Add("proximity_sensor_disable_failed");
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: setprop proximityDisabled returned exit code {p1Exit} — proximity sensor may still be active. Recording may stop if headset is jostled.");
+                }
 
                 // Set screen timeout to max
                 using var p2 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/settings", "put", "system", "screen_off_timeout", "2147483647" });
