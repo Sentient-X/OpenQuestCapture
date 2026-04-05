@@ -7,6 +7,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using RealityLog.Camera;
 using RealityLog.Common;
+using RealityLog.Core;
 using RealityLog.Depth;
 using RealityLog.OVR;
 
@@ -54,6 +55,12 @@ namespace RealityLog
         private Coroutine? stopCoroutine;
         private const long MinExpectedVideoBytes = 1024;
 
+        // Grace period: don't stop recording on a brief OS pause (proximity sensor misfire,
+        // system overlay, Guardian boundary glitch). Only stop if the pause lasts longer than
+        // this threshold. If the app is killed while paused, OnDestroy handles the stop.
+        private DateTime? recordingPauseStartTime;
+        private const double PauseGraceSeconds = 8.0;
+
         private static readonly string[] MotionFileNames = new[]
         {
             "imu.csv",
@@ -61,6 +68,10 @@ namespace RealityLog
             "left_controller_poses.csv",
             "right_controller_poses.csv",
         };
+
+        // Cached reference to InfoCanvas animator for hiding standby label during recording
+        private Animator? infoCanvasAnimator;
+        private static readonly int IsRunningParam = Animator.StringToHash("IsRunning");
 
         public bool IsRecording => isRecording;
         public string? CurrentSessionDirectory => currentSessionDirectory;
@@ -86,6 +97,14 @@ namespace RealityLog
             if (depthMapExporter != null)
             {
                 depthMapExporter.IsExportEnabled = recordDepthMaps;
+            }
+
+            // Find InfoCanvas animator so we can hide the standby label when recording
+            // starts from any source (cloud relay, HTTP, toggle, calibration)
+            var infoCanvas = GameObject.Find("InfoCanvas");
+            if (infoCanvas != null)
+            {
+                infoCanvasAnimator = infoCanvas.GetComponent<Animator>();
             }
         }
 
@@ -202,10 +221,14 @@ namespace RealityLog
             isRecording = true;
             recordingStartTime = Time.time;
 
+            // Hide the standby label (green instruction box) regardless of how recording was started
+            infoCanvasAnimator?.SetBool(IsRunningParam, true);
+
             WriteVideoStartTime();
             DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
 
             onRecordingStarted?.Invoke();
+            ForegroundServiceManager.UpdateNotification("Recording in progress");
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
         }
@@ -259,6 +282,9 @@ namespace RealityLog
             recordingStartTime = 0f;
             currentSessionDirectory = null;
 
+            // Show the standby label again now that recording has stopped
+            infoCanvasAnimator?.SetBool(IsRunningParam, false);
+
             // Wait for video finalization on a background thread, then fire events
             if (!string.IsNullOrEmpty(savedDirectory))
             {
@@ -293,6 +319,7 @@ namespace RealityLog
 
             onRecordingSaved?.Invoke(savedDirectory);
             ValidateSavedSession(savedDirectory);
+            ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped successfully. Files saved to '{savedDirectory}'");
             stopCoroutine = null;
@@ -332,6 +359,8 @@ namespace RealityLog
             // MonoBehaviour — do a synchronous stop and validate immediately.
             // MediaRecorder.stop() is already synchronous, and the bg poll is
             // just a verification safety net, so skipping it on destroy is fine.
+            recordingPauseStartTime = null; // Clear any pending grace period on destroy.
+
             if (isRecording)
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
@@ -354,12 +383,14 @@ namespace RealityLog
                 isRecording = false;
                 recordingStartTime = 0f;
                 currentSessionDirectory = null;
+                infoCanvasAnimator?.SetBool(IsRunningParam, false);
 
                 if (!string.IsNullOrEmpty(savedDirectory))
                 {
                     onRecordingSaved?.Invoke(savedDirectory);
                     ValidateSavedSession(savedDirectory);
                 }
+                ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
             }
             else if (stopCoroutine != null)
             {
@@ -374,12 +405,42 @@ namespace RealityLog
 
         private void OnApplicationPause(bool pauseStatus)
         {
-            if (!pauseStatus)
+            if (pauseStatus)
             {
-                return;
+                // App is pausing. Don't stop immediately — brief pauses (proximity sensor
+                // misfire, system overlay, Guardian glitch) should not kill the recording.
+                // Record the real-world timestamp and decide on resume.
+                if (isRecording)
+                {
+                    recordingPauseStartTime = DateTime.UtcNow;
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App paused during recording — grace period is {PauseGraceSeconds}s.");
+                }
             }
+            else
+            {
+                // App is resuming. Decide whether the pause was long enough to warrant stopping.
+                if (recordingPauseStartTime.HasValue)
+                {
+                    var elapsed = (DateTime.UtcNow - recordingPauseStartTime.Value).TotalSeconds;
+                    recordingPauseStartTime = null;
 
-            StopRecordingForInterruption("pause");
+                    if (!isRecording)
+                    {
+                        // Recording was stopped by another path (e.g., user pressed stop via cloud relay).
+                        return;
+                    }
+
+                    if (elapsed > PauseGraceSeconds)
+                    {
+                        Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App was paused for {elapsed:F1}s (> {PauseGraceSeconds}s grace) — stopping recording.");
+                        StopRecordingForInterruption("extended_pause");
+                    }
+                    else
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: App resumed after {elapsed:F1}s (within grace period) — recording continues.");
+                    }
+                }
+            }
         }
 
         private void OnApplicationFocus(bool hasFocus)

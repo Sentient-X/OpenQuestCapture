@@ -25,6 +25,10 @@ namespace RealityLog.Camera
         [SerializeField] private int iFrameIntervalSeconds = 1;
         [SerializeField] private int maxResolutionHeight = 720;
         [SerializeField] private bool useHevc = true;
+        [Header("Audio")]
+        [SerializeField] private bool enableAudio = true;
+        [SerializeField] private int audioBitrate = 128000;
+        [SerializeField] private int audioSamplingRate = 44100;
         [SerializeField] private CameraSessionManager? cameraSessionManager = default!;
         [SerializeField] private float recorderStartDelayAfterReopenSeconds = 0.25f;
         [SerializeField] private float maxWaitForCameraOpenSeconds = 1.5f;
@@ -65,12 +69,12 @@ namespace RealityLog.Camera
                     targetFrameRate,
                     targetBitrateMbps,
                     iFrameIntervalSeconds,
-                    maxResolutionHeight,
-                    useHevc ? 1 : 0
+                    enableAudio,
+                    audioBitrate,
+                    audioSamplingRate
                 );
 
-                var codec = useHevc ? "HEVC" : "H264";
-                Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider initialized ({size.width}x{size.height}, max {maxResolutionHeight}p, {targetFrameRate}fps, {targetBitrateMbps}Mbps, {codec}).");
+                Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider initialized ({size.width}x{size.height}, {targetFrameRate}fps, {targetBitrateMbps}Mbps, audio={enableAudio}).");
             }
             catch (Exception ex)
             {
@@ -149,6 +153,11 @@ namespace RealityLog.Camera
                 return;
             }
 
+            // Capture the current session path before resetting, so metadata writes
+            // and finalization poll use the correct file.
+            var videoPath = BuildVideoOutputPath();
+            var sessionDirName = dataDirectoryName;
+
             bool stopSucceeded = false;
             try
             {
@@ -164,11 +173,32 @@ namespace RealityLog.Camera
                 isRecordingSessionActive = false;
             }
 
-            WriteVideoMetadata();
+            WriteVideoMetadata(sessionDirName);
+
+            // CRITICAL: Reset dataDirectoryName immediately after stop so that any
+            // future camera reinit (app resume, session reopen) cannot create a new
+            // native MediaRecorder pointing at this completed session's video file.
+            // The native constructor truncates the output file, which would overwrite
+            // a valid recording with 0 bytes.
+            // With dataDirectoryName empty, GetJavaInstance() -> BuildVideoOutputPath()
+            // resolves to the root files directory, which is safe to truncate.
+            dataDirectoryName = string.Empty;
+
+            // Also redirect the live native instance away from the saved session path.
+            // This protects against the native layer touching the file during camera
+            // session close/reopen before the instance is fully recreated.
+            try
+            {
+                var safePath = BuildVideoOutputPath(); // Now resolves to root (empty dataDirectoryName)
+                currentInstance.Call(UPDATE_OUTPUT_FILE_METHOD_NAME, safePath);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: Failed to redirect output after stop: {ex.Message}");
+            }
 
             if (stopSucceeded)
             {
-                var videoPath = BuildVideoOutputPath();
                 IsFinalizingVideo = true;
                 Task.Run(() => PollVideoFinalization(videoPath));
             }
@@ -278,12 +308,12 @@ namespace RealityLog.Camera
             return Path.Join(dataDirPath, outputVideoFileName);
         }
 
-        private void WriteVideoMetadata()
+        private void WriteVideoMetadata(string sessionDirName)
         {
             try
             {
                 var stopUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var dataDirPath = Path.Join(Application.persistentDataPath, dataDirectoryName);
+                var dataDirPath = Path.Join(Application.persistentDataPath, sessionDirName);
                 Directory.CreateDirectory(dataDirPath);
                 var metadataPath = Path.Join(dataDirPath, VIDEO_METADATA_FILE_NAME);
 
@@ -291,7 +321,10 @@ namespace RealityLog.Camera
                     $"  \"recording_start_unix_ms\": {VideoStartUnixTimeMs},\n" +
                     $"  \"recording_stop_unix_ms\": {stopUnixMs},\n" +
                     $"  \"configured_fps\": {targetFrameRate},\n" +
-                    $"  \"video_file\": \"{outputVideoFileName}\"\n" +
+                    $"  \"video_file\": \"{outputVideoFileName}\",\n" +
+                    $"  \"audio_enabled\": {(enableAudio ? "true" : "false")},\n" +
+                    $"  \"audio_bitrate\": {audioBitrate},\n" +
+                    $"  \"audio_sampling_rate\": {audioSamplingRate}\n" +
                     $"}}";
                 File.WriteAllText(metadataPath, json);
                 Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider wrote {metadataPath}");
@@ -352,6 +385,10 @@ namespace RealityLog.Camera
                     {
                         isRecordingSessionActive = false;
                     }
+
+                    // Reset so the next GetJavaInstance() (called immediately after
+                    // Close() during camera reinit) won't point at the saved session.
+                    dataDirectoryName = string.Empty;
                 }
                 currentInstance.Call(CLOSE_METHOD_NAME);
             }
