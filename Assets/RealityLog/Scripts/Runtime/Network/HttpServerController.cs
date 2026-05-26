@@ -745,7 +745,7 @@ namespace RealityLog.Network
 
         private HttpResponse HandleTimesyncPing(HttpRequest request)
         {
-            long recvMonoNs = AndroidSystemClockElapsedRealtimeNanos();
+            long recvMonoNs = MonotonicNanos();
 
             long pingId = 0;
             long hostSendUtcNs = 0;
@@ -765,7 +765,7 @@ namespace RealityLog.Network
             }
 
             long midUtcNs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
-            long sendMonoNs = AndroidSystemClockElapsedRealtimeNanos();
+            long sendMonoNs = MonotonicNanos();
 
             var json = "{\n" +
                 $"  \"ping_id\": {pingId},\n" +
@@ -784,31 +784,28 @@ namespace RealityLog.Network
             public long host_send_utc_ns;
         }
 
-        // Boot-relative nanosecond counter — unaffected by NTP slewing, suspends, or wall-clock
-        // adjustments. Unity's SystemInfo/Time.* APIs don't expose it, so we go through JNI.
-        // The HTTP handler thread is a threadpool worker that the JVM hasn't seen, so we must
-        // AttachCurrentThread before any AndroidJavaClass call — otherwise CallStatic returns
-        // default(long)=0 silently with no exception.
-        private static long AndroidSystemClockElapsedRealtimeNanos()
+        // Monotonic nanosecond counter, safe to call from the HTTP worker thread.
+        //
+        // Earlier attempts used `android.os.SystemClock.elapsedRealtimeNanos` via Unity's
+        // `AndroidJavaClass` wrapper. Even with `AndroidJNI.AttachCurrentThread()`, the wrapper
+        // silently returned 0 on threadpool threads on Quest 3 (Horizon OS 79). The wrapper
+        // calls into UnityEngine internals that aren't safe off-main-thread.
+        //
+        // The reliable path is a `Stopwatch` started once on the main thread in `Awake`. It is
+        // backed by CLOCK_MONOTONIC on Linux/Android and is thread-safe to read. For Cristian's
+        // algorithm we only need a monotonic counter with consistent units; the epoch is
+        // irrelevant.
+        private static readonly System.Diagnostics.Stopwatch s_monoStopwatch
+            = System.Diagnostics.Stopwatch.StartNew();
+        private static readonly double s_nsPerTick
+            = System.Diagnostics.Stopwatch.Frequency > 0
+                ? 1_000_000_000.0 / System.Diagnostics.Stopwatch.Frequency
+                : 0.0;
+
+        private static long MonotonicNanos()
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            try
-            {
-                AndroidJNI.AttachCurrentThread();
-                using var sysClock = new AndroidJavaClass("android.os.SystemClock");
-                long ns = sysClock.CallStatic<long>("elapsedRealtimeNanos");
-                if (ns > 0) return ns;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] HttpServerController: " +
-                    $"elapsedRealtimeNanos failed: {ex.Message}");
-            }
-#endif
-            long ticks = System.Diagnostics.Stopwatch.GetTimestamp();
-            long freq = System.Diagnostics.Stopwatch.Frequency;
-            if (freq == 0) return 0;
-            return (long)((double)ticks * 1_000_000_000.0 / freq);
+            if (s_nsPerTick <= 0.0) return 0;
+            return (long)(s_monoStopwatch.ElapsedTicks * s_nsPerTick);
         }
 
         // ── Helpers ──
