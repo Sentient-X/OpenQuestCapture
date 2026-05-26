@@ -176,6 +176,7 @@ namespace RealityLog.Network
             server.Post("/api/mark-episode", HandleMarkEpisode);
             server.Post("/api/keep-awake", HandleKeepAwake);
             server.Get("/api/diagnostics", HandleDiagnostics);
+            server.Post("/api/timesync/ping", HandleTimesyncPing);
         }
 
         // ── GET /api/status ──
@@ -734,6 +735,73 @@ namespace RealityLog.Network
 
             Debug.Log($"[{Constants.LOG_TAG}] Diagnostics requested — IPs: {string.Join(", ", interfaces)}");
             return HttpResponse.Ok(json);
+        }
+
+        // ── POST /api/timesync/ping ──
+        // Cristian's algorithm endpoint. Pi 5 orchestrator sends host monotonic at request
+        // time; Quest replies with its boot-relative monotonic at request entry/exit plus
+        // wall-clock at midpoint. Handled on the HTTP thread (no main-thread dispatch) so the
+        // sample is not biased by Unity's frame cadence.
+
+        private HttpResponse HandleTimesyncPing(HttpRequest request)
+        {
+            long recvMonoNs = AndroidSystemClockElapsedRealtimeNanos();
+
+            long pingId = 0;
+            long hostSendUtcNs = 0;
+            if (!string.IsNullOrEmpty(request.Body))
+            {
+                try
+                {
+                    var payload = JsonUtility.FromJson<TimesyncPingPayload>(request.Body);
+                    pingId = payload.ping_id;
+                    hostSendUtcNs = payload.host_send_utc_ns;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] HttpServerController: " +
+                        $"TimesyncPing: failed to parse body: {ex.Message}");
+                }
+            }
+
+            long midUtcNs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
+            long sendMonoNs = AndroidSystemClockElapsedRealtimeNanos();
+
+            var json = "{\n" +
+                $"  \"ping_id\": {pingId},\n" +
+                $"  \"quest_recv_mono_ns\": {recvMonoNs},\n" +
+                $"  \"quest_send_mono_ns\": {sendMonoNs},\n" +
+                $"  \"quest_utc_ns\": {midUtcNs},\n" +
+                $"  \"host_send_utc_ns_echo\": {hostSendUtcNs}\n" +
+                "}";
+            return HttpResponse.Ok(json);
+        }
+
+        [Serializable]
+        private class TimesyncPingPayload
+        {
+            public long ping_id;
+            public long host_send_utc_ns;
+        }
+
+        // Boot-relative nanosecond counter — unaffected by NTP slewing, suspends, or wall-clock
+        // adjustments. Unity's SystemInfo/Time.* APIs don't expose it, so we go through JNI.
+        private static long AndroidSystemClockElapsedRealtimeNanos()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var sysClock = new AndroidJavaClass("android.os.SystemClock");
+                return sysClock.CallStatic<long>("elapsedRealtimeNanos");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] HttpServerController: " +
+                    $"elapsedRealtimeNanos failed: {ex.Message}");
+            }
+#endif
+            return (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
+                (1_000_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
         }
 
         // ── Helpers ──
