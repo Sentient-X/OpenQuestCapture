@@ -786,13 +786,18 @@ namespace RealityLog.Network
 
         // Boot-relative nanosecond counter — unaffected by NTP slewing, suspends, or wall-clock
         // adjustments. Unity's SystemInfo/Time.* APIs don't expose it, so we go through JNI.
+        // The HTTP handler thread is a threadpool worker that the JVM hasn't seen, so we must
+        // AttachCurrentThread before any AndroidJavaClass call — otherwise CallStatic returns
+        // default(long)=0 silently with no exception.
         private static long AndroidSystemClockElapsedRealtimeNanos()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
+                AndroidJNI.AttachCurrentThread();
                 using var sysClock = new AndroidJavaClass("android.os.SystemClock");
-                return sysClock.CallStatic<long>("elapsedRealtimeNanos");
+                long ns = sysClock.CallStatic<long>("elapsedRealtimeNanos");
+                if (ns > 0) return ns;
             }
             catch (Exception ex)
             {
@@ -800,8 +805,10 @@ namespace RealityLog.Network
                     $"elapsedRealtimeNanos failed: {ex.Message}");
             }
 #endif
-            return (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
-                (1_000_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
+            long ticks = System.Diagnostics.Stopwatch.GetTimestamp();
+            long freq = System.Diagnostics.Stopwatch.Frequency;
+            if (freq == 0) return 0;
+            return (long)((double)ticks * 1_000_000_000.0 / freq);
         }
 
         // ── Helpers ──
