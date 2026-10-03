@@ -211,6 +211,7 @@ namespace RealityLog.Network
                 $"    \"durationMs\": {durationMs},\n" +
                 $"    \"fileSizeBytes\": {fileSizeBytes}\n" +
                 $"  }},\n" +
+                $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"uptimeMs\": {uptimeMs}\n" +
                 "}";
@@ -743,6 +744,7 @@ namespace RealityLog.Network
                 $"  \"uptimeMs\": {uptimeMs},\n" +
                 $"  \"batteryPercent\": {cachedBattery},\n" +
                 $"  \"isRecording\": {(cachedIsRecording ? "true" : "false")},\n" +
+                $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"timestamp\": \"{DateTimeOffset.UtcNow:O}\"\n" +
                 "}";

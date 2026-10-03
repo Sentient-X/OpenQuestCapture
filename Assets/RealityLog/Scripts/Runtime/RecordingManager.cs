@@ -142,6 +142,15 @@ namespace RealityLog
                 }
             }
 
+            // Without live head poses the HMD, controller, IMU and body CSVs come out
+            // header-only while both cameras record, and the session is unusable.
+            if (HeadTrackingMonitor.StartRefusal is string trackingRefusal)
+            {
+                var message = $"RecordingManager: refusing to start — {trackingRefusal}";
+                Debug.LogError($"[{Constants.LOG_TAG}] {message}");
+                throw new InvalidOperationException(message);
+            }
+
             // Generate session directory name if needed
             if (generateTimestampedDirectories)
             {
@@ -244,6 +253,7 @@ namespace RealityLog
             isRecording = true;
             recordingStartTime = Time.time;
             StartTrackingOriginRecord();
+            HeadTrackingMonitor.BeginRecording();
 
             // Hide the standby label (green instruction box) regardless of how recording was started
             infoCanvasAnimator?.SetBool(IsRunningParam, true);
@@ -271,6 +281,7 @@ namespace RealityLog
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Stopping recording session");
+            HeadTrackingMonitor.EndRecording();
 
             // Stop in reverse order
             // Step 1: Stop capture loop first
