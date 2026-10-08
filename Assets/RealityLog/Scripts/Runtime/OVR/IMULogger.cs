@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using System.Globalization;
 using System.IO;
 using UnityEngine;
 using RealityLog.Common;
@@ -33,7 +34,8 @@ namespace RealityLog.OVR
 
         private CsvWriter? writer = null;
         private System.Threading.Thread? samplingThread;
-        private bool isSampling = false;
+        // Read by the sampling thread, written by the main thread.
+        private volatile bool isSampling = false;
 
         private double baseOvrTimeSec;
         private long baseUnixTimeMs;
@@ -61,6 +63,25 @@ namespace RealityLog.OVR
 
         private double latestTimestamp;
 
+        // Stream stats for stream_manifest.json; captured at StopLogging so they stay readable after it.
+        // The timestamps are written by the sampling thread and read after it has been joined.
+        private long lastRowsWritten;
+        private double firstTimestamp;
+        private double lastTimestamp;
+
+        public string FileName => fileName;
+
+        /// <summary>Rows written by the current writer, or by the last one after StopLogging.</summary>
+        public long RowsWritten => writer?.RowsWritten ?? lastRowsWritten;
+
+        /// <summary>JSON object with the first/last logged OVR timestamps (seconds), or "{}" if no rows.</summary>
+        public string StatsJson()
+        {
+            if (firstTimestamp <= 0) return "{}";
+            return "{\"first_ovr_timestamp\":" + firstTimestamp.ToString("R", CultureInfo.InvariantCulture)
+                + ",\"last_ovr_timestamp\":" + lastTimestamp.ToString("R", CultureInfo.InvariantCulture) + "}";
+        }
+
         public string DirectoryName
         {
             get => directoryName;
@@ -79,7 +100,10 @@ namespace RealityLog.OVR
                 prevVelocity = default;
                 prevAngularVelocity = default;
                 prevTimestamp = 0;
-                
+                lastRowsWritten = 0;
+                firstTimestamp = 0;
+                lastTimestamp = 0;
+
                 Debug.Log($"[{Constants.LOG_TAG}] {fileName} - Starting IMU logging thread. Reset base times: OVR={baseOvrTimeSec:F3}s, Unix={baseUnixTimeMs}ms");
                 
                 var filePath = Path.Combine(Application.persistentDataPath, DirectoryName, fileName);
@@ -118,6 +142,10 @@ namespace RealityLog.OVR
                 Debug.LogError($"[{Constants.LOG_TAG}] Failed to dispose IMU CsvWriter: {ex.Message}");
             }
 
+            if (writer != null)
+            {
+                lastRowsWritten = writer.RowsWritten;
+            }
             writer = null;
         }
 
@@ -138,7 +166,10 @@ namespace RealityLog.OVR
             
             while (isSampling)
             {
-                if (writer == null)
+                // Local copy: StopLogging may null the field (or dispose the writer) while
+                // this thread is between the check and the enqueue, e.g. after a Join timeout.
+                var w = writer;
+                if (w == null)
                 {
                     System.Threading.Thread.Sleep(100);
                     continue;
@@ -151,6 +182,8 @@ namespace RealityLog.OVR
                 if (timestamp > latestTimestamp)
                 {
                     latestTimestamp = timestamp;
+                    if (firstTimestamp <= 0) firstTimestamp = timestamp;
+                    lastTimestamp = timestamp;
 
                     var acc = poseState.Acceleration;
                     var gyro = poseState.AngularVelocity;
@@ -172,13 +205,21 @@ namespace RealityLog.OVR
                     prevAngularVelocity = gyro;
                     prevTimestamp = timestamp;
 
-                    writer.EnqueueRow(
-                        ConvertOvrSecToUnixTimeMs(timestamp), timestamp, MonotonicClock.Nanos(),
-                        acc.x, acc.y, acc.z,
-                        gyro.x, gyro.y, gyro.z,
-                        vel.x, vel.y, vel.z,
-                        angAcc.x, angAcc.y, angAcc.z
-                    );
+                    try
+                    {
+                        w.EnqueueRow(
+                            ConvertOvrSecToUnixTimeMs(timestamp), timestamp, MonotonicClock.Nanos(),
+                            acc.x, acc.y, acc.z,
+                            gyro.x, gyro.y, gyro.z,
+                            vel.x, vel.y, vel.z,
+                            angAcc.x, angAcc.y, angAcc.z
+                        );
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException || ex is ObjectDisposedException)
+                    {
+                        // The writer was completed by StopLogging; this session is over.
+                        break;
+                    }
                 }
 
                 System.Threading.Thread.Sleep(sleepTimeMs);

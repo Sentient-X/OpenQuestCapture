@@ -15,6 +15,18 @@ using RealityLog.OVR;
 namespace RealityLog
 {
     /// <summary>
+    /// Recording lifecycle as reported by <c>/api/status</c> (<c>recording.state</c>).
+    /// <see cref="Stopping"/> covers the whole of <see cref="RecordingManager.StopRecording"/>,
+    /// during which <see cref="RecordingManager.IsRecording"/> is still true.
+    /// </summary>
+    public enum RecordingState
+    {
+        Idle,
+        Recording,
+        Stopping,
+    }
+
+    /// <summary>
     /// Central coordinator for all recording subsystems.
     /// Handles proper sequencing and lifecycle management of depth, camera, and pose recording.
     /// </summary>
@@ -80,6 +92,27 @@ namespace RealityLog
 
         public bool IsRecording => isRecording;
         public string? CurrentSessionDirectory => currentSessionDirectory;
+
+        // RecordingState as an int so the HTTP thread can read it and flip
+        // Recording -> Stopping the moment it accepts a stop request.
+        private int state = (int)RecordingState.Idle;
+        private long lastStopDurationMs = -1;
+
+        /// <summary>Current lifecycle state. Safe to read from any thread.</summary>
+        public RecordingState State => (RecordingState)System.Threading.Volatile.Read(ref state);
+
+        /// <summary>Wall time of the last completed <see cref="StopRecording"/>; -1 before the first.</summary>
+        public long LastStopDurationMs => System.Threading.Interlocked.Read(ref lastStopDurationMs);
+
+        /// <summary>
+        /// Marks a recording as stopping before the main thread gets to it, so status shows
+        /// the stop at once. Safe to call from any thread; does nothing unless recording.
+        /// </summary>
+        public void MarkStopRequested()
+        {
+            System.Threading.Interlocked.CompareExchange(
+                ref state, (int)RecordingState.Stopping, (int)RecordingState.Recording);
+        }
         
         /// <summary>
         /// Gets the elapsed recording time in seconds.
@@ -140,6 +173,17 @@ namespace RealityLog
                     Debug.LogError($"[{Constants.LOG_TAG}] {message}");
                     throw new InvalidOperationException(message);
                 }
+            }
+
+            // Without live head poses the HMD, controller, IMU and body CSVs come out
+            // header-only while both cameras record, and the session is unusable.
+            // Sample now: the monitor's last Update may predate a long main-thread stall.
+            HeadTrackingMonitor.RefreshNow();
+            if (HeadTrackingMonitor.StartRefusal is string trackingRefusal)
+            {
+                var message = $"RecordingManager: refusing to start — {trackingRefusal}";
+                Debug.LogError($"[{Constants.LOG_TAG}] {message}");
+                throw new InvalidOperationException(message);
             }
 
             // Generate session directory name if needed
@@ -242,8 +286,10 @@ namespace RealityLog
             captureTimer.StartCapture();
 
             isRecording = true;
+            System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
             recordingStartTime = Time.time;
             StartTrackingOriginRecord();
+            HeadTrackingMonitor.BeginRecording();
 
             // Hide the standby label (green instruction box) regardless of how recording was started
             infoCanvasAnimator?.SetBool(IsRunningParam, true);
@@ -271,49 +317,89 @@ namespace RealityLog
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Stopping recording session");
+            System.Threading.Volatile.Write(ref state, (int)RecordingState.Stopping);
 
-            // Stop in reverse order
-            // Step 1: Stop capture loop first
-            captureTimer.StopCapture();
-
-            // Freeze both camera exposure timelines before either encoder performs
-            // synchronous drain/finalization. Otherwise the second eye keeps recording
-            // while the first eye stops and their delivered frame counts diverge.
-            foreach (var provider in cameraProviders)
+            // Every phase below blocks the main thread; time each one so a slow stop
+            // shows which part was slow.
+            var stopTimer = System.Diagnostics.Stopwatch.StartNew();
+            var phases = new List<string>();
+            long phaseStartMs = 0;
+            void EndPhase(string phase)
             {
-                provider.RequestStopRecordingSession();
-            }
-            foreach (var provider in cameraProviders)
-            {
-                provider.StopRecordingSession();
-            }
-
-            // Step 2: Close file writers and cleanup
-            if (recordDepthMaps && depthMapExporter != null)
-            {
-                depthMapExporter.StopExport();
-            }
-            foreach (var logger in poseLoggers)
-            {
-                logger.StopLogging();
-            }
-            foreach (var logger in imuLoggers)
-            {
-                logger.StopLogging();
-            }
-            foreach (var logger in bodyTrackingLoggers)
-            {
-                logger.StopLogging();
+                var nowMs = stopTimer.ElapsedMilliseconds;
+                phases.Add($"{phase}={nowMs - phaseStartMs}");
+                phaseStartMs = nowMs;
             }
 
             // Store directory name before resetting state
             string savedDirectory = currentSessionDirectory ?? string.Empty;
 
-            WriteTrackingOriginRecord(savedDirectory);
+            try
+            {
+                // Stop in reverse order
+                // Step 1: Stop capture loop first
+                captureTimer.StopCapture();
+                EndPhase("capture_timer");
 
+                // Freeze both camera exposure timelines before either encoder performs
+                // synchronous drain/finalization. Otherwise the second eye keeps recording
+                // while the first eye stops and their delivered frame counts diverge.
+                foreach (var provider in cameraProviders)
+                {
+                    provider.RequestStopRecordingSession();
+                    EndPhase($"request_stop:{provider.name}");
+                }
+                foreach (var provider in cameraProviders)
+                {
+                    provider.StopRecordingSession();
+                    EndPhase($"stop_session:{provider.name}");
+                }
+
+                // Step 2: Close file writers and cleanup
+                if (recordDepthMaps && depthMapExporter != null)
+                {
+                    depthMapExporter.StopExport();
+                    EndPhase("depth");
+                }
+                foreach (var logger in poseLoggers)
+                {
+                    logger.StopLogging();
+                    EndPhase($"stop_logging:{logger.name}");
+                }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.StopLogging();
+                    EndPhase($"stop_logging:{logger.name}");
+                }
+                foreach (var logger in bodyTrackingLoggers)
+                {
+                    logger.StopLogging();
+                    EndPhase($"stop_logging:{logger.name}");
+                }
+
+                WriteStreamManifest(savedDirectory);
+                EndPhase("stream_manifest");
+                WriteTrackingOriginRecord(savedDirectory);
+
+                EndPhase("tracking_origin");
+            }
+            catch
+            {
+                // A throw above leaves isRecording true; report "recording", not a stop that
+                // never finishes, so a retried stop is not mistaken for one in progress.
+                System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
+                throw;
+            }
+
+            HeadTrackingMonitor.EndRecording();
             isRecording = false;
             recordingStartTime = 0f;
             currentSessionDirectory = null;
+
+            var stopMs = stopTimer.ElapsedMilliseconds;
+            System.Threading.Interlocked.Exchange(ref lastStopDurationMs, stopMs);
+            System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: StopRecording took {stopMs} ms ({string.Join(", ", phases)})");
 
             // Show the standby label again now that recording has stopped
             infoCanvasAnimator?.SetBool(IsRunningParam, false);
@@ -399,6 +485,7 @@ namespace RealityLog
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
 
                 captureTimer.StopCapture();
+                HeadTrackingMonitor.EndRecording();
 
                 foreach (var provider in cameraProviders)
                     provider.RequestStopRecordingSession();
@@ -415,8 +502,10 @@ namespace RealityLog
                     logger.StopLogging();
 
                 string savedDirectory = currentSessionDirectory ?? string.Empty;
+                WriteStreamManifest(savedDirectory);
                 WriteTrackingOriginRecord(savedDirectory);
                 isRecording = false;
+                System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
                 recordingStartTime = 0f;
                 currentSessionDirectory = null;
                 infoCanvasAnimator?.SetBool(IsRunningParam, false);
@@ -654,6 +743,97 @@ namespace RealityLog
                     runtime_origin = OVRPlugin.GetTrackingOriginType().ToString(),
                 }
             );
+        }
+
+        private const string StreamManifestFileName = "stream_manifest.json";
+
+        /// <summary>
+        /// JSON array of per-stream entries ({"file","rows","stats"}) from the last stop,
+        /// the same array written as "streams" in stream_manifest.json. Null until a stop
+        /// produced one.
+        /// </summary>
+        public string? LastStreamManifestJson { get; private set; }
+
+        /// <summary>
+        /// Writes stream_manifest.json with the row count of every CSV stream. Must run after
+        /// the loggers are stopped so the counts are final. A stream with 0 rows means the
+        /// source never produced data (e.g. a frozen OVR pose stream). Never throws.
+        /// </summary>
+        private void WriteStreamManifest(string sessionDirectoryName)
+        {
+            LastStreamManifestJson = null;
+            try
+            {
+                var streams = new System.Text.StringBuilder("[");
+                var emptyStreams = new List<string>();
+
+                void AppendStream(string file, long rows, string stats)
+                {
+                    if (streams.Length > 1) streams.Append(',');
+                    streams.Append("{\"file\":\"").Append(EscapeJson(file))
+                        .Append("\",\"rows\":").Append(rows.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                        .Append(",\"stats\":").Append(string.IsNullOrEmpty(stats) ? "{}" : stats)
+                        .Append('}');
+                    if (rows == 0) emptyStreams.Add(file);
+                }
+
+                if (poseLoggers != null)
+                {
+                    foreach (var logger in poseLoggers)
+                    {
+                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                    }
+                }
+                if (imuLoggers != null)
+                {
+                    foreach (var logger in imuLoggers)
+                    {
+                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                    }
+                }
+                if (bodyTrackingLoggers != null)
+                {
+                    foreach (var logger in bodyTrackingLoggers)
+                    {
+                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                    }
+                }
+                streams.Append(']');
+
+                var streamsJson = streams.ToString();
+                LastStreamManifestJson = streamsJson;
+
+                if (emptyStreams.Count > 0)
+                {
+                    Debug.LogWarning(
+                        $"[{Constants.LOG_TAG}] RecordingManager: stream(s) wrote 0 rows: {string.Join(", ", emptyStreams)}. " +
+                        "The tracking source produced no new samples during the recording."
+                    );
+                }
+
+                if (string.IsNullOrEmpty(sessionDirectoryName))
+                {
+                    return;
+                }
+
+                var sessionDir = Path.Join(Application.persistentDataPath, sessionDirectoryName);
+                Directory.CreateDirectory(sessionDir);
+                File.WriteAllText(
+                    Path.Join(sessionDir, StreamManifestFileName),
+                    "{\"schema\":1,\"streams\":" + streamsJson + "}"
+                );
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(
+                    $"[{Constants.LOG_TAG}] Failed to write {StreamManifestFileName}: {ex.Message}"
+                );
+            }
+        }
+
+        private static string EscapeJson(string value)
+        {
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
         private void WriteTrackingOriginRecord(string sessionDirectoryName)

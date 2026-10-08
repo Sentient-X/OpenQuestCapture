@@ -93,7 +93,16 @@ namespace RealityLog
 
             Debug.Log($"[{Constants.LOG_TAG}] CalibrationSession: Starting calibration ({TotalDuration}s total)");
 
-            recordingManager.StartRecording();
+            // StartRecording throws when it refuses (camera not ready, head tracking frozen).
+            // Fall through to the not-recording branch so IsRunning is cleared.
+            try
+            {
+                recordingManager.StartRecording();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] CalibrationSession: {ex.Message}");
+            }
 
             if (!recordingManager.IsRecording)
             {

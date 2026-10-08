@@ -107,8 +107,10 @@ namespace RealityLog.Network
             cachedDuration = recordingManager != null ? recordingManager.RecordingDuration : 0f;
             cachedBattery = GetBatteryPercent();
 
-            // Refresh storage every 30 seconds (expensive JNI call)
-            if (Time.realtimeSinceStartup - lastStorageRefresh > 30f)
+            // Refresh storage every 30 seconds (expensive JNI call), and on the first frame:
+            // until then status reported storage as unknown (total 0), which made the pod's
+            // storage check fail for the first 30 s after every app (re)launch.
+            if (lastStorageRefresh <= 0f || Time.realtimeSinceStartup - lastStorageRefresh > 30f)
             {
                 cachedStorageFree = GetStorageFreeBytes();
                 cachedStorageTotal = GetStorageTotalBytes();
@@ -159,7 +161,8 @@ namespace RealityLog.Network
 
         private void OnApplicationPause(bool paused)
         {
-            // Keep server alive through pause/resume — it's low-overhead when idle
+            // Keep server alive through pause/resume — it's low-overhead when idle.
+            // HeadTrackingMonitor tracks the pause itself (app.paused in /api/status).
         }
 
         // ── Route registration ──
@@ -190,6 +193,22 @@ namespace RealityLog.Network
             int durationMs = (int)(cachedDuration * 1000);
             long uptimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - appStartUnixMs;
 
+            // `state` is read live (it turns "stopping" the moment a stop is accepted), while
+            // `active` comes from the per-frame cache and keeps its meaning: true until
+            // StopRecording() has closed the loggers. Never report idle while active is true.
+            var manager = recordingManager;
+            var liveState = manager is null ? RecordingState.Idle : manager.State;
+            string recordingState = liveState switch
+            {
+                RecordingState.Recording => "recording",
+                RecordingState.Stopping => "stopping",
+                _ => "idle",
+            };
+            if (isRecording && liveState == RecordingState.Idle)
+            {
+                recordingState = "stopping";
+            }
+
             long fileSizeBytes = 0;
             if (isRecording && currentFile != null)
             {
@@ -207,10 +226,14 @@ namespace RealityLog.Network
                 $"  \"storageTotalBytes\": {cachedStorageTotal},\n" +
                 $"  \"recording\": {{\n" +
                 $"    \"active\": {(isRecording ? "true" : "false")},\n" +
+                $"    \"state\": \"{recordingState}\",\n" +
                 $"    \"currentFile\": {(currentFile != null ? $"\"{EscapeJson(currentFile)}\"" : "null")},\n" +
                 $"    \"durationMs\": {durationMs},\n" +
                 $"    \"fileSizeBytes\": {fileSizeBytes}\n" +
                 $"  }},\n" +
+                $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
+                $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
+                $"  \"controllers\": {HeadTrackingMonitor.ControllersJson("  ")},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"uptimeMs\": {uptimeMs}\n" +
                 "}";
@@ -222,14 +245,26 @@ namespace RealityLog.Network
 
         private HttpResponse HandleStartRecording(HttpRequest request)
         {
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+
             bool alreadyRecording = false;
             bool success = false;
             bool storageFull = false;
             long freeBytes = 0;
             string? errorMessage = null;
+            // 0 = pending, 1 = the main thread took the start, 2 = this thread gave up on it.
+            int claim = 0;
 
             var signal = server!.EnqueueOnMainThread(() =>
             {
+                // Never start a recording after the caller was told the start failed.
+                if (Interlocked.CompareExchange(ref claim, 1, 0) != 0)
+                {
+                    return;
+                }
                 try
                 {
                     // Storage check on main thread (JNI-safe)
@@ -273,7 +308,18 @@ namespace RealityLog.Network
                     Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: StartRecording error: {ex}");
                 }
             });
-            signal.Wait(5000);
+            if (!signal.Wait(5000))
+            {
+                if (Interlocked.CompareExchange(ref claim, 2, 0) == 0)
+                {
+                    return MainThreadTimeoutResponse("Main thread did not run the start within 5 s; recording was not started");
+                }
+                // The start began just as the wait ran out; give it time to finish.
+                if (!signal.Wait(5000))
+                {
+                    return MainThreadTimeoutResponse("Start is still running on the main thread; check /api/status");
+                }
+            }
 
             if (storageFull)
             {
@@ -308,12 +354,26 @@ namespace RealityLog.Network
 
         private HttpResponse HandleStopRecording(HttpRequest request)
         {
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+
             bool notRecording = false;
             bool success = false;
             string? errorMessage = null;
             string? stoppedFile = null;
             long durationMs = 0;
             string? startedAt = null;
+            long stopDurationMs = -1;
+            string? streamsJson = null;
+
+            // Show the stop in /api/status (recording.state) before the main thread reaches it.
+            var manager = recordingManager;
+            if (manager is not null)
+            {
+                manager.MarkStopRequested();
+            }
 
             var signal = server!.EnqueueOnMainThread(() =>
             {
@@ -336,6 +396,8 @@ namespace RealityLog.Network
                     startedAt = currentRecordingStartedAt;
 
                     recordingManager.StopRecording();
+                    stopDurationMs = recordingManager.LastStopDurationMs;
+                    streamsJson = recordingManager.LastStreamManifestJson;
 
                     // Clear recording state
                     currentRecordingFile = null;
@@ -350,7 +412,22 @@ namespace RealityLog.Network
                     Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: StopRecording error: {ex}");
                 }
             });
-            signal.Wait(5000);
+            // 3.5 s, not 5: the pod's own request timeout is 5 s, so a 202 sent at 5 s
+            // would arrive after it had already given up on the request.
+            if (!signal.Wait(3500))
+            {
+                // The stop is still queued or running on the main thread and will finish
+                // there. It is not a failure: confirm it through /api/status.
+                Debug.LogWarning($"[{Constants.LOG_TAG}] HttpServerController: StopRecording still running after 3.5 s; answering 202");
+                var stoppingJson = "{\n" +
+                    $"  \"status\": \"stopping\",\n" +
+                    $"  \"file\": \"{EscapeJson(currentRecordingFile ?? "")}\",\n" +
+                    $"  \"message\": \"Stop is still running on the main thread; poll /api/status until recording.active is false\"\n" +
+                    "}";
+                var accepted = HttpResponse.Json(202, stoppingJson);
+                accepted.StatusText = "Accepted";
+                return accepted;
+            }
 
             if (notRecording)
             {
@@ -393,7 +470,9 @@ namespace RealityLog.Network
                 $"  \"durationMs\": {durationMs},\n" +
                 $"  \"fileSizeBytes\": {fileSizeBytes},\n" +
                 $"  \"startedAt\": \"{EscapeJson(startedAt ?? "")}\",\n" +
-                $"  \"stoppedAt\": \"{EscapeJson(stoppedAt)}\"\n" +
+                $"  \"stoppedAt\": \"{EscapeJson(stoppedAt)}\",\n" +
+                $"  \"stopDurationMs\": {stopDurationMs},\n" +
+                $"  \"streams\": {streamsJson ?? "null"}\n" +
                 "}";
 
             return HttpResponse.Ok(json);
@@ -479,6 +558,11 @@ namespace RealityLog.Network
         {
             var filename = request.PathParam;
 
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+
             // Check if this recording is currently being recorded
             bool isCurrentRecording = false;
             var signal = server!.EnqueueOnMainThread(() =>
@@ -489,14 +573,19 @@ namespace RealityLog.Network
                     isCurrentRecording = true;
                 }
             });
-            signal.Wait(3000);
+            // Without an answer we cannot rule out deleting the live recording.
+            if (!signal.Wait(3000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not answer within 3 s; nothing was deleted");
+            }
 
             if (isCurrentRecording)
             {
                 return HttpResponse.Conflict("recording_in_progress", "Cannot delete file that is currently being recorded");
             }
 
-            var dirPath = Path.Combine(Application.persistentDataPath, filename);
+            // Application.persistentDataPath is a Unity API; this runs on the HTTP thread.
+            var dirPath = Path.Combine(cachedDataPath, filename);
             if (!Directory.Exists(dirPath))
             {
                 return HttpResponse.NotFound("Recording not found");
@@ -553,6 +642,11 @@ namespace RealityLog.Network
 
             if (episodeNumber <= 0) episodeNumber = 1;
 
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+
             var signal = server!.EnqueueOnMainThread(() =>
             {
                 try
@@ -574,7 +668,10 @@ namespace RealityLog.Network
                     Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: MarkEpisode error: {ex}");
                 }
             });
-            signal.Wait(3000);
+            if (!signal.Wait(3000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not run the mark within 3 s");
+            }
 
             if (!success)
             {
@@ -596,6 +693,11 @@ namespace RealityLog.Network
 
         private HttpResponse HandleKeepAwake(HttpRequest request)
         {
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+
             bool success = false;
             string errorMessage = "";
             var applied = new List<string>();
@@ -613,7 +715,10 @@ namespace RealityLog.Network
                     Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: KeepAwake error: {ex}");
                 }
             });
-            signal.Wait(5000);
+            if (!signal.Wait(5000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not apply keep-awake within 5 s");
+            }
 
             if (!success)
             {
@@ -743,6 +848,8 @@ namespace RealityLog.Network
                 $"  \"uptimeMs\": {uptimeMs},\n" +
                 $"  \"batteryPercent\": {cachedBattery},\n" +
                 $"  \"isRecording\": {(cachedIsRecording ? "true" : "false")},\n" +
+                $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
+                $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"timestamp\": \"{DateTimeOffset.UtcNow:O}\"\n" +
                 "}";
@@ -994,6 +1101,22 @@ namespace RealityLog.Network
         {
             if (string.IsNullOrEmpty(s)) return "";
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+        }
+
+        // While the OS has the app paused the main thread runs nothing, so a request that needs
+        // it is refused at once instead of timing out.
+        private static HttpResponse AppPausedResponse() => ServiceUnavailable("app_paused",
+            "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
+
+        private static HttpResponse MainThreadTimeoutResponse(string message) =>
+            ServiceUnavailable("main_thread_timeout", message);
+
+        private static HttpResponse ServiceUnavailable(string error, string message)
+        {
+            var response = HttpResponse.Json(503,
+                $"{{\"error\":\"{EscapeJson(error)}\",\"message\":\"{EscapeJson(message)}\"}}");
+            response.StatusText = "Service Unavailable";
+            return response;
         }
 
         private class RecordingEntry
