@@ -20,8 +20,11 @@ namespace RealityLog
     /// a reason to refuse a start, and gives <c>/api/status</c> a <c>tracking</c> block,
     /// so a broken stream is refused up front instead of found after transfer.
     ///
-    /// Auto-bootstraps at runtime; no scene wiring.
+    /// Auto-bootstraps at runtime; no scene wiring. Runs before other scripts each frame so
+    /// a start queued by the HTTP server or cloud relay never sees a pose age left over from
+    /// a long main-thread stall.
     /// </summary>
+    [DefaultExecutionOrder(-10000)]
     public class HeadTrackingMonitor : MonoBehaviour
     {
         /// <summary>A head pose older than this refuses a recording start.</summary>
@@ -69,6 +72,25 @@ namespace RealityLog
             public float? DistanceToHeadM;
         }
 
+        // Statics survive Enter Play Mode without a domain reload in the Editor.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics()
+        {
+            Interlocked.Exchange(ref lastAdvanceTicks, NoPose);
+            lastOvrTime = 0;
+            Interlocked.Exchange(ref pausedSinceTicks, NoPose);
+            recording = false;
+            inStall = false;
+            Interlocked.Exchange(ref recordingStalls, 0);
+            Interlocked.Exchange(ref longestStallTicks, 0);
+            lock (controllerLock)
+            {
+                leftController = default;
+                rightController = default;
+                controllerSampleTicks = NoPose;
+            }
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
@@ -103,15 +125,16 @@ namespace RealityLog
 
         private void Update()
         {
+            // Update never runs while the OS has the app paused, so a frame running here means
+            // it is not paused, even if Unity never delivered OnApplicationPause(false).
+            if (Interlocked.Read(ref pausedSinceTicks) != NoPose)
+            {
+                OnApplicationPause(false);
+            }
+
             var poseState = OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head);
             var now = Stopwatch.GetTimestamp();
-            // Any change counts, not only an increase: a runtime that restarts its clock
-            // must not read as frozen forever.
-            if (poseState.Time > 0 && poseState.Time != lastOvrTime)
-            {
-                lastOvrTime = poseState.Time;
-                Interlocked.Exchange(ref lastAdvanceTicks, now);
-            }
+            ObserveHeadPose(poseState, now);
 
             positionTracked = OVRPlugin.GetNodePositionTracked(OVRPlugin.Node.Head);
             orientationTracked = OVRPlugin.GetNodeOrientationTracked(OVRPlugin.Node.Head);
@@ -125,6 +148,27 @@ namespace RealityLog
             {
                 ObserveRecordingStall(now);
             }
+        }
+
+        // Any change counts, not only an increase: a runtime that restarts its clock
+        // must not read as frozen forever.
+        private static void ObserveHeadPose(OVRPlugin.PoseStatef poseState, long now)
+        {
+            if (poseState.Time > 0 && poseState.Time != lastOvrTime)
+            {
+                lastOvrTime = poseState.Time;
+                Interlocked.Exchange(ref lastAdvanceTicks, now);
+            }
+        }
+
+        /// <summary>
+        /// Samples the head pose now. Main thread only. <see cref="RecordingManager"/> calls it
+        /// right before checking <see cref="StartRefusal"/>, so the check reflects the runtime
+        /// at this moment, not the last frame before a stall.
+        /// </summary>
+        public static void RefreshNow()
+        {
+            ObserveHeadPose(OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head), Stopwatch.GetTimestamp());
         }
 
         private void OnApplicationPause(bool paused)

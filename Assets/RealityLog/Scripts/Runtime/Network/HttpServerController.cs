@@ -410,11 +410,13 @@ namespace RealityLog.Network
                     Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: StopRecording error: {ex}");
                 }
             });
-            if (!signal.Wait(5000))
+            // 3.5 s, not 5: the pod's own request timeout is 5 s, so a 202 sent at 5 s
+            // would arrive after it had already given up on the request.
+            if (!signal.Wait(3500))
             {
                 // The stop is still queued or running on the main thread and will finish
                 // there. It is not a failure: confirm it through /api/status.
-                Debug.LogWarning($"[{Constants.LOG_TAG}] HttpServerController: StopRecording still running after 5 s; answering 202");
+                Debug.LogWarning($"[{Constants.LOG_TAG}] HttpServerController: StopRecording still running after 3.5 s; answering 202");
                 var stoppingJson = "{\n" +
                     $"  \"status\": \"stopping\",\n" +
                     $"  \"file\": \"{EscapeJson(currentRecordingFile ?? "")}\",\n" +
@@ -580,7 +582,8 @@ namespace RealityLog.Network
                 return HttpResponse.Conflict("recording_in_progress", "Cannot delete file that is currently being recorded");
             }
 
-            var dirPath = Path.Combine(Application.persistentDataPath, filename);
+            // Application.persistentDataPath is a Unity API; this runs on the HTTP thread.
+            var dirPath = Path.Combine(cachedDataPath, filename);
             if (!Directory.Exists(dirPath))
             {
                 return HttpResponse.NotFound("Recording not found");

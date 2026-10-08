@@ -34,7 +34,8 @@ namespace RealityLog.OVR
 
         private CsvWriter? writer = null;
         private System.Threading.Thread? samplingThread;
-        private bool isSampling = false;
+        // Read by the sampling thread, written by the main thread.
+        private volatile bool isSampling = false;
 
         private double baseOvrTimeSec;
         private long baseUnixTimeMs;
@@ -165,7 +166,10 @@ namespace RealityLog.OVR
             
             while (isSampling)
             {
-                if (writer == null)
+                // Local copy: StopLogging may null the field (or dispose the writer) while
+                // this thread is between the check and the enqueue, e.g. after a Join timeout.
+                var w = writer;
+                if (w == null)
                 {
                     System.Threading.Thread.Sleep(100);
                     continue;
@@ -201,13 +205,21 @@ namespace RealityLog.OVR
                     prevAngularVelocity = gyro;
                     prevTimestamp = timestamp;
 
-                    writer.EnqueueRow(
-                        ConvertOvrSecToUnixTimeMs(timestamp), timestamp, MonotonicClock.Nanos(),
-                        acc.x, acc.y, acc.z,
-                        gyro.x, gyro.y, gyro.z,
-                        vel.x, vel.y, vel.z,
-                        angAcc.x, angAcc.y, angAcc.z
-                    );
+                    try
+                    {
+                        w.EnqueueRow(
+                            ConvertOvrSecToUnixTimeMs(timestamp), timestamp, MonotonicClock.Nanos(),
+                            acc.x, acc.y, acc.z,
+                            gyro.x, gyro.y, gyro.z,
+                            vel.x, vel.y, vel.z,
+                            angAcc.x, angAcc.y, angAcc.z
+                        );
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException || ex is ObjectDisposedException)
+                    {
+                        // The writer was completed by StopLogging; this session is over.
+                        break;
+                    }
                 }
 
                 System.Threading.Thread.Sleep(sleepTimeMs);

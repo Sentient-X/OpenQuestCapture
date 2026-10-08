@@ -23,15 +23,17 @@ namespace RealityLog.OVR
     /// <c>Time</c> (app artifact), and a 3-frame gap means the runtime did not produce a
     /// new sample (headset drop). 50 Hz cannot be evenly spaced on a 72/90 Hz display.</para>
     ///
-    /// <para><b>Display-frame-locked sampling</b> (<c>displayFrameLocked</c>, default on):
+    /// <para><b>Display-frame-locked sampling</b> (<c>displayFrameLocked</c>, default OFF until
+    /// the stats below confirm on a 90 Hz pod that the body runtime delivers a new sample on
+    /// (nearly) every display frame; if it runs at 30 or 60 Hz the grid would thin it too far):
     /// the state is read once per rendered frame in <c>Update</c>. Each new sample gets a
     /// display-frame index (index 0 = the session's first sample; each later sample adds
     /// round((Time - previous sample Time) * systemDisplayFrequency), so a nominal
-    /// frequency that is slightly off cannot drift the grid), and only every
-    /// <c>keepEveryNthDisplayFrame</c>-th frame (default 2) is written: 45 Hz at 90 Hz,
-    /// 36 Hz at 72 Hz, gaps exactly N frames; a runtime drop shows as an exact 2N-frame gap.
-    /// If samples keep arriving only on the other phase (gap would exceed 2N frames), the
-    /// phase moves to them so the stream can never starve (one 2N+1-frame gap). A sample more than 0.25 frame away from the grid is written anyway (counted in
+    /// frequency that is slightly off cannot drift the grid), and a sample is written only
+    /// if it is at least <c>keepEveryNthDisplayFrame</c> frames (default 2) after the last
+    /// written one: with a sample every frame that is exactly every 2nd frame (45 Hz at
+    /// 90 Hz, 36 Hz at 72 Hz); a 30 Hz runtime still gives 30 Hz, and a runtime drop gives
+    /// a gap of N+1 frames rather than 2N. A sample more than 0.25 frame away from the grid is written anyway (counted in
     /// rows - kept_on_grid) so a wrong grid assumption never loses data. With the lock off,
     /// or when the display frequency is unknown, the old behaviour is used: every new
     /// sample, polled in <c>FixedUpdate</c>. Duplicate timestamps are always filtered.
@@ -171,7 +173,7 @@ namespace RealityLog.OVR
         [SerializeField] private string directoryName = "";
         [SerializeField] private bool startLoggingOnStart = false;
         [Tooltip("Poll once per rendered frame (Update) and keep only every Nth display frame for evenly spaced rows. Off = legacy FixedUpdate polling.")]
-        [SerializeField] private bool displayFrameLocked = true;
+        [SerializeField] private bool displayFrameLocked = false;
         [Tooltip("Keep one sample every N display frames when displayFrameLocked (2 = 45 Hz at 90 Hz, 36 Hz at 72 Hz).")]
         [SerializeField] private int keepEveryNthDisplayFrame = 2;
 
@@ -191,9 +193,7 @@ namespace RealityLog.OVR
         private double gridAnchorTime;
         private long gridAnchorIndex;
         private long lastKeptFrameIndex = -1;
-        private long gridPhase = 0;
         private bool offGridWarned = false;
-        private bool rephaseWarned = false;
         private int lastPollFrame = -1;
 
         // Per-session counters: reset at StartLogging, frozen once the writer is stopped.
@@ -214,8 +214,12 @@ namespace RealityLog.OVR
 
         public string FileName => fileName;
 
-        /// <summary>Rows written by the current/last session (0 if none).</summary>
-        public long RowsWritten => rows;
+        /// <summary>
+        /// Rows the CSV writer actually wrote in the current/last session (0 if none), like
+        /// the other loggers; the stats' <c>rows</c> counts rows handed to the writer.
+        /// </summary>
+        public long RowsWritten => writer?.RowsWritten ?? lastRowsWritten;
+        private long lastRowsWritten;
 
         public void StartLogging()
         {
@@ -262,6 +266,10 @@ namespace RealityLog.OVR
             {
                 Debug.LogError($"[{Constants.LOG_TAG}] BodyTrackingLogger - Failed to dispose writer: {ex.Message}");
             }
+            if (writer != null)
+            {
+                lastRowsWritten = writer.RowsWritten;
+            }
             writer = null;
             // Counters only change while a writer exists, so from here on they are the
             // session snapshot read by StatsJson() and RowsWritten.
@@ -290,6 +298,7 @@ namespace RealityLog.OVR
 
         private void ResetSession()
         {
+            lastRowsWritten = 0;
             polls = 0;
             stalePolls = 0;
             sameFramePolls = 0;
@@ -303,9 +312,7 @@ namespace RealityLog.OVR
             gridAnchorTime = 0;
             gridAnchorIndex = 0;
             lastKeptFrameIndex = -1;
-            gridPhase = 0;
             offGridWarned = false;
-            rephaseWarned = false;
             lastPollFrame = -1;
 
             displayHz = OVRPlugin.systemDisplayFrequency;
@@ -503,24 +510,10 @@ namespace RealityLog.OVR
             if (frameIndex == lastKeptFrameIndex)
                 return false;
 
-            if ((frameIndex - gridPhase) % keepEveryN != 0)
-            {
-                // Off the kept phase. Normally skipped, but if samples only ever arrive on
-                // the other phase (runtime or app running at a fraction of the display rate)
-                // that would drop everything: once the gap since the last kept row exceeds
-                // 2N frames, keep this sample and move the phase to it. A single runtime
-                // drop still shows as an exact 2N-frame gap; a phase move costs one gap
-                // of 2N+1 frames.
-                if (lastKeptFrameIndex >= 0 && frameIndex - lastKeptFrameIndex <= 2L * keepEveryN)
-                    return false;
-
-                gridPhase = frameIndex % keepEveryN;
-                if (!rephaseWarned)
-                {
-                    rephaseWarned = true;
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] BodyTrackingLogger - Body samples kept arriving off the every-{keepEveryN}-frame phase; re-phasing the grid at frame {frameIndex}");
-                }
-            }
+            // Minimum spacing, not a fixed phase: a parity rule would drop every sample of
+            // a runtime that delivers on alternate phases (e.g. every 3rd frame -> 15 Hz).
+            if (lastKeptFrameIndex >= 0 && frameIndex - lastKeptFrameIndex < keepEveryN)
+                return false;
 
             lastKeptFrameIndex = frameIndex;
             onGrid = true;

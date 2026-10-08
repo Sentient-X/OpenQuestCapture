@@ -177,6 +177,8 @@ namespace RealityLog
 
             // Without live head poses the HMD, controller, IMU and body CSVs come out
             // header-only while both cameras record, and the session is unusable.
+            // Sample now: the monitor's last Update may predate a long main-thread stall.
+            HeadTrackingMonitor.RefreshNow();
             if (HeadTrackingMonitor.StartRefusal is string trackingRefusal)
             {
                 var message = $"RecordingManager: refusing to start — {trackingRefusal}";
@@ -330,55 +332,65 @@ namespace RealityLog
                 phaseStartMs = nowMs;
             }
 
-            // Stop in reverse order
-            // Step 1: Stop capture loop first
-            captureTimer.StopCapture();
-            EndPhase("capture_timer");
-
-            // Freeze both camera exposure timelines before either encoder performs
-            // synchronous drain/finalization. Otherwise the second eye keeps recording
-            // while the first eye stops and their delivered frame counts diverge.
-            foreach (var provider in cameraProviders)
-            {
-                provider.RequestStopRecordingSession();
-                EndPhase($"request_stop:{provider.name}");
-            }
-            foreach (var provider in cameraProviders)
-            {
-                provider.StopRecordingSession();
-                EndPhase($"stop_session:{provider.name}");
-            }
-
-            // Step 2: Close file writers and cleanup
-            if (recordDepthMaps && depthMapExporter != null)
-            {
-                depthMapExporter.StopExport();
-                EndPhase("depth");
-            }
-            foreach (var logger in poseLoggers)
-            {
-                logger.StopLogging();
-                EndPhase($"stop_logging:{logger.name}");
-            }
-            foreach (var logger in imuLoggers)
-            {
-                logger.StopLogging();
-                EndPhase($"stop_logging:{logger.name}");
-            }
-            foreach (var logger in bodyTrackingLoggers)
-            {
-                logger.StopLogging();
-                EndPhase($"stop_logging:{logger.name}");
-            }
-
             // Store directory name before resetting state
             string savedDirectory = currentSessionDirectory ?? string.Empty;
 
-            WriteStreamManifest(savedDirectory);
-            EndPhase("stream_manifest");
-            WriteTrackingOriginRecord(savedDirectory);
+            try
+            {
+                // Stop in reverse order
+                // Step 1: Stop capture loop first
+                captureTimer.StopCapture();
+                EndPhase("capture_timer");
 
-            EndPhase("tracking_origin");
+                // Freeze both camera exposure timelines before either encoder performs
+                // synchronous drain/finalization. Otherwise the second eye keeps recording
+                // while the first eye stops and their delivered frame counts diverge.
+                foreach (var provider in cameraProviders)
+                {
+                    provider.RequestStopRecordingSession();
+                    EndPhase($"request_stop:{provider.name}");
+                }
+                foreach (var provider in cameraProviders)
+                {
+                    provider.StopRecordingSession();
+                    EndPhase($"stop_session:{provider.name}");
+                }
+
+                // Step 2: Close file writers and cleanup
+                if (recordDepthMaps && depthMapExporter != null)
+                {
+                    depthMapExporter.StopExport();
+                    EndPhase("depth");
+                }
+                foreach (var logger in poseLoggers)
+                {
+                    logger.StopLogging();
+                    EndPhase($"stop_logging:{logger.name}");
+                }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.StopLogging();
+                    EndPhase($"stop_logging:{logger.name}");
+                }
+                foreach (var logger in bodyTrackingLoggers)
+                {
+                    logger.StopLogging();
+                    EndPhase($"stop_logging:{logger.name}");
+                }
+
+                WriteStreamManifest(savedDirectory);
+                EndPhase("stream_manifest");
+                WriteTrackingOriginRecord(savedDirectory);
+
+                EndPhase("tracking_origin");
+            }
+            catch
+            {
+                // A throw above leaves isRecording true; report "recording", not a stop that
+                // never finishes, so a retried stop is not mistaken for one in progress.
+                System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
+                throw;
+            }
 
             isRecording = false;
             recordingStartTime = 0f;
@@ -473,6 +485,7 @@ namespace RealityLog
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
 
                 captureTimer.StopCapture();
+                HeadTrackingMonitor.EndRecording();
 
                 foreach (var provider in cameraProviders)
                     provider.RequestStopRecordingSession();
