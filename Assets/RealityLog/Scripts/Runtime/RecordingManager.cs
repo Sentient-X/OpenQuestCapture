@@ -375,6 +375,7 @@ namespace RealityLog
             string savedDirectory = currentSessionDirectory ?? string.Empty;
 
             WriteStreamManifest(savedDirectory);
+            EndPhase("stream_manifest");
             WriteTrackingOriginRecord(savedDirectory);
 
             EndPhase("tracking_origin");
@@ -488,8 +489,10 @@ namespace RealityLog
                     logger.StopLogging();
 
                 string savedDirectory = currentSessionDirectory ?? string.Empty;
+                WriteStreamManifest(savedDirectory);
                 WriteTrackingOriginRecord(savedDirectory);
                 isRecording = false;
+                System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
                 recordingStartTime = 0f;
                 currentSessionDirectory = null;
                 infoCanvasAnimator?.SetBool(IsRunningParam, false);
