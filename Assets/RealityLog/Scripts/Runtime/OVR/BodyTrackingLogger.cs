@@ -234,16 +234,9 @@ namespace RealityLog.OVR
 
                 Debug.Log($"[{Constants.LOG_TAG}] {fileName} - Reset base times: OVR={baseOvrTimeSec:F3}s, Unix={baseUnixTimeMs}ms");
 
-                if (!bodyTrackingStarted)
+                if (!EnsureBodyTrackingStarted())
                 {
-                    bodyTrackingStarted = OVRPlugin.StartBodyTracking2(JOINT_SET);
-                    if (!bodyTrackingStarted)
-                    {
-                        Debug.LogError($"[{Constants.LOG_TAG}] BodyTrackingLogger - Failed to start body tracking");
-                        return;
-                    }
-                    OVRPlugin.RequestBodyTrackingFidelity(OVRPlugin.BodyTrackingFidelity2.High);
-                    Debug.Log($"[{Constants.LOG_TAG}] BodyTrackingLogger - Body tracking started (FullBody, High fidelity)");
+                    return;
                 }
 
                 var filePath = Path.Combine(Application.persistentDataPath, DirectoryName, fileName);
@@ -344,10 +337,36 @@ namespace RealityLog.OVR
                 JointLocations = new OVRPlugin.BodyJointLocation[FULL_BODY_JOINT_COUNT]
             };
 
+            // Start tracking at launch, not at the first recording. Measured on Quest 3S:
+            // started with the recording, the first body sample came 534 ms late, then a
+            // 393 ms gap, and the skeleton re-estimated ~17 times in the first 2 s, which
+            // fails the pod's 500 ms stream-start and 100 ms gap rules for the first
+            // episode after every app (re)launch. Warm, the same session shape starts at
+            // -10 ms with a 42 ms max gap.
+            EnsureBodyTrackingStarted();
+
             if (startLoggingOnStart)
             {
                 StartLogging();
             }
+        }
+
+        private bool EnsureBodyTrackingStarted()
+        {
+            if (bodyTrackingStarted)
+            {
+                return true;
+            }
+
+            bodyTrackingStarted = OVRPlugin.StartBodyTracking2(JOINT_SET);
+            if (!bodyTrackingStarted)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] BodyTrackingLogger - Failed to start body tracking");
+                return false;
+            }
+            OVRPlugin.RequestBodyTrackingFidelity(OVRPlugin.BodyTrackingFidelity2.High);
+            Debug.Log($"[{Constants.LOG_TAG}] BodyTrackingLogger - Body tracking started (FullBody, High fidelity)");
+            return true;
         }
 
         // Once per rendered frame: the display-frame-locked path.

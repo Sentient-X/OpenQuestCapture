@@ -107,8 +107,10 @@ namespace RealityLog.Network
             cachedDuration = recordingManager != null ? recordingManager.RecordingDuration : 0f;
             cachedBattery = GetBatteryPercent();
 
-            // Refresh storage every 30 seconds (expensive JNI call)
-            if (Time.realtimeSinceStartup - lastStorageRefresh > 30f)
+            // Refresh storage every 30 seconds (expensive JNI call), and on the first frame:
+            // until then status reported storage as unknown (total 0), which made the pod's
+            // storage check fail for the first 30 s after every app (re)launch.
+            if (lastStorageRefresh <= 0f || Time.realtimeSinceStartup - lastStorageRefresh > 30f)
             {
                 cachedStorageFree = GetStorageFreeBytes();
                 cachedStorageTotal = GetStorageTotalBytes();
