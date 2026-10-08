@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using System.Globalization;
 using System.IO;
 using UnityEngine;
 using RealityLog.Common;
@@ -38,6 +39,24 @@ namespace RealityLog.OVR
 
         private double latestTimestamp;
 
+        // Stream stats for stream_manifest.json; captured at StopLogging so they stay readable after it.
+        private long lastRowsWritten;
+        private double firstTimestamp;
+        private double lastTimestamp;
+
+        public string FileName => fileName;
+
+        /// <summary>Rows written by the current writer, or by the last one after StopLogging.</summary>
+        public long RowsWritten => writer?.RowsWritten ?? lastRowsWritten;
+
+        /// <summary>JSON object with the first/last logged OVR timestamps (seconds), or "{}" if no rows.</summary>
+        public string StatsJson()
+        {
+            if (firstTimestamp <= 0) return "{}";
+            return "{\"first_ovr_timestamp\":" + firstTimestamp.ToString("R", CultureInfo.InvariantCulture)
+                + ",\"last_ovr_timestamp\":" + lastTimestamp.ToString("R", CultureInfo.InvariantCulture) + "}";
+        }
+
         public string DirectoryName
         {
             get => directoryName;
@@ -55,7 +74,10 @@ namespace RealityLog.OVR
                 baseOvrTimeSec = OVRPlugin.GetTimeInSeconds();
                 baseUnixTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 latestTimestamp = 0;
-                
+                lastRowsWritten = 0;
+                firstTimestamp = 0;
+                lastTimestamp = 0;
+
                 Debug.Log($"[{Constants.LOG_TAG}] {fileName} - Reset base times: OVR={baseOvrTimeSec:F3}s, Unix={baseUnixTimeMs}ms");
                 
                 var filePath = Path.Combine(Application.persistentDataPath, DirectoryName, fileName);
@@ -79,6 +101,10 @@ namespace RealityLog.OVR
                 Debug.LogError($"[{Constants.LOG_TAG}] Failed to dispose CsvWriter: {ex.Message}");
             }
 
+            if (writer != null)
+            {
+                lastRowsWritten = writer.RowsWritten;
+            }
             writer = null;
         }
 
@@ -120,6 +146,8 @@ namespace RealityLog.OVR
             }
 
             latestTimestamp = timestamp;
+            if (firstTimestamp <= 0) firstTimestamp = timestamp;
+            lastTimestamp = timestamp;
 
             var pose = poseState.Pose.ToOVRPose();
 

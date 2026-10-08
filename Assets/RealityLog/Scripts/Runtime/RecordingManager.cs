@@ -320,6 +320,7 @@ namespace RealityLog
             // Store directory name before resetting state
             string savedDirectory = currentSessionDirectory ?? string.Empty;
 
+            WriteStreamManifest(savedDirectory);
             WriteTrackingOriginRecord(savedDirectory);
 
             isRecording = false;
@@ -665,6 +666,97 @@ namespace RealityLog
                     runtime_origin = OVRPlugin.GetTrackingOriginType().ToString(),
                 }
             );
+        }
+
+        private const string StreamManifestFileName = "stream_manifest.json";
+
+        /// <summary>
+        /// JSON array of per-stream entries ({"file","rows","stats"}) from the last stop,
+        /// the same array written as "streams" in stream_manifest.json. Null until a stop
+        /// produced one.
+        /// </summary>
+        public string? LastStreamManifestJson { get; private set; }
+
+        /// <summary>
+        /// Writes stream_manifest.json with the row count of every CSV stream. Must run after
+        /// the loggers are stopped so the counts are final. A stream with 0 rows means the
+        /// source never produced data (e.g. a frozen OVR pose stream). Never throws.
+        /// </summary>
+        private void WriteStreamManifest(string sessionDirectoryName)
+        {
+            LastStreamManifestJson = null;
+            try
+            {
+                var streams = new System.Text.StringBuilder("[");
+                var emptyStreams = new List<string>();
+
+                void AppendStream(string file, long rows, string stats)
+                {
+                    if (streams.Length > 1) streams.Append(',');
+                    streams.Append("{\"file\":\"").Append(EscapeJson(file))
+                        .Append("\",\"rows\":").Append(rows.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                        .Append(",\"stats\":").Append(string.IsNullOrEmpty(stats) ? "{}" : stats)
+                        .Append('}');
+                    if (rows == 0) emptyStreams.Add(file);
+                }
+
+                if (poseLoggers != null)
+                {
+                    foreach (var logger in poseLoggers)
+                    {
+                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                    }
+                }
+                if (imuLoggers != null)
+                {
+                    foreach (var logger in imuLoggers)
+                    {
+                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                    }
+                }
+                if (bodyTrackingLoggers != null)
+                {
+                    foreach (var logger in bodyTrackingLoggers)
+                    {
+                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                    }
+                }
+                streams.Append(']');
+
+                var streamsJson = streams.ToString();
+                LastStreamManifestJson = streamsJson;
+
+                if (emptyStreams.Count > 0)
+                {
+                    Debug.LogWarning(
+                        $"[{Constants.LOG_TAG}] RecordingManager: stream(s) wrote 0 rows: {string.Join(", ", emptyStreams)}. " +
+                        "The tracking source produced no new samples during the recording."
+                    );
+                }
+
+                if (string.IsNullOrEmpty(sessionDirectoryName))
+                {
+                    return;
+                }
+
+                var sessionDir = Path.Join(Application.persistentDataPath, sessionDirectoryName);
+                Directory.CreateDirectory(sessionDir);
+                File.WriteAllText(
+                    Path.Join(sessionDir, StreamManifestFileName),
+                    "{\"schema\":1,\"streams\":" + streamsJson + "}"
+                );
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(
+                    $"[{Constants.LOG_TAG}] Failed to write {StreamManifestFileName}: {ex.Message}"
+                );
+            }
+        }
+
+        private static string EscapeJson(string value)
+        {
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
         private void WriteTrackingOriginRecord(string sessionDirectoryName)
