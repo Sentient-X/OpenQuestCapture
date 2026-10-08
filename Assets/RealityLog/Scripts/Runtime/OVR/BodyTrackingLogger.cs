@@ -15,28 +15,16 @@ namespace RealityLog.OVR
     /// Uses OVRPlugin.GetBodyState4 with FullBody joint set (84 joints).
     /// Each row contains a timestamp and all joint positions/orientations.
     ///
-    /// <para><b>Timing (measured):</b> <c>GetBodyState4(Step.Render)</c> returns
-    /// <c>Time</c> = the predicted display time of the current frame, so body timestamps
-    /// land on display frames (13.9 ms at 72 Hz, 11.1 ms at 90 Hz). The previous
-    /// <c>FixedUpdate</c> (50 Hz) polling therefore produced 1/2/3-frame gaps and
-    /// 44.9–49.2 Hz instead of 50 Hz: two FixedUpdates in one rendered frame see the same
-    /// <c>Time</c> (app artifact), and a 3-frame gap means the runtime did not produce a
-    /// new sample (headset drop). 50 Hz cannot be evenly spaced on a 72/90 Hz display.</para>
-    ///
-    /// <para><b>Display-frame-locked sampling</b> (<c>displayFrameLocked</c>, default OFF until
-    /// the stats below confirm on a 90 Hz pod that the body runtime delivers a new sample on
-    /// (nearly) every display frame; if it runs at 30 or 60 Hz the grid would thin it too far):
-    /// the state is read once per rendered frame in <c>Update</c>. Each new sample gets a
-    /// display-frame index (index 0 = the session's first sample; each later sample adds
-    /// round((Time - previous sample Time) * systemDisplayFrequency), so a nominal
-    /// frequency that is slightly off cannot drift the grid), and a sample is written only
-    /// if it is at least <c>keepEveryNthDisplayFrame</c> frames (default 2) after the last
-    /// written one: with a sample every frame that is exactly every 2nd frame (45 Hz at
-    /// 90 Hz, 36 Hz at 72 Hz); a 30 Hz runtime still gives 30 Hz, and a runtime drop gives
-    /// a gap of N+1 frames rather than 2N. A sample more than 0.25 frame away from the grid is written anyway (counted in
-    /// rows - kept_on_grid) so a wrong grid assumption never loses data. With the lock off,
-    /// or when the display frequency is unknown, the old behaviour is used: every new
-    /// sample, polled in <c>FixedUpdate</c>. Duplicate timestamps are always filtered.
+    /// <para><b>Timing (measured on Quest 3S):</b> <c>GetBodyState4(Step.Render)</c> returns
+    /// <c>Time</c> = the predicted display time of the frame, so body timestamps land on
+    /// display frames. Rows are polled in <c>FixedUpdate</c> (50 Hz, like the pose loggers)
+    /// and a sample whose <c>Time</c> did not advance is skipped. At the 90 Hz display the
+    /// pods use, the body runtime itself produces a new sample on about 2 of every 3
+    /// frames (~60 Hz), and this gives ~49 Hz rows with gaps of 1–3 frames (max ~34 ms),
+    /// 1–2% stale polls. Even spacing is not available from the source: the only evenly
+    /// spaced decimation of a 2-in-3 cadence is every 3rd frame (30 Hz, the QA floor), so
+    /// none is applied. At a healthy battery, 72 and 90 Hz both measured ~49-50 Hz with
+    /// 0-1.6% stale polls; sessions at very low battery (~6-13%) showed ~10% stale polls.
     /// Gaps of 580 ms or more indicate tracking loss (e.g. body out of view).</para>
     ///
     /// <para><b>Extra columns</b> (after all joint columns): <c>skeleton_changed_count</c>
@@ -49,11 +37,10 @@ namespace RealityLog.OVR
     /// counted in failed_polls).</para>
     ///
     /// <para><b>Stats</b> (<see cref="StatsJson"/>, frozen at StopLogging): polls,
-    /// stale_polls (Time did not advance, excluding same-frame polls), same_frame_polls
-    /// (another poll in the same rendered frame; always 0 when frame-locked),
-    /// failed_polls (GetBodyState4 false), rows, kept_on_grid, skipped_off_grid
-    /// (new samples deliberately dropped because they are not on a kept frame),
-    /// display_hz, fidelity_granted.</para>
+    /// stale_polls (Time did not advance: the runtime had no new sample; excludes
+    /// same-frame polls), same_frame_polls (another poll in the same rendered frame),
+    /// failed_polls (GetBodyState4 false: body inactive), rows, display_hz,
+    /// fidelity_granted.</para>
     ///
     /// <para><b>Root joint (index 0):</b> Floor-projected origin (Y ≈ 0). For actual
     /// pelvis height, use Hips (index 1).</para>
@@ -74,8 +61,6 @@ namespace RealityLog.OVR
         private const int ROW_LENGTH = LEADING_COLUMNS + FULL_BODY_JOINT_COUNT * VALUES_PER_JOINT + TRAILING_COLUMNS;
         private const OVRPlugin.SpaceLocationFlags JOINT_VALID_FLAGS =
             OVRPlugin.SpaceLocationFlags.PositionValid | OVRPlugin.SpaceLocationFlags.OrientationValid;
-        // Max distance (in display frames) from the integer grid before a sample counts as off-grid.
-        private const double OFF_GRID_TOLERANCE_FRAMES = 0.25;
 
         /// <summary>
         /// Full-body joint names matching XR_META_body_tracking_full_body / BodyJointId enum.
@@ -172,10 +157,6 @@ namespace RealityLog.OVR
         [SerializeField] private string fileName = "body_tracking.csv";
         [SerializeField] private string directoryName = "";
         [SerializeField] private bool startLoggingOnStart = false;
-        [Tooltip("Poll once per rendered frame (Update) and keep only every Nth display frame for evenly spaced rows. Off = legacy FixedUpdate polling.")]
-        [SerializeField] private bool displayFrameLocked = false;
-        [Tooltip("Keep one sample every N display frames when displayFrameLocked (2 = 45 Hz at 90 Hz, 36 Hz at 72 Hz).")]
-        [SerializeField] private int keepEveryNthDisplayFrame = 2;
 
         private CsvWriter? writer = null;
         private OVRPlugin.BodyState bodyState;
@@ -185,15 +166,8 @@ namespace RealityLog.OVR
         private long baseUnixTimeMs;
         private double latestTimestamp;
 
-        // Sampling mode of the current session (decided at StartLogging).
-        private bool gridLocked = false;
-        private int keepEveryN = 1;
+        // Display frequency at the session start, reported in the stats.
         private float displayHz = 0f;
-        private bool hasGridAnchor = false;
-        private double gridAnchorTime;
-        private long gridAnchorIndex;
-        private long lastKeptFrameIndex = -1;
-        private bool offGridWarned = false;
         private int lastPollFrame = -1;
 
         // Per-session counters: reset at StartLogging, frozen once the writer is stopped.
@@ -202,8 +176,6 @@ namespace RealityLog.OVR
         private long sameFramePolls;
         private long failedPolls;
         private long rows;
-        private long keptOnGrid;
-        private long skippedOffGrid;
         private int fidelityGranted;
 
         public string DirectoryName
@@ -268,10 +240,7 @@ namespace RealityLog.OVR
             // session snapshot read by StatsJson() and RowsWritten.
         }
 
-        /// <summary>
-        /// Body sampling counters of the current/last session as a JSON object.
-        /// rows - kept_on_grid = rows written off the grid (unlocked mode or off-grid samples).
-        /// </summary>
+        /// <summary>Body sampling counters of the current/last session as a JSON object.</summary>
         public string StatsJson()
         {
             var inv = CultureInfo.InvariantCulture;
@@ -282,8 +251,6 @@ namespace RealityLog.OVR
                 + $"\"same_frame_polls\":{sameFramePolls.ToString(inv)},"
                 + $"\"failed_polls\":{failedPolls.ToString(inv)},"
                 + $"\"rows\":{rows.ToString(inv)},"
-                + $"\"kept_on_grid\":{keptOnGrid.ToString(inv)},"
-                + $"\"skipped_off_grid\":{skippedOffGrid.ToString(inv)},"
                 + $"\"display_hz\":{hz.ToString("R", inv)},"
                 + $"\"fidelity_granted\":{fidelityGranted.ToString(inv)}"
                 + "}";
@@ -297,34 +264,10 @@ namespace RealityLog.OVR
             sameFramePolls = 0;
             failedPolls = 0;
             rows = 0;
-            keptOnGrid = 0;
-            skippedOffGrid = 0;
             fidelityGranted = 0;
 
-            hasGridAnchor = false;
-            gridAnchorTime = 0;
-            gridAnchorIndex = 0;
-            lastKeptFrameIndex = -1;
-            offGridWarned = false;
             lastPollFrame = -1;
-
             displayHz = OVRPlugin.systemDisplayFrequency;
-            keepEveryN = Math.Max(1, keepEveryNthDisplayFrame);
-            gridLocked = false;
-            if (displayFrameLocked)
-            {
-                if (float.IsNaN(displayHz) || float.IsInfinity(displayHz) || displayHz <= 0f)
-                {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] BodyTrackingLogger - Display frequency unavailable ({displayHz}); falling back to unlocked FixedUpdate sampling");
-                }
-                else
-                {
-                    gridLocked = true;
-                }
-            }
-
-            Debug.Log($"[{Constants.LOG_TAG}] BodyTrackingLogger - Sampling: " +
-                (gridLocked ? $"display-frame-locked, every {keepEveryN} frame(s) at {displayHz} Hz" : "unlocked (FixedUpdate)"));
         }
 
         private void Start()
@@ -369,18 +312,9 @@ namespace RealityLog.OVR
             return true;
         }
 
-        // Once per rendered frame: the display-frame-locked path.
-        private void Update()
-        {
-            if (gridLocked)
-                Poll();
-        }
-
-        // Legacy path (lock disabled or display frequency unknown): 50 Hz physics step.
         private void FixedUpdate()
         {
-            if (!gridLocked)
-                Poll();
+            Poll();
         }
 
         private void Poll()
@@ -417,13 +351,6 @@ namespace RealityLog.OVR
             var joints = bodyState.JointLocations;
             if (joints == null || joints.Length == 0)
                 return;
-
-            bool onGrid = false;
-            if (gridLocked && !ShouldKeepOnGrid(timestamp, out onGrid))
-            {
-                skippedOffGrid++;
-                return;
-            }
 
             int jointCount = Mathf.Min(joints.Length, FULL_BODY_JOINT_COUNT);
 
@@ -481,62 +408,6 @@ namespace RealityLog.OVR
 
             writer.EnqueueRow(row);
             rows++;
-            if (onGrid)
-                keptOnGrid++;
-        }
-
-        /// <summary>
-        /// Display-frame grid decision for a new (strictly newer) sample. The frame index
-        /// starts at 0 on the session's first sample and accumulates the rounded frame
-        /// delta from the previous sample, so a nominal display frequency that is slightly
-        /// off cannot drift the grid over a long session. Returns true to write the sample;
-        /// <paramref name="onGrid"/> is true when it is written because it lands on a kept
-        /// frame. Samples more than OFF_GRID_TOLERANCE_FRAMES from the grid are always
-        /// written: a wrong grid assumption must never lose data.
-        /// </summary>
-        private bool ShouldKeepOnGrid(double timestamp, out bool onGrid)
-        {
-            onGrid = false;
-
-            long frameIndex;
-            bool offGrid = false;
-            if (!hasGridAnchor)
-            {
-                frameIndex = 0;
-                hasGridAnchor = true;
-            }
-            else
-            {
-                double frames = (timestamp - gridAnchorTime) * displayHz;
-                double rounded = Math.Round(frames);
-                offGrid = Math.Abs(frames - rounded) > OFF_GRID_TOLERANCE_FRAMES;
-                frameIndex = gridAnchorIndex + (long)rounded;
-            }
-            gridAnchorTime = timestamp;
-            gridAnchorIndex = frameIndex;
-
-            if (offGrid)
-            {
-                if (!offGridWarned)
-                {
-                    offGridWarned = true;
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] BodyTrackingLogger - Body sample off the {displayHz} Hz display grid (t={timestamp:F6}s); off-grid samples are kept (rows - kept_on_grid in stats)");
-                }
-                lastKeptFrameIndex = frameIndex;
-                return true;
-            }
-
-            if (frameIndex == lastKeptFrameIndex)
-                return false;
-
-            // Minimum spacing, not a fixed phase: a parity rule would drop every sample of
-            // a runtime that delivers on alternate phases (e.g. every 3rd frame -> 15 Hz).
-            if (lastKeptFrameIndex >= 0 && frameIndex - lastKeptFrameIndex < keepEveryN)
-                return false;
-
-            lastKeptFrameIndex = frameIndex;
-            onGrid = true;
-            return true;
         }
 
         private string[] BuildHeader()
