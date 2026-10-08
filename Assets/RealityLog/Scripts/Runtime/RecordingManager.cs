@@ -15,6 +15,18 @@ using RealityLog.OVR;
 namespace RealityLog
 {
     /// <summary>
+    /// Recording lifecycle as reported by <c>/api/status</c> (<c>recording.state</c>).
+    /// <see cref="Stopping"/> covers the whole of <see cref="RecordingManager.StopRecording"/>,
+    /// during which <see cref="RecordingManager.IsRecording"/> is still true.
+    /// </summary>
+    public enum RecordingState
+    {
+        Idle,
+        Recording,
+        Stopping,
+    }
+
+    /// <summary>
     /// Central coordinator for all recording subsystems.
     /// Handles proper sequencing and lifecycle management of depth, camera, and pose recording.
     /// </summary>
@@ -80,6 +92,27 @@ namespace RealityLog
 
         public bool IsRecording => isRecording;
         public string? CurrentSessionDirectory => currentSessionDirectory;
+
+        // RecordingState as an int so the HTTP thread can read it and flip
+        // Recording -> Stopping the moment it accepts a stop request.
+        private int state = (int)RecordingState.Idle;
+        private long lastStopDurationMs = -1;
+
+        /// <summary>Current lifecycle state. Safe to read from any thread.</summary>
+        public RecordingState State => (RecordingState)System.Threading.Volatile.Read(ref state);
+
+        /// <summary>Wall time of the last completed <see cref="StopRecording"/>; -1 before the first.</summary>
+        public long LastStopDurationMs => System.Threading.Interlocked.Read(ref lastStopDurationMs);
+
+        /// <summary>
+        /// Marks a recording as stopping before the main thread gets to it, so status shows
+        /// the stop at once. Safe to call from any thread; does nothing unless recording.
+        /// </summary>
+        public void MarkStopRequested()
+        {
+            System.Threading.Interlocked.CompareExchange(
+                ref state, (int)RecordingState.Stopping, (int)RecordingState.Recording);
+        }
         
         /// <summary>
         /// Gets the elapsed recording time in seconds.
@@ -251,6 +284,7 @@ namespace RealityLog
             captureTimer.StartCapture();
 
             isRecording = true;
+            System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
             recordingStartTime = Time.time;
             StartTrackingOriginRecord();
             HeadTrackingMonitor.BeginRecording();
@@ -281,11 +315,25 @@ namespace RealityLog
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Stopping recording session");
+            System.Threading.Volatile.Write(ref state, (int)RecordingState.Stopping);
             HeadTrackingMonitor.EndRecording();
+
+            // Every phase below blocks the main thread; time each one so a slow stop
+            // shows which part was slow.
+            var stopTimer = System.Diagnostics.Stopwatch.StartNew();
+            var phases = new List<string>();
+            long phaseStartMs = 0;
+            void EndPhase(string phase)
+            {
+                var nowMs = stopTimer.ElapsedMilliseconds;
+                phases.Add($"{phase}={nowMs - phaseStartMs}");
+                phaseStartMs = nowMs;
+            }
 
             // Stop in reverse order
             // Step 1: Stop capture loop first
             captureTimer.StopCapture();
+            EndPhase("capture_timer");
 
             // Freeze both camera exposure timelines before either encoder performs
             // synchronous drain/finalization. Otherwise the second eye keeps recording
@@ -293,28 +341,34 @@ namespace RealityLog
             foreach (var provider in cameraProviders)
             {
                 provider.RequestStopRecordingSession();
+                EndPhase($"request_stop:{provider.name}");
             }
             foreach (var provider in cameraProviders)
             {
                 provider.StopRecordingSession();
+                EndPhase($"stop_session:{provider.name}");
             }
 
             // Step 2: Close file writers and cleanup
             if (recordDepthMaps && depthMapExporter != null)
             {
                 depthMapExporter.StopExport();
+                EndPhase("depth");
             }
             foreach (var logger in poseLoggers)
             {
                 logger.StopLogging();
+                EndPhase($"stop_logging:{logger.name}");
             }
             foreach (var logger in imuLoggers)
             {
                 logger.StopLogging();
+                EndPhase($"stop_logging:{logger.name}");
             }
             foreach (var logger in bodyTrackingLoggers)
             {
                 logger.StopLogging();
+                EndPhase($"stop_logging:{logger.name}");
             }
 
             // Store directory name before resetting state
@@ -322,9 +376,16 @@ namespace RealityLog
 
             WriteTrackingOriginRecord(savedDirectory);
 
+            EndPhase("tracking_origin");
+
             isRecording = false;
             recordingStartTime = 0f;
             currentSessionDirectory = null;
+
+            var stopMs = stopTimer.ElapsedMilliseconds;
+            System.Threading.Interlocked.Exchange(ref lastStopDurationMs, stopMs);
+            System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: StopRecording took {stopMs} ms ({string.Join(", ", phases)})");
 
             // Show the standby label again now that recording has stopped
             infoCanvasAnimator?.SetBool(IsRunningParam, false);

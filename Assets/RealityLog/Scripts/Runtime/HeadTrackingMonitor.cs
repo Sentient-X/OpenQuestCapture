@@ -51,6 +51,24 @@ namespace RealityLog
         private static long longestStallTicks;
         private static bool inStall;
 
+        // Stopwatch ticks of the OS pause (OnApplicationPause(true)); NoPose while running.
+        // While paused the main thread runs nothing, so HTTP handlers must not queue work on it.
+        private static long pausedSinceTicks = NoPose;
+
+        // Controller state sampled in Update. Written on the main thread, read from the
+        // HTTP server's thread under controllerLock.
+        private static readonly object controllerLock = new();
+        private static ControllerSample leftController;
+        private static ControllerSample rightController;
+        private static long controllerSampleTicks = NoPose;
+
+        private struct ControllerSample
+        {
+            public bool Connected;
+            public bool PositionTracked;
+            public float? DistanceToHeadM;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
@@ -101,10 +119,64 @@ namespace RealityLog
             vrFocus = OVRManager.hasVrFocus;
             inputFocus = OVRManager.hasInputFocus;
 
+            SampleControllers(poseState, positionTracked, now);
+
             if (recording)
             {
                 ObserveRecordingStall(now);
             }
+        }
+
+        private void OnApplicationPause(bool paused)
+        {
+            if (paused)
+            {
+                // Keep the first pause time if Unity reports the pause twice.
+                Interlocked.CompareExchange(ref pausedSinceTicks, Stopwatch.GetTimestamp(), NoPose);
+                Debug.LogWarning($"[{Constants.LOG_TAG}] HeadTrackingMonitor: app paused by the OS (recording={recording})");
+            }
+            else
+            {
+                var since = Interlocked.Exchange(ref pausedSinceTicks, NoPose);
+                if (since != NoPose)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] HeadTrackingMonitor: app resumed after {TicksToMs(Stopwatch.GetTimestamp() - since):F0} ms paused");
+                }
+            }
+        }
+
+        // Samples the controllers on the same OVR nodes the controller PoseLoggers use
+        // (ControllerLeft = 12, ControllerRight = 13) and in the same tracking space.
+        private static void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked, long now)
+        {
+            var left = SampleController(OVRInput.Controller.LTouch, OVRPlugin.Node.ControllerLeft, headPose, headTracked);
+            var right = SampleController(OVRInput.Controller.RTouch, OVRPlugin.Node.ControllerRight, headPose, headTracked);
+            lock (controllerLock)
+            {
+                leftController = left;
+                rightController = right;
+                controllerSampleTicks = now;
+            }
+        }
+
+        private static ControllerSample SampleController(
+            OVRInput.Controller controller, OVRPlugin.Node node, OVRPlugin.PoseStatef headPose, bool headTracked)
+        {
+            var sample = new ControllerSample
+            {
+                Connected = OVRInput.IsControllerConnected(controller),
+                PositionTracked = OVRPlugin.GetNodePositionTracked(node),
+            };
+            // An untracked position is stale or predicted, not where the controller is, so
+            // no distance is reported for it.
+            if (sample.Connected && sample.PositionTracked && headTracked)
+            {
+                var c = OVRPlugin.GetNodePoseStateImmediate(node).Pose.Position;
+                var h = headPose.Pose.Position;
+                float dx = c.x - h.x, dy = c.y - h.y, dz = c.z - h.z;
+                sample.DistanceToHeadM = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            return sample;
         }
 
         private static void ObserveRecordingStall(long now)
@@ -219,6 +291,57 @@ namespace RealityLog
                 $"{indent}  \"lastEvent\": {Str(evt)},\n" +
                 $"{indent}  \"lastEventAgeMs\": {Number(evtAge)}\n" +
                 $"{indent}}}";
+        }
+
+        /// <summary>True while the OS has the app paused. Safe to call from any thread.</summary>
+        public static bool AppPaused => Interlocked.Read(ref pausedSinceTicks) != NoPose;
+
+        /// <summary>
+        /// The <c>app</c> object for <c>/api/status</c> and <c>/api/diagnostics</c>, without a
+        /// trailing comma. Safe to call from any thread.
+        /// </summary>
+        public static string AppJson(string indent)
+        {
+            var since = Interlocked.Read(ref pausedSinceTicks);
+            var pausedForMs = since == NoPose ? (double?)null : TicksToMs(Stopwatch.GetTimestamp() - since);
+            return "{\n" +
+                $"{indent}  \"paused\": {Bool(since != NoPose)},\n" +
+                $"{indent}  \"pausedForMs\": {Number(pausedForMs)}\n" +
+                $"{indent}}}";
+        }
+
+        /// <summary>
+        /// The <c>controllers</c> object for <c>/api/status</c>, without a trailing comma.
+        /// Values come from the last main-thread sample; <c>sampleAgeMs</c> grows while the
+        /// main thread is blocked or the app is paused. Safe to call from any thread.
+        /// </summary>
+        public static string ControllersJson(string indent)
+        {
+            ControllerSample left;
+            ControllerSample right;
+            long sampleTicks;
+            lock (controllerLock)
+            {
+                left = leftController;
+                right = rightController;
+                sampleTicks = controllerSampleTicks;
+            }
+            var sampleAge = sampleTicks == NoPose ? (double?)null : TicksToMs(Stopwatch.GetTimestamp() - sampleTicks);
+            return "{\n" +
+                $"{indent}  \"left\": {ControllerJson(left)},\n" +
+                $"{indent}  \"right\": {ControllerJson(right)},\n" +
+                $"{indent}  \"sampleAgeMs\": {Number(sampleAge)}\n" +
+                $"{indent}}}";
+        }
+
+        private static string ControllerJson(ControllerSample sample)
+        {
+            var distance = sample.DistanceToHeadM is float d
+                ? d.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
+                : "null";
+            return $"{{\"connected\": {Bool(sample.Connected)}, " +
+                $"\"positionTracked\": {Bool(sample.PositionTracked)}, " +
+                $"\"distanceToHeadM\": {distance}}}";
         }
 
         private static string Describe()
