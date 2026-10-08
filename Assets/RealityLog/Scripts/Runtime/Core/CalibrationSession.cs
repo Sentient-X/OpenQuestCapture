@@ -99,7 +99,7 @@ namespace RealityLog
             {
                 recordingManager.StartRecording();
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex)
             {
                 Debug.LogError($"[{Constants.LOG_TAG}] CalibrationSession: {ex.Message}");
             }

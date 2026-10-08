@@ -57,6 +57,9 @@ namespace RealityLog
         // Stopwatch ticks of the OS pause (OnApplicationPause(true)); NoPose while running.
         // While paused the main thread runs nothing, so HTTP handlers must not queue work on it.
         private static long pausedSinceTicks = NoPose;
+        // Frame of the last OnApplicationPause(true). Unity issues one more frame after the
+        // callback, so Update only treats the pause as stale after that frame. Main thread only.
+        private static int pausedFrame = -1;
 
         // Controller state sampled in Update. Written on the main thread, read from the
         // HTTP server's thread under controllerLock.
@@ -79,10 +82,16 @@ namespace RealityLog
             Interlocked.Exchange(ref lastAdvanceTicks, NoPose);
             lastOvrTime = 0;
             Interlocked.Exchange(ref pausedSinceTicks, NoPose);
+            pausedFrame = -1;
             recording = false;
             inStall = false;
             Interlocked.Exchange(ref recordingStalls, 0);
             Interlocked.Exchange(ref longestStallTicks, 0);
+            lock (eventLock)
+            {
+                lastEvent = null;
+                lastEventTicks = NoPose;
+            }
             lock (controllerLock)
             {
                 leftController = default;
@@ -125,9 +134,10 @@ namespace RealityLog
 
         private void Update()
         {
-            // Update never runs while the OS has the app paused, so a frame running here means
-            // it is not paused, even if Unity never delivered OnApplicationPause(false).
-            if (Interlocked.Read(ref pausedSinceTicks) != NoPose)
+            // Update never runs while the OS has the app paused, so a frame running here (past
+            // the one extra frame Unity issues after the pause callback) means it is not paused,
+            // even if Unity never delivered OnApplicationPause(false).
+            if (Interlocked.Read(ref pausedSinceTicks) != NoPose && Time.frameCount > pausedFrame + 1)
             {
                 OnApplicationPause(false);
             }
@@ -177,6 +187,7 @@ namespace RealityLog
             {
                 // Keep the first pause time if Unity reports the pause twice.
                 Interlocked.CompareExchange(ref pausedSinceTicks, Stopwatch.GetTimestamp(), NoPose);
+                pausedFrame = Time.frameCount;
                 Debug.LogWarning($"[{Constants.LOG_TAG}] HeadTrackingMonitor: app paused by the OS (recording={recording})");
             }
             else

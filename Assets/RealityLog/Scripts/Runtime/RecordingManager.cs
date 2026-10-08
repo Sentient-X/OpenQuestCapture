@@ -318,7 +318,6 @@ namespace RealityLog
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Stopping recording session");
             System.Threading.Volatile.Write(ref state, (int)RecordingState.Stopping);
-            HeadTrackingMonitor.EndRecording();
 
             // Every phase below blocks the main thread; time each one so a slow stop
             // shows which part was slow.
@@ -392,6 +391,7 @@ namespace RealityLog
                 throw;
             }
 
+            HeadTrackingMonitor.EndRecording();
             isRecording = false;
             recordingStartTime = 0f;
             currentSessionDirectory = null;
