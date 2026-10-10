@@ -6,7 +6,12 @@ public class QuestBuild
     public static void Build()
     {
         string[] scenes = { "Assets/RealityLog/Scenes/RealityLogScene.unity" };
-        string outputPath = "Builds/OpenQuestCapture.apk";
+        // OQC_BUILD_APK_PATH names the APK, so a build never overwrites another under Builds/.
+        string outputPath = System.Environment.GetEnvironmentVariable("OQC_BUILD_APK_PATH");
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            outputPath = "Builds/OpenQuestCapture.apk";
+        }
         
         PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
         
