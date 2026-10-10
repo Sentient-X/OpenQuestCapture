@@ -275,69 +275,82 @@ namespace RealityLog
                 }
             }
 
-            // Step 1: Update camera paths for new session
-            // This ensures format info and images are written to the new directory
-            foreach (var provider in cameraProviders)
+            try
             {
-                provider.PrepareRecordingSession();
-            }
-
-            // Step 2: Setup file writers and directories
-            // (Depth and camera systems are already initialized from app start)
-            if (depthMapExporter != null)
-            {
-                depthMapExporter.IsExportEnabled = recordDepthMaps;
-                if (recordDepthMaps)
+                // Step 1: Update camera paths for new session
+                // This ensures format info and images are written to the new directory
+                foreach (var provider in cameraProviders)
                 {
-                    depthMapExporter.StartExport();
+                    provider.PrepareRecordingSession();
                 }
-            }
-            foreach (var logger in poseLoggers)
-            {
-                logger.StartLogging();
-            }
-            foreach (var logger in imuLoggers)
-            {
-                logger.StartLogging();
-            }
-            foreach (var logger in bodyTrackingLoggers)
-            {
-                logger.StartLogging();
-            }
 
-            foreach (var provider in cameraProviders)
-            {
-                provider.StartRecordingSession();
-            }
+                // Step 2: Setup file writers and directories
+                // (Depth and camera systems are already initialized from app start)
+                if (depthMapExporter != null)
+                {
+                    depthMapExporter.IsExportEnabled = recordDepthMaps;
+                    if (recordDepthMaps)
+                    {
+                        depthMapExporter.StartExport();
+                    }
+                }
+                foreach (var logger in poseLoggers)
+                {
+                    logger.StartLogging();
+                }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.StartLogging();
+                }
+                foreach (var logger in bodyTrackingLoggers)
+                {
+                    logger.StartLogging();
+                }
+
+                foreach (var provider in cameraProviders)
+                {
+                    provider.StartRecordingSession();
+                }
             
-            // Optional: Reset camera base time to sync with depth timestamps
-            // Currently commented out as both use system monotonic clock
-            // Uncomment if timestamp alignment issues occur
-            // foreach (var provider in cameraProviders)
-            // {
-            //     provider.ResetBaseTime();
-            // }
+                // Optional: Reset camera base time to sync with depth timestamps
+                // Currently commented out as both use system monotonic clock
+                // Uncomment if timestamp alignment issues occur
+                // foreach (var provider in cameraProviders)
+                // {
+                //     provider.ResetBaseTime();
+                // }
 
-            // Step 3: Start synchronized capture
-            // This begins the actual frame capture loop
-            captureTimer.StartCapture();
+                // Step 3: Start synchronized capture
+                // This begins the actual frame capture loop
+                captureTimer.StartCapture();
 
-            isRecording = true;
-            System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
-            recordingStartTime = Time.time;
-            StartTrackingOriginRecord();
-            HeadTrackingMonitor.BeginRecording();
+                isRecording = true;
+                System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
+                recordingStartTime = Time.time;
+                StartTrackingOriginRecord();
+                HeadTrackingMonitor.BeginRecording();
 
-            // Hide the standby label (green instruction box) regardless of how recording was started
-            infoCanvasAnimator?.SetBool(IsRunningParam, true);
+                // Hide the standby label (green instruction box) regardless of how recording was started
+                infoCanvasAnimator?.SetBool(IsRunningParam, true);
 
-            WriteVideoStartTime();
-            DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
+                WriteVideoStartTime();
+                DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
 
-            onRecordingStarted?.Invoke();
-            ForegroundServiceManager.UpdateNotification("Recording in progress");
+                onRecordingStarted?.Invoke();
+                ForegroundServiceManager.UpdateNotification("Recording in progress");
 
-            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
+            }
+            catch
+            {
+                // A start that failed after the rig's episode began stops that episode, so
+                // the rig is not left recording for a session that never started.
+                if (rig is not null)
+                {
+                    rig.StopEpisode();
+                }
+                throw;
+            }
         }
 
         /// <summary>
