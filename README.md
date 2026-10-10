@@ -194,12 +194,37 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   as a Factory pod of kind `headset`. The machine credential is kept in app-private storage; once
   it exists the rig is expected, resolves its registered rig from the Factory, and seals, uploads
   and retires episodes on its own. `pod_config.json` (files directory) may also set `pod_name`,
-  `rig_type_id`, `upload_limit_mib_s`, `seal`, `min_free_bytes`, `headset_serial`, `tailscale_ip`.
+  `rig_type_id`, `upload_limit_mib_s`, `seal`, `min_free_bytes`, `tailscale_ip`.
+* **Provisioning (once per headset, before enrolling):** apps cannot read `ro.serialno` on the
+  Quest 3S, so write the serial into `pod_config.json` over adb (the shell can read it). This
+  overwrites the file; if one already exists, add the key by hand instead:
+
+  ```bash
+  serial=$(adb shell getprop ro.serialno | tr -d '\r')
+  printf '{"headset_serial":"%s"}\n' "$serial" > pod_config.json
+  adb push pod_config.json /sdcard/Android/data/com.samusynth.OpenQuestCapture/files/pod_config.json
+  ```
+
+  The app passes this file to the rig as `pod_config_path`.
+* **Collector sign-in:** on an enrolled headset a start needs a signed-in collector, else
+  `409 {"error":"rig_not_ready","reason":"collector_signed_out"}`. `POST /api/sign-in` answers
+  `{"status":"pending","user_code","verification_uri_complete","expires_in"}`; the caller (pod
+  operator, companion app) shows the code, since the wearer cannot see the display, and the
+  collector approves on their own phone. The headset chimes when the sign-in lands, and
+  `rig.floor.operator.signed_in` turns true. `POST /api/sign-out` signs out (409 while recording).
+* **Collector commands:** `POST /api/command` passes `{"command":"review_success"|"review_failure",
+  "episode_id","answers":[...],"failure_cause"?}` or `{"command":"end_collection"|"finalize"|
+  "close_failed_collection"}` to the rig and answers `{"answer","floor"}`. Errors:
+  400 `invalid_body` | `unknown_command` | `command_refused` (argument), 409 `not_enrolled` |
+  `command_refused` (reason `state`, e.g. a review before the Factory observed the attempt:
+  retry), 503 `command_refused`.
 * While the rig is expected, the start body must carry `"operator_id"` (else `400
-  operator_id_required`); the episode also records `quest_apk_build_id` (`sha256:` of the
+  operator_id_required`) and may carry `"task_assignment_id"` and `"mode"`
+  (`"directed"`|`"undirected"`), which open the collection on the Factory; the episode also records `quest_apk_build_id` (`sha256:` of the
   installed APK, as the laptop pod computes it) and `quest_session_dir`, which the seal reads.
   The rig stops after every OQC file of the session is final, so the seal never reads a partial one.
 * `GET /api/status` → `rig` carries `enrolled`, `podId`, `registeredRig`, `seals`, `uplink`,
+  `floor` (operator sign-in, open collection, pending commands),
   `headsetSerial`, `tailscaleIp` and `apkBuildId`.
 * USB permission: plugging a rig device in the first time asks, in the headset, which app opens
   it; tick "always open" for OpenQuestCapture once and later replugs are silent.
