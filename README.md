@@ -226,6 +226,16 @@ any rig USB device is on the bus; with neither, nothing below happens and record
 * `GET /api/status` → `rig` carries `enrolled`, `podId`, `registeredRig`, `seals`, `uplink`,
   `floor` (operator sign-in, open collection, pending commands),
   `headsetSerial`, `tailscaleIp` and `apkBuildId`.
+* **Embodiment meshes for the on-headset seal** (11 `yubi_description` files, 18.9 MB) are
+  generated, not committed: before every APK build run
+  `SX_QUEST_RIG=<sx>/experience/data-factory/quest-rig scripts/build_embodiment_assets.sh`
+  (add `OFFLINE=1` to build offline). It writes `Assets/StreamingAssets/sx-embodiments/` (each
+  file by logical path plus `manifest.json`, gitignored); `QuestBuild.Build` refuses without it.
+  Unity ships StreamingAssets uncompressed in the APK's `assets/`; on launch the app copies them
+  to `<filesDir>/sx-embodiments/` when its installed manifest differs (each file checked against
+  its SHA-256, fsynced, renamed; manifest last) and passes that directory to the rig as
+  `embodiment_assets_dir`. `/api/status` → `rig.embodiment_assets` is the rig's verdict
+  (`ready`, `configured`, `assets`, `missing`), `rig.embodimentInstall` the app's copy.
 * USB permission: plugging a rig device in the first time asks, in the headset, which app opens
   it; tick "always open" for OpenQuestCapture once and later replugs are silent.
 * `Assets/Plugins/Android/libs/arm64-v8a/libsx_rig.so` is built from sx
