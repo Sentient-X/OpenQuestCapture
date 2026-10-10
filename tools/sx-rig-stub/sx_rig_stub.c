@@ -40,6 +40,25 @@ int32_t sx_rig_enroll(const char *join_code, char *out_json, size_t cap, size_t 
     return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: no factory_url to enroll with");
 }
 
+int32_t sx_rig_sign_in(char *out_json, size_t cap, size_t *needed) {
+    (void)out_json; (void)cap; (void)needed;
+    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
+    return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: not enrolled");
+}
+
+int32_t sx_rig_sign_out(void) {
+    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
+    return SX_RIG_OK;
+}
+
+int32_t sx_rig_command(const char *command_json, char *out_json, size_t cap, size_t *needed) {
+    if (command_json == NULL || command_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "command is not a JSON object");
+    if (strstr(command_json, "\"finalize\"") != NULL) {
+        return emit("{\"answer\":{\"stub\":true},\"floor\":null}", out_json, cap, needed);
+    }
+    return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: no open collection");
+}
+
 int32_t sx_rig_attach_usb(int32_t fd, uint16_t vendor_id, uint16_t product_id, const char *device_name) {
     (void)fd; (void)vendor_id; (void)product_id; (void)device_name;
     if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");

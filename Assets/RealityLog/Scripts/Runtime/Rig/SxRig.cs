@@ -77,6 +77,15 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_enroll")]
         private static extern int NativeEnroll(byte[] joinCode, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
+        [DllImport(Library, EntryPoint = "sx_rig_sign_in")]
+        private static extern int NativeSignIn(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
+
+        [DllImport(Library, EntryPoint = "sx_rig_sign_out")]
+        private static extern int NativeSignOut();
+
+        [DllImport(Library, EntryPoint = "sx_rig_command")]
+        private static extern int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
+
         [DllImport(Library, EntryPoint = "sx_rig_attach_usb")]
         private static extern int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName);
 
@@ -106,6 +115,11 @@ namespace RealityLog.Rig
         private const string NotOnThisPlatform = "libsx_rig.so exists only in the Android player";
         private static int NativeOpen(byte[] configJson) => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeEnroll(byte[] joinCode, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
+            throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeSignIn(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
+            throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeSignOut() => throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName) =>
             throw new DllNotFoundException(NotOnThisPlatform);
@@ -140,6 +154,31 @@ namespace RealityLog.Rig
             var code = Utf8(joinCode);
             return CallJson("sx_rig_enroll",
                 (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeEnroll(code, outJson, cap, out needed),
+                EnrollBufferBytes);
+        }
+
+        /// <summary>
+        /// <c>sx_rig_sign_in</c>: start the collector's device sign-in. Returns
+        /// <c>{"user_code", "verification_uri_complete", "expires_in"}</c>; the rig polls for the
+        /// approval in the background and <c>floor.operator.signed_in</c> in the status turns true.
+        /// Network-bound: not on Unity's main thread.
+        /// </summary>
+        public static string SignIn() => CallJson("sx_rig_sign_in", NativeSignIn);
+
+        /// <summary><c>sx_rig_sign_out</c>: sign the collector out.</summary>
+        public static void SignOut() => Check("sx_rig_sign_out", NativeSignOut);
+
+        /// <summary>
+        /// <c>sx_rig_command</c>: a collector command on the open collection
+        /// (<c>review_success</c>, <c>review_failure</c>, <c>end_collection</c>, <c>finalize</c>,
+        /// <c>close_failed_collection</c>). Returns <c>{"answer", "floor"}</c>. Network-bound.
+        /// Commands are journaled and keyed by the library, so a buffer retry repeats nothing.
+        /// </summary>
+        public static string Command(string commandJson)
+        {
+            var command = Utf8(commandJson);
+            return CallJson("sx_rig_command",
+                (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeCommand(command, outJson, cap, out needed),
                 EnrollBufferBytes);
         }
 

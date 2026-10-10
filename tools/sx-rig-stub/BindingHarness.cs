@@ -20,6 +20,13 @@ static class Harness {
         catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_enroll", "enroll bad code -> Argument " + e.ErrorJson); }
         try { SxRig.Enroll("sxj_aaaa"); Expect(false, "enroll without site throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State, "enroll without site -> State " + e.ErrorJson); }
+        try { SxRig.SignIn(); Expect(false, "sign-in throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_sign_in", "sign-in -> State " + e.ErrorJson); }
+        SxRig.SignOut();
+        Expect(true, "sign-out ok");
+        Expect(SxRig.Command("{\"command\":\"finalize\"}").Contains("\"answer\""), "command finalize -> answer");
+        try { SxRig.Command("{\"command\":\"end_collection\"}"); Expect(false, "command throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_command", "command -> State " + e.ErrorJson); }
         var (mono, utc) = SxRig.ReadAnchors(() => 123L);
         Expect(mono == 123 && Math.Abs(utc / 1_000_000 - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) < 5000, "anchors " + mono + " " + utc);
         try { SxRig.Start("{\"session\":\"ü\"}", mono, utc); Expect(false, "start throws"); }
