@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using RealityLog.Common;
 
@@ -15,7 +17,8 @@ namespace RealityLog.Rig
     {
         /// <summary>
         /// One of <c>rig_library_missing</c>, <c>rig_open_failed</c>, <c>rig_usb_permission</c>,
-        /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>.
+        /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>,
+        /// <c>rig_identity_pending</c>, <c>rig_operator_missing</c>.
         /// </summary>
         public string Code { get; }
         public string Message { get; }
@@ -55,7 +58,9 @@ namespace RealityLog.Rig
     /// and the Kotlin <c>RigUsbBridge</c> that opens their USB devices.
     ///
     /// <para><b>Expected.</b> The rig is expected when <c>rig_config.json</c> is in the app's
-    /// persistent data directory, or any rig USB device (32e4:9230, 303a:*) is on the bus. Only
+    /// persistent data directory, the headset is enrolled as a pod (POST /api/enroll left a
+    /// machine credential in app-private storage), or any rig USB device (32e4:9230, 303a:*)
+    /// is on the bus. Only
     /// then is the library loaded, opened or called; otherwise every method here is a no-op and
     /// recording behaves exactly as it did before the rig existed (the laptop-pod flow).</para>
     ///
@@ -75,8 +80,20 @@ namespace RealityLog.Rig
     public class RigCoordinator : MonoBehaviour
     {
         public const string ConfigFileName = "rig_config.json";
+        /// <summary>
+        /// Optional site keys merged into the sx_rig_open config (factory_url, auth_url,
+        /// pod_name, rig_type_id, upload_limit_mib_s, seal, min_free_bytes, headset_serial,
+        /// tailscale_ip). POST /api/enroll with a base_url writes factory_url and auth_url here.
+        /// </summary>
+        public const string PodConfigFileName = "pod_config.json";
+        /// <summary>The production site; pod_config.json overrides it (e.g. preview).</summary>
+        public const string DefaultBaseUrl = "https://app.sentientx.io";
+        private const string CredentialsDirectoryName = "sx_pod";
+        private const string CredentialFileName = "machine-credential.json"; // libsx_rig's
+        private const float IdentityPollSeconds = 5f;
         public const string StagingDirectoryName = "rig_staging";
         private const string BridgeClassName = "com.samusynth.questcamera.usb.RigUsbBridge";
+        private const string PodIdentityClassName = "com.samusynth.questcamera.pod.PodIdentity";
         private const float PollIntervalSeconds = 0.5f;
         private const float OpenRetrySeconds = 5f;
 
@@ -104,7 +121,17 @@ namespace RealityLog.Rig
         }
 
         private AndroidJavaObject? bridge;
+        private AndroidJavaObject? activity;
         private string configPath = "";
+        private string podConfigPath = "";
+        private string credentialsPath = "";
+        private volatile bool enrolled;
+        private float lastIdentityPoll = float.NegativeInfinity;
+        private volatile string headsetSerial = "";
+        private volatile string tailscaleIp = "";
+        private volatile string apkBuildId = "";
+        // What the rig was opened with; a change reopens it before an enrollment.
+        private string openedConfigJson = "";
         private string stagingPath = "";
         private UsbSnapshot snapshot = new();
         private readonly Dictionary<string, UsbEntry> attached = new();
@@ -129,15 +156,22 @@ namespace RealityLog.Rig
         private volatile string statusJson = NotExpectedStatus;
         // sx_rig_status may wait up to 50 ms, so it is polled off the main thread.
         private volatile string nativeStatusJson = "null";
+        private volatile string nativeSummaryJson = "";
         private System.Threading.Timer? nativeStatusTimer;
+        private int nativeStatusBusy;
 
         private const string NotExpectedStatus =
-            "{\"expected\":false,\"configured\":false,\"library\":\"unknown\",\"open\":false," +
+            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"headsetSerial\":null," +
+            "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false," +
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
-            "\"attachErrors\":{}},\"native\":null,\"lastRefusal\":null}";
+            "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null," +
+            "\"native\":null,\"lastRefusal\":null}";
 
-        /// <summary>True when rig devices are configured or present; see the class remarks.</summary>
-        private bool Expected => configPresent || snapshot.present > 0 || attached.Count > 0;
+        /// <summary>
+        /// True when the rig is configured (rig_config.json), the headset is enrolled as a pod
+        /// (it holds a machine credential), or rig devices are present; see the class remarks.
+        /// </summary>
+        private bool Expected => configPresent || enrolled || snapshot.present > 0 || attached.Count > 0;
 
         /// <summary><see cref="Expected"/> as of the last main-thread poll. Any thread.</summary>
         public bool IsExpected => expected;
@@ -168,12 +202,18 @@ namespace RealityLog.Rig
             dataPath = Application.persistentDataPath;
             appVersion = Application.version;
             configPath = Path.Combine(Application.persistentDataPath, ConfigFileName);
+            podConfigPath = Path.Combine(Application.persistentDataPath, PodConfigFileName);
+            // The machine credential lives in app-private storage, never on shared storage.
+            credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
 #if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
                 using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var identity = new AndroidJavaClass(PodIdentityClassName);
+                credentialsPath = Path.Combine(
+                    identity.CallStatic<string>("privateFilesDir", activity), CredentialsDirectoryName);
                 bridge = new AndroidJavaObject(BridgeClassName, activity);
             }
             catch (Exception ex)
@@ -205,17 +245,17 @@ namespace RealityLog.Rig
         /// under <see cref="ArmedSession"/>, and whoever armed it stops it with
         /// <see cref="StopEpisode"/> if that start does not happen.
         /// </summary>
-        public RigRefusal? Arm(string sessionName)
+        public RigRefusal? Arm(string sessionName, string operatorId)
         {
             lock (episodeLock)
             {
-                var refusal = ArmLocked(sessionName);
+                var refusal = ArmLocked(sessionName, operatorId);
                 lastRefusal = refusal;
                 return refusal;
             }
         }
 
-        private RigRefusal? ArmLocked(string sessionName)
+        private RigRefusal? ArmLocked(string sessionName, string operatorId)
         {
             if (!expected) return null;
             if (episodeActive)
@@ -239,6 +279,12 @@ namespace RealityLog.Rig
                     "no USB permission for " + string.Join(", ", awaiting) +
                     "; someone must accept the prompt in the headset once with \"always open\" checked");
             }
+            var buildId = apkBuildId;
+            if (buildId.Length == 0)
+            {
+                return new RigRefusal("rig_identity_pending",
+                    "the installed APK's build id is still being computed; retry in a few seconds");
+            }
             try
             {
                 SxRig.RunCheck();
@@ -249,12 +295,17 @@ namespace RealityLog.Rig
             }
 
             var (mono, utc) = SxRig.ReadAnchors(MonotonicClock.Nanos);
-            var episode = "{\"episode_id\":\"" + RigJson.Escape(sessionName) +
-                "\",\"session\":\"" + RigJson.Escape(sessionName) +
-                "\",\"session_dir\":\"" + RigJson.Escape(Path.Combine(dataPath, sessionName)) +
-                "\",\"app_version\":\"" + RigJson.Escape(appVersion) +
-                "\",\"monotonic_anchor_ns\":" + mono.ToString(CultureInfo.InvariantCulture) +
-                ",\"utc_anchor_ns\":" + utc.ToString(CultureInfo.InvariantCulture) + "}";
+            // The seal needs operator_id, quest_apk_build_id and quest_session_dir.
+            var episode = new JObject
+            {
+                ["episode_id"] = sessionName,
+                ["operator_id"] = operatorId,
+                ["quest_apk_build_id"] = buildId,
+                ["quest_session_dir"] = Path.Combine(dataPath, sessionName),
+                ["app_version"] = appVersion,
+                ["monotonic_anchor_ns"] = mono,
+                ["utc_anchor_ns"] = utc,
+            }.ToString(Formatting.None);
             try
             {
                 SxRig.Start(episode, mono, utc);
@@ -268,6 +319,65 @@ namespace RealityLog.Rig
             armedSession = sessionName;
             Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{sessionName}' armed (mono={mono} utc={utc})");
             return null;
+        }
+
+        /// <summary>
+        /// Main thread, before <see cref="Enroll"/>: records the site to enroll with (when
+        /// <paramref name="baseUrl"/> is given, into pod_config.json), then opens the rig — even
+        /// when no rig is expected yet — or reopens it when its config changed (a new tailnet
+        /// address, say) and no episode is active. Returns a refusal or null.
+        /// </summary>
+        public RigRefusal? PrepareEnrollment(string? baseUrl)
+        {
+            if (!string.IsNullOrEmpty(baseUrl))
+            {
+                try
+                {
+                    var site = ReadPodConfig();
+                    var trimmed = baseUrl!.TrimEnd('/');
+                    site["factory_url"] = trimmed + "/d/factory/";
+                    site["auth_url"] = trimmed + "/d/auth/";
+                    File.WriteAllText(podConfigPath, site.ToString(Formatting.Indented));
+                }
+                catch (Exception ex)
+                {
+                    return new RigRefusal("rig_open_failed", $"cannot write {PodConfigFileName}: {ex.Message}");
+                }
+            }
+            PollIdentity(force: true);
+            if (libraryMissing)
+            {
+                return new RigRefusal("rig_library_missing", "this build has no libsx_rig.so", openErrorJson);
+            }
+            if (opened && BuildConfig() is string config && config != openedConfigJson)
+            {
+                lock (episodeLock)
+                {
+                    if (!episodeActive)
+                    {
+                        CloseRig();
+                    }
+                }
+            }
+            if (!opened)
+            {
+                TryOpen();
+            }
+            RefreshStatus();
+            return opened ? null : new RigRefusal("rig_open_failed", "sx_rig_open failed", openErrorJson);
+        }
+
+        /// <summary>
+        /// <c>sx_rig_enroll</c> on the calling (worker) thread, after
+        /// <see cref="PrepareEnrollment"/>. Returns the pod record JSON; throws
+        /// <see cref="SxRigException"/>.
+        /// </summary>
+        public string Enroll(string joinCode)
+        {
+            var result = SxRig.Enroll(joinCode);
+            enrolled = true;
+            expected = true;
+            return result;
         }
 
         /// <summary>
@@ -315,6 +425,8 @@ namespace RealityLog.Rig
         {
             lastPoll = Time.unscaledTime;
             configPresent = File.Exists(configPath);
+            enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
+            PollIdentity(force: false);
             if (bridge != null)
             {
                 try
@@ -345,24 +457,25 @@ namespace RealityLog.Rig
         private void TryOpen()
         {
             lastOpenAttempt = Time.unscaledTime;
-            string rigJson = "{}";
             try
             {
-                if (configPresent)
+                string config;
+                try
                 {
-                    rigJson = File.ReadAllText(configPath).Trim();
-                    if (!rigJson.StartsWith("{", StringComparison.Ordinal))
-                    {
-                        openErrorJson = "{\"code\":\"argument\",\"detail\":\"" +
-                            RigJson.Escape(ConfigFileName + " is not a JSON object") + "\"}";
-                        return;
-                    }
+                    config = BuildConfig();
+                }
+                catch (Exception ex) when (ex is JsonException || ex is InvalidDataException || ex is IOException)
+                {
+                    openErrorJson = new JObject { ["code"] = "argument", ["detail"] = ex.Message }.ToString(Formatting.None);
+                    return;
                 }
                 Directory.CreateDirectory(stagingPath);
-                SxRig.Open("{\"staging_dir\":\"" + RigJson.Escape(stagingPath) + "\",\"rig\":" + rigJson + "}");
+                Directory.CreateDirectory(credentialsPath);
+                SxRig.Open(config);
+                openedConfigJson = config;
                 opened = true;
                 openErrorJson = null;
-                nativeStatusTimer = new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
+                nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
             }
             catch (SxRigLibraryMissingException ex)
@@ -381,6 +494,77 @@ namespace RealityLog.Rig
                 openErrorJson = "{\"code\":\"internal\",\"detail\":\"" + RigJson.Escape(ex.Message) + "\"}";
                 Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: open failed: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// The sx_rig_open config: pod_config.json's keys, the production site unless it names
+        /// one, this headset's serial and tailnet address unless it names them, rig_config.json
+        /// as "rig" when present (otherwise the rig resolves it from the Factory once enrolled),
+        /// and the staging and app-private credentials directories, which are always ours.
+        /// </summary>
+        private string BuildConfig()
+        {
+            var config = ReadPodConfig();
+            config["staging_dir"] = stagingPath;
+            config["credentials_dir"] = credentialsPath;
+            if (config["factory_url"] == null && config["auth_url"] == null)
+            {
+                config["factory_url"] = DefaultBaseUrl + "/d/factory/";
+                config["auth_url"] = DefaultBaseUrl + "/d/auth/";
+            }
+            if (config["headset_serial"] == null && headsetSerial.Length > 0)
+            {
+                config["headset_serial"] = headsetSerial;
+            }
+            if (config["tailscale_ip"] == null && tailscaleIp.Length > 0)
+            {
+                config["tailscale_ip"] = tailscaleIp;
+            }
+            if (File.Exists(configPath))
+            {
+                config["rig"] = JObject.Parse(File.ReadAllText(configPath));
+            }
+            return config.ToString(Formatting.None);
+        }
+
+        private JObject ReadPodConfig()
+        {
+            if (!File.Exists(podConfigPath)) return new JObject();
+            var token = JToken.Parse(File.ReadAllText(podConfigPath));
+            return token as JObject ?? throw new InvalidDataException($"{PodConfigFileName} is not a JSON object");
+        }
+
+        /// <summary>Serial, tailnet address and APK build id from PodIdentity (main thread).</summary>
+        private void PollIdentity(bool force)
+        {
+            if (activity == null) return;
+            if (!force && Time.unscaledTime - lastIdentityPoll < IdentityPollSeconds && apkBuildId.Length > 0) return;
+            lastIdentityPoll = Time.unscaledTime;
+            try
+            {
+                using var identity = new AndroidJavaClass(PodIdentityClassName);
+                headsetSerial = identity.CallStatic<string>("headsetSerial") ?? "";
+                tailscaleIp = identity.CallStatic<string>("tailscaleIp") ?? "";
+                apkBuildId = identity.CallStatic<string>("apkBuildId", activity) ?? "";
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: pod identity: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Closes the rig; the bridge's connections stay open, so the next poll reopens it and
+        /// attaches every device again.
+        /// </summary>
+        private void CloseRig()
+        {
+            SxRig.Close();
+            opened = false;
+            openedConfigJson = "";
+            attached.Clear();
+            attachErrors.Clear();
+            lastOpenAttempt = float.NegativeInfinity;
         }
 
         /// <summary>Attaches new devices and detaches vanished ones, then releases their fds.</summary>
@@ -460,6 +644,10 @@ namespace RealityLog.Rig
             var json = new StringBuilder(512);
             json.Append("{\"expected\":").Append(Expected ? "true" : "false")
                 .Append(",\"configured\":").Append(configPresent ? "true" : "false")
+                .Append(",\"enrolled\":").Append(enrolled ? "true" : "false")
+                .Append(",\"headsetSerial\":").Append(JsonString(headsetSerial))
+                .Append(",\"tailscaleIp\":").Append(JsonString(tailscaleIp))
+                .Append(",\"apkBuildId\":").Append(JsonString(apkBuildId))
                 .Append(",\"library\":\"").Append(libraryMissing ? "missing" : opened ? "present" : "unknown").Append('"')
                 .Append(",\"open\":").Append(opened ? "true" : "false")
                 .Append(",\"openError\":").Append(openErrorJson ?? "null")
@@ -492,7 +680,18 @@ namespace RealityLog.Rig
                 first = false;
                 json.Append('"').Append(RigJson.Escape(entry.Key)).Append("\":").Append(entry.Value);
             }
-            json.Append("}},\"native\":").Append(nativeJson)
+            json.Append("}}");
+            var summary = opened ? nativeSummaryJson : "";
+            if (summary.Length > 2)
+            {
+                // podId, registeredRig, seals, uplink, lifted from the native status.
+                json.Append(',').Append(summary, 1, summary.Length - 2);
+            }
+            else
+            {
+                json.Append(",\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null");
+            }
+            json.Append(",\"native\":").Append(nativeJson)
                 .Append(",\"lastRefusal\":").Append(lastRefusal?.ToJson() ?? "null")
                 .Append('}');
             statusJson = json.ToString();
@@ -500,16 +699,38 @@ namespace RealityLog.Rig
 
         private void PollNativeStatus()
         {
-            if (!opened) return;
+            if (!opened || System.Threading.Interlocked.Exchange(ref nativeStatusBusy, 1) == 1) return;
             try
             {
-                nativeStatusJson = SxRig.Status();
+                var json = SxRig.Status();
+                nativeStatusJson = json;
+                // "busy" (a check/start/stop/enroll holds the rig) keeps the last summary.
+                if (JToken.Parse(json) is JObject status && (string?)status["state"] != "busy")
+                {
+                    nativeSummaryJson = new JObject
+                    {
+                        ["podId"] = status["pod_id"],
+                        ["registeredRig"] = status["registered_rig"],
+                        ["seals"] = status["seals"],
+                        ["uplink"] = status["uplink"],
+                    }.ToString(Formatting.None);
+                }
             }
             catch (SxRigException ex)
             {
                 nativeStatusJson = "{\"error\":" + ex.ErrorJson + "}";
             }
+            catch (JsonException)
+            {
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref nativeStatusBusy, 0);
+            }
         }
+
+        private static string JsonString(string value) =>
+            value.Length == 0 ? "null" : "\"" + RigJson.Escape(value) + "\"";
 
         private void OnDestroy()
         {
@@ -542,6 +763,8 @@ namespace RealityLog.Rig
             }
             bridge?.Dispose();
             bridge = null;
+            activity?.Dispose();
+            activity = null;
             // Instance is kept: a RecordingManager destroy-stop that runs after this still
             // reads the episode's receipt through StopEpisode.
         }

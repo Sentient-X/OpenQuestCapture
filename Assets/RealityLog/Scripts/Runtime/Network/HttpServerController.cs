@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using RealityLog.Common;
 using RealityLog.Core;
@@ -182,6 +184,7 @@ namespace RealityLog.Network
             server.Post("/api/keep-awake", HandleKeepAwake);
             server.Get("/api/diagnostics", HandleDiagnostics);
             server.Post("/api/timesync/ping", HandleTimesyncPing);
+            server.Post("/api/enroll", HandleEnroll);
         }
 
         // ── GET /api/status ──
@@ -264,8 +267,13 @@ namespace RealityLog.Network
                 {
                     return AlreadyRecordingResponse();
                 }
+                // The rig's seal names the operator; a headset pod's start must carry one.
+                if (StartBodyOperatorId(request.Body, out var bodyError) is not string operatorId)
+                {
+                    return bodyError!;
+                }
                 var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                if (rig.Arm(session) is RigRefusal armRefusal)
+                if (rig.Arm(session, operatorId) is RigRefusal armRefusal)
                 {
                     return RigNotReadyResponse(armRefusal);
                 }
@@ -1151,6 +1159,137 @@ namespace RealityLog.Network
         // it is refused at once instead of timing out.
         private static HttpResponse AppPausedResponse() => ServiceUnavailable("app_paused",
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
+
+        /// <summary>
+        /// operator_id of a start body (a non-empty string), or null with the typed 400 to
+        /// answer: invalid_body for a body that is not a JSON object, operator_id_required.
+        /// </summary>
+        private static string? StartBodyOperatorId(string body, out HttpResponse? error)
+        {
+            error = null;
+            JObject? fields = null;
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                try
+                {
+                    fields = JToken.Parse(body) as JObject;
+                }
+                catch (JsonException)
+                {
+                }
+                if (fields == null)
+                {
+                    error = TypedError(400, "invalid_body", "the start-recording body is not a JSON object");
+                    return null;
+                }
+            }
+            if (fields?["operator_id"] is JValue { Type: JTokenType.String } value
+                && ((string?)value)?.Trim() is { Length: > 0 } operatorId)
+            {
+                return operatorId;
+            }
+            error = TypedError(400, "operator_id_required",
+                "the wrist rig is configured, enrolled or plugged in, so the start body must carry operator_id (a non-empty string) for the episode's seal");
+            return null;
+        }
+
+        // ── POST /api/enroll ──
+
+        /// <summary>
+        /// Body <c>{"join_code": "sxj_...", "base_url": "https://app.preview.sentientx.io"}</c>
+        /// (base_url optional; the production site, or the one pod_config.json already names,
+        /// otherwise). Commissions this headset as a Factory pod of kind headset through
+        /// libsx_rig (up to 60 s, on this worker thread). With a credential already held the
+        /// code is ignored and the commission re-asserted. Errors are
+        /// <c>{"error", "reason"?, "message", "rig"?}</c>: 400 invalid_body /
+        /// join_code_required / enroll_failed (argument), 409 recording, 503 app_paused /
+        /// enroll_failed (reason: the rig's error code or its refusal code).
+        /// </summary>
+        private HttpResponse HandleEnroll(HttpRequest request)
+        {
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+            JObject? fields = null;
+            try
+            {
+                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "{}" : request.Body) as JObject;
+            }
+            catch (JsonException)
+            {
+            }
+            if (fields == null)
+            {
+                return TypedError(400, "invalid_body", "the enroll body is not a JSON object");
+            }
+            if (fields["join_code"] is not JValue { Type: JTokenType.String } codeValue
+                || ((string?)codeValue)?.Trim() is not { Length: > 0 } joinCode)
+            {
+                return TypedError(400, "join_code_required", "the body must carry join_code (an sxj_... string)");
+            }
+            string? baseUrl = null;
+            if (fields["base_url"] is JToken baseToken && baseToken.Type != JTokenType.Null)
+            {
+                if (baseToken.Type != JTokenType.String
+                    || !Uri.TryCreate((string?)baseToken, UriKind.Absolute, out var baseUri)
+                    || baseUri.Scheme != Uri.UriSchemeHttps)
+                {
+                    return TypedError(400, "invalid_body", "base_url must be an https URL");
+                }
+                baseUrl = baseUri.GetLeftPart(UriPartial.Authority);
+            }
+            var manager = recordingManager;
+            if (manager is not null && manager.State != RecordingState.Idle)
+            {
+                return TypedError(409, "recording", "stop the recording before enrolling");
+            }
+            var rig = RigCoordinator.Instance;
+            if (rig is null)
+            {
+                return TypedError(503, "enroll_failed", "the rig coordinator is not running", "rig_unavailable");
+            }
+
+            RigRefusal? prepareRefusal = null;
+            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.PrepareEnrollment(baseUrl));
+            if (!signal.Wait(5000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not prepare the enrollment within 5 s; nothing was enrolled");
+            }
+            if (prepareRefusal != null)
+            {
+                return TypedError(503, "enroll_failed", prepareRefusal.Message, prepareRefusal.Code, prepareRefusal.DetailJson);
+            }
+            try
+            {
+                var enrollment = rig.Enroll(joinCode);
+                Debug.Log($"[{Constants.LOG_TAG}] HttpServerController: enrolled as a headset pod");
+                return HttpResponse.Ok("{\"status\":\"enrolled\",\"enrollment\":" + enrollment + "}");
+            }
+            catch (SxRigException ex)
+            {
+                string reason = "unknown";
+                try
+                {
+                    reason = (string?)JObject.Parse(ex.ErrorJson)["code"] ?? reason;
+                }
+                catch (JsonException)
+                {
+                }
+                Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: {ex.Message}");
+                return TypedError(ex.Error == SxRigError.Argument ? 400 : 503,
+                    "enroll_failed", ex.Message, reason, ex.ErrorJson);
+            }
+        }
+
+        private static HttpResponse TypedError(int status, string error, string message,
+            string? reason = null, string? rigJson = null)
+        {
+            var body = new JObject { ["error"] = error, ["message"] = message };
+            if (reason != null) body["reason"] = reason;
+            if (rigJson != null) body["rig"] = JToken.Parse(rigJson);
+            return HttpResponse.Json(status, body.ToString(Formatting.None));
+        }
 
         private HttpResponse AlreadyRecordingResponse() =>
             HttpResponse.Json(409,
