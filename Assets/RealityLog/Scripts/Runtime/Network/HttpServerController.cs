@@ -185,6 +185,9 @@ namespace RealityLog.Network
             server.Get("/api/diagnostics", HandleDiagnostics);
             server.Post("/api/timesync/ping", HandleTimesyncPing);
             server.Post("/api/enroll", HandleEnroll);
+            server.Post("/api/sign-in", HandleSignIn);
+            server.Post("/api/sign-out", HandleSignOut);
+            server.Post("/api/command", HandleCommand);
         }
 
         // ── GET /api/status ──
@@ -272,10 +275,16 @@ namespace RealityLog.Network
                 {
                     return bodyError!;
                 }
-                var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                if (rig.Arm(session, operatorId) is RigRefusal armRefusal)
+                if (!StartBodyCollection(request.Body, out var taskAssignmentId, out var mode, out var collectionError))
                 {
-                    return RigNotReadyResponse(armRefusal);
+                    return collectionError!;
+                }
+                var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                if (rig.Arm(session, operatorId, taskAssignmentId, mode) is RigRefusal armRefusal)
+                {
+                    return armRefusal.Code == "collector_signed_out"
+                        ? RigNotReadyResponse(armRefusal, 409)
+                        : RigNotReadyResponse(armRefusal);
                 }
                 armedSession = rig.ArmedSession;
             }
@@ -1193,6 +1202,173 @@ namespace RealityLog.Network
             return null;
         }
 
+        /// <summary>
+        /// The optional collection fields of a start body: task_assignment_id (a non-empty
+        /// string) and mode ("directed" | "undirected"). False with a typed 400 when either is
+        /// present and malformed. The body is already known to be a JSON object or empty.
+        /// </summary>
+        private static bool StartBodyCollection(string body, out string? taskAssignmentId,
+            out string? mode, out HttpResponse? error)
+        {
+            taskAssignmentId = null;
+            mode = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(body) || JToken.Parse(body) is not JObject fields)
+            {
+                return true;
+            }
+            if (fields["task_assignment_id"] is JToken task && task.Type != JTokenType.Null)
+            {
+                if (task.Type != JTokenType.String || ((string?)task)?.Trim() is not { Length: > 0 } id)
+                {
+                    error = TypedError(400, "invalid_body", "task_assignment_id must be a non-empty string");
+                    return false;
+                }
+                taskAssignmentId = id;
+            }
+            if (fields["mode"] is JToken modeToken && modeToken.Type != JTokenType.Null)
+            {
+                var value = modeToken.Type == JTokenType.String ? (string?)modeToken : null;
+                if (value != "directed" && value != "undirected")
+                {
+                    error = TypedError(400, "invalid_body", "mode must be \"directed\" or \"undirected\"");
+                    return false;
+                }
+                mode = value;
+            }
+            return true;
+        }
+
+        // ── POST /api/sign-in, /api/sign-out, /api/command ──
+
+        private static readonly HashSet<string> CollectorCommands = new()
+        {
+            "review_success", "review_failure", "end_collection", "finalize", "close_failed_collection",
+        };
+
+        /// <summary>
+        /// Starts the collector's sign-in on an enrolled headset and answers
+        /// <c>{"status":"pending","user_code","verification_uri_complete","expires_in"}</c>. The
+        /// operator cannot see the headset, so the caller shows the code; the headset chimes when
+        /// the approval lands and /api/status rig.floor.operator.signed_in turns true.
+        /// </summary>
+        private HttpResponse HandleSignIn(HttpRequest request)
+        {
+            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
+            try
+            {
+                var shown = JObject.Parse(rig!.SignIn());
+                shown["status"] = "pending";
+                return HttpResponse.Ok(shown.ToString(Formatting.None));
+            }
+            catch (SxRigException ex)
+            {
+                return RigCallError("sign_in_failed", ex);
+            }
+            catch (JsonException ex)
+            {
+                return TypedError(500, "sign_in_failed", ex.Message);
+            }
+        }
+
+        private HttpResponse HandleSignOut(HttpRequest request)
+        {
+            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
+            var manager = recordingManager;
+            if (manager is not null && manager.State != RecordingState.Idle)
+            {
+                return TypedError(409, "recording", "stop the recording before signing out");
+            }
+            try
+            {
+                rig!.SignOut();
+                return HttpResponse.Ok("{\"status\":\"signed_out\"}");
+            }
+            catch (SxRigException ex)
+            {
+                return RigCallError("sign_out_failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// A collector command on the open collection, passed to sx_rig_command as given after
+        /// its name is checked: <c>{"command": "review_success" | "review_failure",
+        /// "episode_id", "answers": [...], "failure_cause"?}</c> or <c>{"command": "end_collection"
+        /// | "finalize" | "close_failed_collection"}</c>. Answers the rig's
+        /// <c>{"answer", "floor"}</c>. A review before the Factory observed the attempt is
+        /// 409 command_refused (reason state); retry it.
+        /// </summary>
+        private HttpResponse HandleCommand(HttpRequest request)
+        {
+            JObject? fields = null;
+            try
+            {
+                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "null" : request.Body) as JObject;
+            }
+            catch (JsonException)
+            {
+            }
+            if (fields == null)
+            {
+                return TypedError(400, "invalid_body", "the command body is not a JSON object");
+            }
+            if (fields["command"] is not JValue { Type: JTokenType.String } name
+                || !CollectorCommands.Contains((string)name!))
+            {
+                return TypedError(400, "unknown_command",
+                    "command must be one of " + string.Join(", ", CollectorCommands));
+            }
+            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
+            try
+            {
+                return HttpResponse.Ok(rig!.Command(fields.ToString(Formatting.None)));
+            }
+            catch (SxRigException ex)
+            {
+                return RigCallError("command_refused", ex);
+            }
+        }
+
+        /// <summary>The rig, open, for a floor call; else the typed refusal to answer.</summary>
+        private static HttpResponse? RigForFloor(out RigCoordinator? rig)
+        {
+            rig = RigCoordinator.Instance;
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+            if (rig is null || !rig.IsOpen)
+            {
+                return TypedError(409, "not_enrolled",
+                    "the headset is not enrolled as a pod (POST /api/enroll), or its rig is not open");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A failed libsx_rig floor call: 400 for a malformed argument, 409 for a call not
+        /// valid now (not enrolled, no collection, attempt not yet observed), 503 otherwise.
+        /// <c>reason</c> is the library's error code.
+        /// </summary>
+        private static HttpResponse RigCallError(string error, SxRigException ex)
+        {
+            string reason = "unknown";
+            try
+            {
+                reason = (string?)JObject.Parse(ex.ErrorJson)["code"] ?? reason;
+            }
+            catch (JsonException)
+            {
+            }
+            var status = ex.Error switch
+            {
+                SxRigError.Argument => 400,
+                SxRigError.State => 409,
+                _ => 503,
+            };
+            return TypedError(status, error, ex.Message, reason, ex.ErrorJson);
+        }
+
         // ── POST /api/enroll ──
 
         /// <summary>
@@ -1302,12 +1478,12 @@ namespace RealityLog.Network
         // The rig (wrist cameras, gripper encoders) is configured or plugged in and not ready.
         // 503 like the other refusals of a not-ready headset; `error` is "rig_not_ready",
         // `reason` the closed RigRefusal code, `rig` the library's own error JSON.
-        private static HttpResponse RigNotReadyResponse(RigRefusal refusal)
+        private static HttpResponse RigNotReadyResponse(RigRefusal refusal, int status = 503)
         {
-            var response = HttpResponse.Json(503,
+            var response = HttpResponse.Json(status,
                 $"{{\"error\":\"rig_not_ready\",\"reason\":\"{EscapeJson(refusal.Code)}\"," +
                 $"\"message\":\"{EscapeJson(refusal.Message)}\",\"rig\":{refusal.DetailJson}}}");
-            response.StatusText = "Service Unavailable";
+            if (status == 503) response.StatusText = "Service Unavailable";
             return response;
         }
 

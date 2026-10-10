@@ -18,7 +18,7 @@ namespace RealityLog.Rig
         /// <summary>
         /// One of <c>rig_library_missing</c>, <c>rig_open_failed</c>, <c>rig_usb_permission</c>,
         /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>,
-        /// <c>rig_identity_pending</c>, <c>rig_operator_missing</c>.
+        /// <c>rig_identity_pending</c>, <c>collector_signed_out</c>.
         /// </summary>
         public string Code { get; }
         public string Message { get; }
@@ -82,8 +82,10 @@ namespace RealityLog.Rig
         public const string ConfigFileName = "rig_config.json";
         /// <summary>
         /// Optional site keys merged into the sx_rig_open config (factory_url, auth_url,
-        /// pod_name, rig_type_id, upload_limit_mib_s, seal, min_free_bytes, headset_serial,
-        /// tailscale_ip). POST /api/enroll with a base_url writes factory_url and auth_url here.
+        /// pod_name, rig_type_id, upload_limit_mib_s, seal, min_free_bytes, tailscale_ip), and
+        /// headset_serial, which provisioning writes over adb (apps cannot read ro.serialno on
+        /// the Quest 3S); the rig also reads it through pod_config_path. POST /api/enroll with
+        /// a base_url writes factory_url and auth_url here.
         /// </summary>
         public const string PodConfigFileName = "pod_config.json";
         /// <summary>The production site; pod_config.json overrides it (e.g. preview).</summary>
@@ -159,12 +161,16 @@ namespace RealityLog.Rig
         private volatile string nativeSummaryJson = "";
         private System.Threading.Timer? nativeStatusTimer;
         private int nativeStatusBusy;
+        private volatile bool collectorSignedIn;
+        private volatile bool signInCuePending;
+        private bool floorObserved; // native-status timer thread only
+        private AudioSource? cueSource;
 
         private const string NotExpectedStatus =
             "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"headsetSerial\":null," +
             "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false," +
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
-            "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null," +
+            "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
             "\"native\":null,\"lastRefusal\":null}";
 
         /// <summary>
@@ -230,6 +236,12 @@ namespace RealityLog.Rig
 
         private void Update()
         {
+            if (signInCuePending)
+            {
+                signInCuePending = false;
+                PlaySignInCue();
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector signed in");
+            }
             if (Time.unscaledTime - lastPoll >= PollIntervalSeconds)
             {
                 Poll();
@@ -245,17 +257,19 @@ namespace RealityLog.Rig
         /// under <see cref="ArmedSession"/>, and whoever armed it stops it with
         /// <see cref="StopEpisode"/> if that start does not happen.
         /// </summary>
-        public RigRefusal? Arm(string sessionName, string operatorId)
+        public RigRefusal? Arm(string sessionName, string operatorId,
+            string? taskAssignmentId = null, string? mode = null)
         {
             lock (episodeLock)
             {
-                var refusal = ArmLocked(sessionName, operatorId);
+                var refusal = ArmLocked(sessionName, operatorId, taskAssignmentId, mode);
                 lastRefusal = refusal;
                 return refusal;
             }
         }
 
-        private RigRefusal? ArmLocked(string sessionName, string operatorId)
+        private RigRefusal? ArmLocked(string sessionName, string operatorId,
+            string? taskAssignmentId, string? mode)
         {
             if (!expected) return null;
             if (episodeActive)
@@ -285,6 +299,14 @@ namespace RealityLog.Rig
                 return new RigRefusal("rig_identity_pending",
                     "the installed APK's build id is still being computed; retry in a few seconds");
             }
+            // An enrolled headset's start begins the Factory episode in the collector's open
+            // collection, so it needs a signed-in collector (sx_rig_start answers
+            // SX_RIG_E_STATE otherwise). Asked fresh: the cached status may be a second old.
+            if (enrolled && CollectorSignedIn(SafeStatus()) == false)
+            {
+                return new RigRefusal("collector_signed_out",
+                    "no collector is signed in on this headset; POST /api/sign-in and approve the code");
+            }
             try
             {
                 SxRig.RunCheck();
@@ -303,15 +325,28 @@ namespace RealityLog.Rig
                 ["quest_apk_build_id"] = buildId,
                 ["quest_session_dir"] = Path.Combine(dataPath, sessionName),
                 ["app_version"] = appVersion,
+                ["task_assignment_id"] = taskAssignmentId,
+                ["mode"] = mode,
                 ["monotonic_anchor_ns"] = mono,
                 ["utc_anchor_ns"] = utc,
-            }.ToString(Formatting.None);
+            };
+            foreach (var key in new[] { "task_assignment_id", "mode" })
+            {
+                if (episode[key]?.Type == JTokenType.Null) episode.Remove(key);
+            }
+            var episodeJson = episode.ToString(Formatting.None);
             try
             {
-                SxRig.Start(episode, mono, utc);
+                SxRig.Start(episodeJson, mono, utc);
             }
             catch (SxRigException ex)
             {
+                // A sign-out between the check above and the start.
+                if (ex.Error == SxRigError.State && enrolled && CollectorSignedIn(SafeStatus()) == false)
+                {
+                    return new RigRefusal("collector_signed_out",
+                        "the collector signed out; POST /api/sign-in and approve the code", ex.ErrorJson);
+                }
                 return new RigRefusal("rig_start_failed", ex.Message, ex.ErrorJson);
             }
             episodeReceiptJson = null;
@@ -379,6 +414,25 @@ namespace RealityLog.Rig
             expected = true;
             return result;
         }
+
+        /// <summary>True once the rig is open (an enrolled headset opens it on its own).</summary>
+        public bool IsOpen => opened;
+
+        /// <summary>
+        /// <c>sx_rig_sign_in</c> on the calling (worker) thread; throws
+        /// <see cref="SxRigException"/>. The cue plays when the approval lands.
+        /// </summary>
+        public string SignIn() => SxRig.SignIn();
+
+        /// <summary><c>sx_rig_sign_out</c>; throws <see cref="SxRigException"/>.</summary>
+        public void SignOut()
+        {
+            SxRig.SignOut();
+            collectorSignedIn = false;
+        }
+
+        /// <summary><c>sx_rig_command</c> on the calling (worker) thread.</summary>
+        public string Command(string commandJson) => SxRig.Command(commandJson);
 
         /// <summary>
         /// The session an armed, not yet recording, rig episode belongs to; null otherwise.
@@ -512,10 +566,9 @@ namespace RealityLog.Rig
                 config["factory_url"] = DefaultBaseUrl + "/d/factory/";
                 config["auth_url"] = DefaultBaseUrl + "/d/auth/";
             }
-            if (config["headset_serial"] == null && headsetSerial.Length > 0)
-            {
-                config["headset_serial"] = headsetSerial;
-            }
+            // Apps cannot read ro.serialno on the Quest 3S: provisioning writes headset_serial
+            // into pod_config.json over adb, and the rig reads it through pod_config_path.
+            config["pod_config_path"] = podConfigPath;
             if (config["tailscale_ip"] == null && tailscaleIp.Length > 0)
             {
                 config["tailscale_ip"] = tailscaleIp;
@@ -525,6 +578,18 @@ namespace RealityLog.Rig
                 config["rig"] = JObject.Parse(File.ReadAllText(configPath));
             }
             return config.ToString(Formatting.None);
+        }
+
+        private string ReadPodConfigSerial()
+        {
+            try
+            {
+                return (string?)ReadPodConfig()["headset_serial"] ?? "";
+            }
+            catch (Exception)
+            {
+                return "";
+            }
         }
 
         private JObject ReadPodConfig()
@@ -543,7 +608,7 @@ namespace RealityLog.Rig
             try
             {
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
-                headsetSerial = identity.CallStatic<string>("headsetSerial") ?? "";
+                headsetSerial = ReadPodConfigSerial();
                 tailscaleIp = identity.CallStatic<string>("tailscaleIp") ?? "";
                 apkBuildId = identity.CallStatic<string>("apkBuildId", activity) ?? "";
             }
@@ -689,7 +754,7 @@ namespace RealityLog.Rig
             }
             else
             {
-                json.Append(",\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null");
+                json.Append(",\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null");
             }
             json.Append(",\"native\":").Append(nativeJson)
                 .Append(",\"lastRefusal\":").Append(lastRefusal?.ToJson() ?? "null")
@@ -713,7 +778,17 @@ namespace RealityLog.Rig
                         ["registeredRig"] = status["registered_rig"],
                         ["seals"] = status["seals"],
                         ["uplink"] = status["uplink"],
+                        ["floor"] = status["floor"],
                     }.ToString(Formatting.None);
+                    var signedIn = CollectorSignedIn(status) == true;
+                    // Only a transition seen while running cues; a sign-in already held at
+                    // launch does not.
+                    if (signedIn && !collectorSignedIn && floorObserved)
+                    {
+                        signInCuePending = true;
+                    }
+                    collectorSignedIn = signedIn;
+                    floorObserved = true;
                 }
             }
             catch (SxRigException ex)
@@ -727,6 +802,47 @@ namespace RealityLog.Rig
             {
                 System.Threading.Volatile.Write(ref nativeStatusBusy, 0);
             }
+        }
+
+        /// <summary>floor.operator.signed_in of a status, or null when the status has no floor.</summary>
+        private static bool? CollectorSignedIn(JObject? status) =>
+            status?["floor"]?["operator"]?["signed_in"] is JValue { Type: JTokenType.Boolean } value
+                ? (bool)value : (bool?)null;
+
+        /// <summary>sx_rig_status parsed, or null (busy, failed, unparsable). Any thread.</summary>
+        private static JObject? SafeStatus()
+        {
+            try
+            {
+                var status = JToken.Parse(SxRig.Status()) as JObject;
+                return (string?)status?["state"] == "busy" ? null : status;
+            }
+            catch (Exception ex) when (ex is SxRigException || ex is JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// A short rising two-tone chime, synthesized (no asset), for a collector's sign-in: the
+        /// operator wears the headset on the forehead and cannot see a confirmation.
+        /// </summary>
+        private void PlaySignInCue()
+        {
+            const int rate = 44100;
+            var samples = new float[rate * 3 / 10];
+            for (var i = 0; i < samples.Length; i++)
+            {
+                var t = (float)i / rate;
+                var frequency = i < samples.Length / 2 ? 880f : 1320f;
+                var envelope = Mathf.Min(1f, Mathf.Min(i, samples.Length - i) / (rate * 0.01f));
+                samples[i] = 0.35f * envelope * Mathf.Sin(2f * Mathf.PI * frequency * t);
+            }
+            var clip = AudioClip.Create("SignInCue", samples.Length, 1, rate, false);
+            clip.SetData(samples, 0);
+            cueSource ??= gameObject.AddComponent<AudioSource>();
+            cueSource.spatialBlend = 0f;
+            cueSource.PlayOneShot(clip);
         }
 
         private static string JsonString(string value) =>
