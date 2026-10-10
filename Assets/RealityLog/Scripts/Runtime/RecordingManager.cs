@@ -391,9 +391,6 @@ namespace RealityLog
                     provider.RequestStopRecordingSession();
                     EndPhase($"request_stop:{provider.name}");
                 }
-                // The rig's streams stop with the head cameras' (bounded 5 s by the ABI).
-                StopRig(savedDirectory);
-                EndPhase("rig");
                 foreach (var provider in cameraProviders)
                 {
                     provider.StopRecordingSession();
@@ -427,6 +424,12 @@ namespace RealityLog
                 WriteTrackingOriginRecord(savedDirectory);
 
                 EndPhase("tracking_origin");
+
+                // The rig stops last (bounded 5 s): its seal starts on the stop and reads this
+                // session, so every OQC file must be final first. The cameras' MP4s and
+                // sidecars are, since their stop above is synchronous.
+                StopRig(savedDirectory);
+                EndPhase("rig");
             }
             catch
             {
@@ -560,7 +563,6 @@ namespace RealityLog
 
                 foreach (var provider in cameraProviders)
                     provider.RequestStopRecordingSession();
-                StopRig(currentSessionDirectory ?? string.Empty);
                 foreach (var provider in cameraProviders)
                     provider.StopRecordingSession();
 
@@ -576,6 +578,7 @@ namespace RealityLog
                 string savedDirectory = currentSessionDirectory ?? string.Empty;
                 WriteStreamManifest(savedDirectory);
                 WriteTrackingOriginRecord(savedDirectory);
+                StopRig(savedDirectory); // last: the rig's seal reads this session
                 isRecording = false;
                 System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
                 recordingStartTime = 0f;
