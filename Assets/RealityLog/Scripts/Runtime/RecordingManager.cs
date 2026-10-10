@@ -471,18 +471,44 @@ namespace RealityLog
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Missing CaptureTimer reference!");
         }
 
+        private void OnApplicationQuit()
+        {
+            // Unity calls this on every object before destroying any, so the stop below still
+            // sees every logger alive; OnDestroy's stop is the fallback when it is skipped.
+            recordingPauseStartTime = null;
+            StopForTeardown("OnApplicationQuit");
+        }
+
         private void OnDestroy()
         {
-            // Safety: ensure recording stops on cleanup.
-            // Can't rely on the coroutine here since Unity is tearing down the
-            // MonoBehaviour — do a synchronous stop and validate immediately.
-            // Native encoder stop/finalization is synchronous, and the bg poll is
-            // just a verification safety net, so skipping it on destroy is fine.
             recordingPauseStartTime = null; // Clear any pending grace period on destroy.
 
             if (isRecording)
             {
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
+                StopForTeardown("OnDestroy");
+            }
+            else if (stopCoroutine != null)
+            {
+                // A finalization coroutine from a prior StopRecording() is still waiting.
+                // The bg thread will finish on its own; fire the events synchronously now
+                // since the coroutine won't survive OnDestroy.
+                // (savedDirectory was already cleared, so nothing further to do — the bg
+                //  thread's PollVideoFinalization will still log its result.)
+                stopCoroutine = null;
+            }
+        }
+
+        /// <summary>
+        /// Safety: ensure recording stops on teardown. Can't rely on the coroutine since
+        /// Unity is tearing down — do a synchronous stop and validate immediately. Native
+        /// encoder stop/finalization is synchronous, and the bg poll is just a verification
+        /// safety net, so skipping it here is fine.
+        /// </summary>
+        private void StopForTeardown(string reason)
+        {
+            if (isRecording)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; performing synchronous stop.");
 
                 captureTimer.StopCapture();
                 HeadTrackingMonitor.EndRecording();
@@ -516,15 +542,6 @@ namespace RealityLog
                     ValidateSavedSession(savedDirectory);
                 }
                 ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
-            }
-            else if (stopCoroutine != null)
-            {
-                // A finalization coroutine from a prior StopRecording() is still waiting.
-                // The bg thread will finish on its own; fire the events synchronously now
-                // since the coroutine won't survive OnDestroy.
-                // (savedDirectory was already cleared, so nothing further to do — the bg
-                //  thread's PollVideoFinalization will still log its result.)
-                stopCoroutine = null;
             }
         }
 
@@ -758,6 +775,11 @@ namespace RealityLog
         /// Writes stream_manifest.json with the row count of every CSV stream. Must run after
         /// the loggers are stopped so the counts are final. A stream with 0 rows means the
         /// source never produced data (e.g. a frozen OVR pose stream). Never throws.
+        /// Loggers are tested with <c>is null</c>, not Unity's <c>== null</c>: on an app exit
+        /// (HOME, then the OS ends the activity) Unity may destroy a logger before this
+        /// manager's OnDestroy writes the manifest, and a destroyed component compares equal
+        /// to null although its stopped row count and stats are still readable — which is
+        /// how imu.csv went missing from the manifest.
         /// </summary>
         private void WriteStreamManifest(string sessionDirectoryName)
         {
@@ -781,21 +803,21 @@ namespace RealityLog
                 {
                     foreach (var logger in poseLoggers)
                     {
-                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                        if (logger is not null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
                     }
                 }
                 if (imuLoggers != null)
                 {
                     foreach (var logger in imuLoggers)
                     {
-                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                        if (logger is not null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
                     }
                 }
                 if (bodyTrackingLoggers != null)
                 {
                     foreach (var logger in bodyTrackingLoggers)
                     {
-                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
+                        if (logger is not null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
                     }
                 }
                 streams.Append(']');
