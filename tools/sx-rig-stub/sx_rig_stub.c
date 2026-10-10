@@ -59,6 +59,12 @@ int32_t sx_rig_command(const char *command_json, char *out_json, size_t cap, siz
     return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: no open collection");
 }
 
+int32_t sx_rig_report_device(const char *device_json) {
+    if (device_json == NULL || device_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "device report is not a JSON object");
+    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
+    return SX_RIG_OK;
+}
+
 int32_t sx_rig_attach_usb(int32_t fd, uint16_t vendor_id, uint16_t product_id, const char *device_name) {
     (void)fd; (void)vendor_id; (void)product_id; (void)device_name;
     if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");

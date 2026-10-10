@@ -86,6 +86,9 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_command")]
         private static extern int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
+        [DllImport(Library, EntryPoint = "sx_rig_report_device")]
+        private static extern int NativeReportDevice(byte[] deviceJson);
+
         [DllImport(Library, EntryPoint = "sx_rig_attach_usb")]
         private static extern int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName);
 
@@ -121,6 +124,7 @@ namespace RealityLog.Rig
         private static int NativeSignOut() => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeReportDevice(byte[] deviceJson) => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeDetachUsb(byte[] deviceName) => throw new DllNotFoundException(NotOnThisPlatform);
@@ -172,7 +176,8 @@ namespace RealityLog.Rig
         /// <c>sx_rig_command</c>: a collector command on the open collection
         /// (<c>review_success</c>, <c>review_failure</c>, <c>end_collection</c>, <c>finalize</c>,
         /// <c>close_failed_collection</c>). Returns <c>{"answer", "floor"}</c>. Network-bound.
-        /// Commands are journaled and keyed by the library, so a buffer retry repeats nothing.
+        /// The JSON should carry a <c>command_id</c> (UUID, the idempotency key): the buffer
+        /// retry resends the same bytes, so it is the same command.
         /// </summary>
         public static string Command(string commandJson)
         {
@@ -181,6 +186,13 @@ namespace RealityLog.Rig
                 (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeCommand(command, outJson, cap, out needed),
                 EnrollBufferBytes);
         }
+
+        /// <summary>
+        /// <c>sx_rig_report_device</c>: <c>{"battery_percent": 0-100, "charging": bool,
+        /// "network_time_synchronized": bool}</c>. The heartbeat trusts it for 60 s.
+        /// </summary>
+        public static void ReportDevice(string deviceJson) =>
+            Check("sx_rig_report_device", () => NativeReportDevice(Utf8(deviceJson)));
 
         /// <summary>
         /// <c>sx_rig_attach_usb</c>. The fd stays owned by the caller (Kotlin's

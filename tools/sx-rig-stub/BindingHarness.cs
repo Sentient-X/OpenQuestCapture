@@ -27,6 +27,10 @@ static class Harness {
         Expect(SxRig.Command("{\"command\":\"finalize\"}").Contains("\"answer\""), "command finalize -> answer");
         try { SxRig.Command("{\"command\":\"end_collection\"}"); Expect(false, "command throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_command", "command -> State " + e.ErrorJson); }
+        SxRig.ReportDevice("{\"battery_percent\":80,\"charging\":false,\"network_time_synchronized\":true}");
+        Expect(true, "report_device ok");
+        try { SxRig.ReportDevice("nope"); Expect(false, "bad report throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_report_device", "report_device bad -> Argument"); }
         var (mono, utc) = SxRig.ReadAnchors(() => 123L);
         Expect(mono == 123 && Math.Abs(utc / 1_000_000 - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) < 5000, "anchors " + mono + " " + utc);
         try { SxRig.Start("{\"session\":\"ü\"}", mono, utc); Expect(false, "start throws"); }
