@@ -195,12 +195,17 @@ namespace RealityLog
             }
 
             // The wrist cameras and gripper encoders, when configured or plugged in: a session
-            // that expects them never starts without them. With neither, this is null and
-            // touches nothing (the laptop-pod flow is unchanged).
+            // that expects them never starts without them. POST /api/start-recording arms the
+            // rig off the main thread (sx_rig_start blocks up to 12 s) and this session takes
+            // the armed episode's name; any other start path finds nothing armed and is
+            // refused. With no rig expected, rigSession is null and nothing here changes the
+            // laptop-pod flow.
             var rig = RigCoordinator.Instance;
-            if (rig is not null && rig.CheckBeforeStart() is RigRefusal rigRefusal)
+            var rigSession = rig is null ? null : rig.ArmedSession;
+            if (rigSession == null && rig is not null && rig.IsExpected)
             {
-                var rigRefused = new RigRefusedException(rigRefusal);
+                var rigRefused = new RigRefusedException(new RigRefusal("rig_not_armed",
+                    "the wrist rig is configured or plugged in; start recording through POST /api/start-recording, which arms it"));
                 Debug.LogError($"[{Constants.LOG_TAG}] {rigRefused.Message}");
                 throw rigRefused;
             }
@@ -209,7 +214,7 @@ namespace RealityLog
             // Generate session directory name if needed
             if (generateTimestampedDirectories)
             {
-                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var timestamp = rigSession ?? DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 currentSessionDirectory = timestamp;
                 if (recordDepthMaps && depthMapExporter != null)
                 {
@@ -257,23 +262,6 @@ namespace RealityLog
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
-
-            // The rig starts first, so a refusal leaves nothing of OQC's started.
-            if (rig is not null)
-            {
-                try
-                {
-                    rig.StartEpisode(
-                        currentSessionDirectory,
-                        Path.Combine(Application.persistentDataPath, currentSessionDirectory));
-                }
-                catch (RigRefusedException refused)
-                {
-                    Debug.LogError($"[{Constants.LOG_TAG}] {refused.Message}");
-                    currentSessionDirectory = null;
-                    throw;
-                }
-            }
 
             try
             {
@@ -343,13 +331,17 @@ namespace RealityLog
             }
             catch
             {
-                // A start that failed after the rig's episode began stops that episode, so
+                // A start that failed after the rig's episode was armed stops that episode, so
                 // the rig is not left recording for a session that never started.
-                if (rig is not null)
+                if (rigSession != null && rig is not null)
                 {
                     rig.StopEpisode();
                 }
                 throw;
+            }
+            if (rigSession != null && rig is not null)
+            {
+                rig.MarkRecording();
             }
         }
 

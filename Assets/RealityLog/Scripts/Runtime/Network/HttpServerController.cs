@@ -252,6 +252,33 @@ namespace RealityLog.Network
                 return AppPausedResponse();
             }
 
+            // The wrist rig, when expected, is checked and armed here on the HTTP worker thread:
+            // sx_rig_check (≤ 5 s) and sx_rig_start (≤ 12 s) must not block Unity's main thread.
+            // The main-thread start below then records under the armed session; if it does not
+            // happen, the episode is stopped again before answering.
+            var rig = RigCoordinator.Instance;
+            string? armedSession = null;
+            if (rig is not null && rig.IsExpected)
+            {
+                if (recordingManager is not null && recordingManager.State != RecordingState.Idle)
+                {
+                    return AlreadyRecordingResponse();
+                }
+                var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                if (rig.Arm(session) is RigRefusal armRefusal)
+                {
+                    return RigNotReadyResponse(armRefusal);
+                }
+                armedSession = rig.ArmedSession;
+            }
+            void DisarmUnlessStarted()
+            {
+                if (armedSession != null && rig is not null && rig.ArmedSession == armedSession)
+                {
+                    rig.StopEpisode();
+                }
+            }
+
             bool alreadyRecording = false;
             bool success = false;
             bool storageFull = false;
@@ -320,6 +347,7 @@ namespace RealityLog.Network
             {
                 if (Interlocked.CompareExchange(ref claim, 2, 0) == 0)
                 {
+                    DisarmUnlessStarted();
                     return MainThreadTimeoutResponse("Main thread did not run the start within 5 s; recording was not started");
                 }
                 // The start began just as the wait ran out; give it time to finish.
@@ -329,6 +357,11 @@ namespace RealityLog.Network
                 }
             }
 
+            if (!success)
+            {
+                DisarmUnlessStarted();
+            }
+
             if (storageFull)
             {
                 return HttpResponse.StorageFull(freeBytes, minFreeStorageBytes);
@@ -336,12 +369,7 @@ namespace RealityLog.Network
 
             if (alreadyRecording)
             {
-                return HttpResponse.Json(409,
-                    "{\n" +
-                    $"  \"error\": \"already_recording\",\n" +
-                    $"  \"message\": \"Recording is already in progress\",\n" +
-                    $"  \"currentFile\": \"{EscapeJson(currentRecordingFile ?? "unknown")}\"\n" +
-                    "}");
+                return AlreadyRecordingResponse();
             }
 
             if (rigRefusal != null)
@@ -1123,6 +1151,14 @@ namespace RealityLog.Network
         // it is refused at once instead of timing out.
         private static HttpResponse AppPausedResponse() => ServiceUnavailable("app_paused",
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
+
+        private HttpResponse AlreadyRecordingResponse() =>
+            HttpResponse.Json(409,
+                "{\n" +
+                $"  \"error\": \"already_recording\",\n" +
+                $"  \"message\": \"Recording is already in progress\",\n" +
+                $"  \"currentFile\": \"{EscapeJson(currentRecordingFile ?? "unknown")}\"\n" +
+                "}");
 
         // The rig (wrist cameras, gripper encoders) is configured or plugged in and not ready.
         // 503 like the other refusals of a not-ready headset; `error` is "rig_not_ready",

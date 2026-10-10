@@ -15,7 +15,7 @@ namespace RealityLog.Rig
     {
         /// <summary>
         /// One of <c>rig_library_missing</c>, <c>rig_open_failed</c>, <c>rig_usb_permission</c>,
-        /// <c>rig_check_failed</c>, <c>rig_start_failed</c>.
+        /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>.
         /// </summary>
         public string Code { get; }
         public string Message { get; }
@@ -35,9 +35,9 @@ namespace RealityLog.Rig
     }
 
     /// <summary>
-    /// A recording start refused because the rig is expected and not ready. An
-    /// <see cref="InvalidOperationException"/>, so every start path that reports a refusal's
-    /// message keeps doing so; the HTTP API answers it with a typed 503.
+    /// A recording start refused because the rig is expected and not ready (or, from a start
+    /// path other than the HTTP API, not armed). An <see cref="InvalidOperationException"/>, so
+    /// every start path that reports a refusal's message keeps doing so.
     /// </summary>
     public sealed class RigRefusedException : InvalidOperationException
     {
@@ -63,11 +63,14 @@ namespace RealityLog.Rig
     /// attached to the rig, and a vanished one is detached from the rig before the bridge
     /// closes its connection (the ABI leaves fd ownership with Kotlin until the detach).</para>
     ///
-    /// <para><b>Episode.</b> <see cref="CheckBeforeStart"/> runs <c>sx_rig_check</c> and returns
-    /// a refusal; <see cref="StartEpisode"/> passes CLOCK_MONOTONIC and UTC anchors read back to
-    /// back; <see cref="StopEpisode"/> returns the stop receipt.</para>
+    /// <para><b>Episode.</b> <see cref="Arm"/> (a worker thread: POST /api/start-recording's)
+    /// runs <c>sx_rig_check</c> and <c>sx_rig_start</c> with CLOCK_MONOTONIC and UTC anchors
+    /// read back to back; RecordingManager then records under <see cref="ArmedSession"/>;
+    /// <see cref="StopEpisode"/> returns the stop receipt.</para>
     ///
-    /// Main thread only, except <see cref="StatusJson"/>, which any thread may read.
+    /// USB polling is main-thread; <see cref="Arm"/>, <see cref="StopEpisode"/>,
+    /// <see cref="ArmedSession"/>, <see cref="IsExpected"/> and <see cref="StatusJson"/> are
+    /// safe from any thread.
     /// </summary>
     public class RigCoordinator : MonoBehaviour
     {
@@ -107,15 +110,26 @@ namespace RealityLog.Rig
         private readonly Dictionary<string, UsbEntry> attached = new();
         private readonly Dictionary<string, string> attachErrors = new();
         private bool configPresent;
-        private bool opened;
-        private bool libraryMissing;
-        private string? openErrorJson;
+        // Read by Arm on a worker thread; written on the main thread.
+        private volatile bool expected;
+        private volatile bool opened;
+        private volatile bool libraryMissing;
+        private volatile string? openErrorJson;
+        private volatile string[] awaitingPermission = Array.Empty<string>();
+        private string dataPath = "";
+        private string appVersion = "";
         private float lastOpenAttempt = float.NegativeInfinity;
         private float lastPoll = float.NegativeInfinity;
+        private readonly object episodeLock = new();
         private bool episodeActive;
+        private bool episodeRecording;
+        private string? armedSession;
         private string? episodeReceiptJson;
-        private RigRefusal? lastRefusal;
+        private volatile RigRefusal? lastRefusal;
         private volatile string statusJson = NotExpectedStatus;
+        // sx_rig_status may wait up to 50 ms, so it is polled off the main thread.
+        private volatile string nativeStatusJson = "null";
+        private System.Threading.Timer? nativeStatusTimer;
 
         private const string NotExpectedStatus =
             "{\"expected\":false,\"configured\":false,\"library\":\"unknown\",\"open\":false," +
@@ -123,7 +137,10 @@ namespace RealityLog.Rig
             "\"attachErrors\":{}},\"native\":null,\"lastRefusal\":null}";
 
         /// <summary>True when rig devices are configured or present; see the class remarks.</summary>
-        public bool Expected => configPresent || snapshot.present > 0 || attached.Count > 0;
+        private bool Expected => configPresent || snapshot.present > 0 || attached.Count > 0;
+
+        /// <summary><see cref="Expected"/> as of the last main-thread poll. Any thread.</summary>
+        public bool IsExpected => expected;
 
         /// <summary>The rig's /api/status object, cached on the main thread. Any thread.</summary>
         public string StatusJson => statusJson;
@@ -148,6 +165,8 @@ namespace RealityLog.Rig
                 return;
             }
             Instance = this;
+            dataPath = Application.persistentDataPath;
+            appVersion = Application.version;
             configPath = Path.Combine(Application.persistentDataPath, ConfigFileName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -178,21 +197,31 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The reason a start must be refused, or null to proceed (always null when the rig is
-        /// not expected). Runs <c>sx_rig_check</c>, bounded 5 s by the ABI, on this thread.
+        /// Checks and starts the rig's episode <paramref name="sessionName"/> (also its
+        /// <c>episode_id</c>), or returns why not. Any thread, and never the Unity main thread:
+        /// <c>sx_rig_check</c> is bounded 5 s and <c>sx_rig_start</c> blocks until every stream
+        /// is armed, up to 12 s. Uses the USB snapshot of the last main-thread poll (≤ 0.5 s old).
+        /// On success the episode is armed: <see cref="RecordingManager"/> records the session
+        /// under <see cref="ArmedSession"/>, and whoever armed it stops it with
+        /// <see cref="StopEpisode"/> if that start does not happen.
         /// </summary>
-        public RigRefusal? CheckBeforeStart()
+        public RigRefusal? Arm(string sessionName)
         {
-            Poll();
-            var refusal = Refusal();
-            lastRefusal = refusal;
-            RefreshStatus();
-            return refusal;
+            lock (episodeLock)
+            {
+                var refusal = ArmLocked(sessionName);
+                lastRefusal = refusal;
+                return refusal;
+            }
         }
 
-        private RigRefusal? Refusal()
+        private RigRefusal? ArmLocked(string sessionName)
         {
-            if (!Expected) return null;
+            if (!expected) return null;
+            if (episodeActive)
+            {
+                return new RigRefusal("rig_start_failed", $"rig episode '{armedSession ?? "?"}' is still active");
+            }
             if (libraryMissing)
             {
                 return new RigRefusal("rig_library_missing",
@@ -203,36 +232,27 @@ namespace RealityLog.Rig
             {
                 return new RigRefusal("rig_open_failed", "sx_rig_open failed", openErrorJson);
             }
-            if (snapshot.awaitingPermission.Length > 0)
+            var awaiting = awaitingPermission;
+            if (awaiting.Length > 0)
             {
                 return new RigRefusal("rig_usb_permission",
-                    "no USB permission for " + string.Join(", ", snapshot.awaitingPermission) +
-                    "; accept the prompt in the headset once with \"always open\" checked");
+                    "no USB permission for " + string.Join(", ", awaiting) +
+                    "; someone must accept the prompt in the headset once with \"always open\" checked");
             }
             try
             {
                 SxRig.RunCheck();
-                return null;
             }
             catch (SxRigException ex)
             {
                 return new RigRefusal("rig_check_failed", ex.Message, ex.ErrorJson);
             }
-        }
 
-        /// <summary>
-        /// Starts the rig's episode, if the rig is expected. Reads the two clock anchors back to
-        /// back. Throws <see cref="RigRefusedException"/> (rig_start_failed) when the rig
-        /// refuses; nothing else has started by then.
-        /// </summary>
-        public void StartEpisode(string sessionName, string sessionDirectory)
-        {
-            episodeReceiptJson = null;
-            if (!Expected) return;
             var (mono, utc) = SxRig.ReadAnchors(MonotonicClock.Nanos);
-            var episode = "{\"session\":\"" + RigJson.Escape(sessionName) +
-                "\",\"session_dir\":\"" + RigJson.Escape(sessionDirectory) +
-                "\",\"app_version\":\"" + RigJson.Escape(Application.version) +
+            var episode = "{\"episode_id\":\"" + RigJson.Escape(sessionName) +
+                "\",\"session\":\"" + RigJson.Escape(sessionName) +
+                "\",\"session_dir\":\"" + RigJson.Escape(Path.Combine(dataPath, sessionName)) +
+                "\",\"app_version\":\"" + RigJson.Escape(appVersion) +
                 "\",\"monotonic_anchor_ns\":" + mono.ToString(CultureInfo.InvariantCulture) +
                 ",\"utc_anchor_ns\":" + utc.ToString(CultureInfo.InvariantCulture) + "}";
             try
@@ -241,36 +261,54 @@ namespace RealityLog.Rig
             }
             catch (SxRigException ex)
             {
-                var refusal = new RigRefusal("rig_start_failed", ex.Message, ex.ErrorJson);
-                lastRefusal = refusal;
-                RefreshStatus();
-                throw new RigRefusedException(refusal);
+                return new RigRefusal("rig_start_failed", ex.Message, ex.ErrorJson);
             }
+            episodeReceiptJson = null;
             episodeActive = true;
-            Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{sessionName}' started (mono={mono} utc={utc})");
-            RefreshStatus();
+            armedSession = sessionName;
+            Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{sessionName}' armed (mono={mono} utc={utc})");
+            return null;
         }
 
         /// <summary>
-        /// Stops the rig's episode and returns its stop receipt (a JSON object; on failure
-        /// <c>{"error": {...}}</c>), or null when no rig episode ran. Idempotent: a second call
+        /// The session an armed, not yet recording, rig episode belongs to; null otherwise.
+        /// </summary>
+        public string? ArmedSession
+        {
+            get { lock (episodeLock) { return episodeActive && !episodeRecording ? armedSession : null; } }
+        }
+
+        /// <summary>RecordingManager started the armed session's OQC streams.</summary>
+        public void MarkRecording()
+        {
+            lock (episodeLock) { episodeRecording = episodeActive; }
+        }
+
+        /// <summary>
+        /// Stops the rig's episode and returns its stop receipt (a JSON object: the library's
+        /// <c>{"outcome": ...}</c>, or <c>{"error": {...}}</c> when the stop call itself failed),
+        /// or null when no rig episode ran. Bounded 5 s. Any thread. Idempotent: a second call
         /// for the same episode returns the same receipt. Never throws.
         /// </summary>
         public string? StopEpisode()
         {
-            if (!episodeActive) return episodeReceiptJson;
-            try
+            lock (episodeLock)
             {
-                episodeReceiptJson = SxRig.Stop();
+                if (!episodeActive) return episodeReceiptJson;
+                try
+                {
+                    episodeReceiptJson = SxRig.Stop();
+                }
+                catch (SxRigException ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {ex.Message}");
+                    episodeReceiptJson = "{\"error\":" + ex.ErrorJson + "}";
+                }
+                episodeActive = false;
+                episodeRecording = false;
+                armedSession = null;
+                return episodeReceiptJson;
             }
-            catch (SxRigException ex)
-            {
-                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {ex.Message}");
-                episodeReceiptJson = "{\"error\":" + ex.ErrorJson + "}";
-            }
-            episodeActive = false;
-            RefreshStatus();
-            return episodeReceiptJson;
         }
 
         private void Poll()
@@ -290,6 +328,8 @@ namespace RealityLog.Rig
                 }
             }
 
+            awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
+            expected = Expected;
             if (Expected && !opened && !libraryMissing
                 && Time.unscaledTime - lastOpenAttempt >= OpenRetrySeconds)
             {
@@ -322,6 +362,7 @@ namespace RealityLog.Rig
                 SxRig.Open("{\"staging_dir\":\"" + RigJson.Escape(stagingPath) + "\",\"rig\":" + rigJson + "}");
                 opened = true;
                 openErrorJson = null;
+                nativeStatusTimer = new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
             }
             catch (SxRigLibraryMissingException ex)
@@ -412,18 +453,9 @@ namespace RealityLog.Rig
                 return;
             }
 
-            string nativeJson = "null";
-            if (opened)
-            {
-                try
-                {
-                    nativeJson = SxRig.Status();
-                }
-                catch (SxRigException ex)
-                {
-                    nativeJson = "{\"error\":" + ex.ErrorJson + "}";
-                }
-            }
+            var nativeJson = opened ? nativeStatusJson : "null";
+            bool episodeIsActive;
+            lock (episodeLock) { episodeIsActive = episodeActive; }
 
             var json = new StringBuilder(512);
             json.Append("{\"expected\":").Append(Expected ? "true" : "false")
@@ -431,7 +463,7 @@ namespace RealityLog.Rig
                 .Append(",\"library\":\"").Append(libraryMissing ? "missing" : opened ? "present" : "unknown").Append('"')
                 .Append(",\"open\":").Append(opened ? "true" : "false")
                 .Append(",\"openError\":").Append(openErrorJson ?? "null")
-                .Append(",\"episodeActive\":").Append(episodeActive ? "true" : "false")
+                .Append(",\"episodeActive\":").Append(episodeIsActive ? "true" : "false")
                 .Append(",\"usb\":{\"present\":").Append(snapshot.present.ToString(CultureInfo.InvariantCulture))
                 .Append(",\"attached\":[");
             var first = true;
@@ -466,6 +498,19 @@ namespace RealityLog.Rig
             statusJson = json.ToString();
         }
 
+        private void PollNativeStatus()
+        {
+            if (!opened) return;
+            try
+            {
+                nativeStatusJson = SxRig.Status();
+            }
+            catch (SxRigException ex)
+            {
+                nativeStatusJson = "{\"error\":" + ex.ErrorJson + "}";
+            }
+        }
+
         private void OnDestroy()
         {
             if (!ReferenceEquals(Instance, this)) return;
@@ -481,6 +526,8 @@ namespace RealityLog.Rig
                 }
             }
             attached.Clear();
+            nativeStatusTimer?.Dispose();
+            nativeStatusTimer = null;
             if (opened)
             {
                 SxRig.Close();
