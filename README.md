@@ -181,14 +181,20 @@ When the headset is the whole pod, its wrist cameras (UVC `32e4:9230`) and gripp
 `rig_config.json` (roles and calibration bundle from Factory) is in the app's files directory or
 any rig USB device is on the bus; with neither, nothing below happens and recording is as before.
 
-* `POST /api/start-recording` runs the rig's device check before anything starts and refuses with
+* `POST /api/start-recording` runs the rig's device check and arms it (`sx_rig_start`, up to
+  12 s) on the HTTP worker thread, before OQC's streams start, and refuses with
   `503 {"error":"rig_not_ready","reason":"rig_library_missing|rig_open_failed|rig_usb_permission|rig_check_failed|rig_start_failed","message":...,"rig":<library error>}`.
-  The rig starts with `CLOCK_MONOTONIC` and UTC anchors read back to back.
+  The rig starts with `CLOCK_MONOTONIC` and UTC anchors read back to back; the session directory
+  name is the rig's `episode_id`. While the rig is expected, the other start paths (cloud relay,
+  calibration) are refused with `rig_not_armed`.
 * `POST /api/stop-recording` returns the rig's stop receipt as `"rig"` (and writes it to
   `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
 * USB permission: plugging a rig device in the first time asks, in the headset, which app opens
   it; tick "always open" for OpenQuestCapture once and later replugs are silent.
-* `tools/sx-rig-stub` builds a stub `libsx_rig.so` for tests only; no APK ships it.
+* `Assets/Plugins/Android/libs/arm64-v8a/libsx_rig.so` is built from sx
+  `experience/data-factory/quest-rig` (`cargo build --release --target aarch64-linux-android`,
+  see its `scripts/build-android.sh`) and copied here; the commit that adds it names its source
+  commit and SHA-256. `tools/sx-rig-stub` builds a stub for host tests only; no APK ships it.
 
 `tracking_origin.json` records the configured and runtime tracking-origin modes, whether
 recentering was allowed, the runtime floor-reference semantics, the recenter counter at both
