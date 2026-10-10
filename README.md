@@ -189,6 +189,18 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   calibration) are refused with `rig_not_armed`.
 * `POST /api/stop-recording` returns the rig's stop receipt as `"rig"` (and writes it to
   `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
+* Enrollment: `POST /api/enroll {"join_code": "sxj_...", "base_url": "https://app.preview.sentientx.io"}`
+  (`base_url` optional; production otherwise, saved to `pod_config.json`) commissions the headset
+  as a Factory pod of kind `headset`. The machine credential is kept in app-private storage; once
+  it exists the rig is expected, resolves its registered rig from the Factory, and seals, uploads
+  and retires episodes on its own. `pod_config.json` (files directory) may also set `pod_name`,
+  `rig_type_id`, `upload_limit_mib_s`, `seal`, `min_free_bytes`, `headset_serial`, `tailscale_ip`.
+* While the rig is expected, the start body must carry `"operator_id"` (else `400
+  operator_id_required`); the episode also records `quest_apk_build_id` (`sha256:` of the
+  installed APK, as the laptop pod computes it) and `quest_session_dir`, which the seal reads.
+  The rig stops after every OQC file of the session is final, so the seal never reads a partial one.
+* `GET /api/status` → `rig` carries `enrolled`, `podId`, `registeredRig`, `seals`, `uplink`,
+  `headsetSerial`, `tailscaleIp` and `apkBuildId`.
 * USB permission: plugging a rig device in the first time asks, in the headset, which app opens
   it; tick "always open" for OpenQuestCapture once and later replugs are silent.
 * `Assets/Plugins/Android/libs/arm64-v8a/libsx_rig.so` is built from sx
