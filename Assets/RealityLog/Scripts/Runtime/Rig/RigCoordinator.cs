@@ -88,7 +88,7 @@ namespace RealityLog.Rig
         /// a base_url writes factory_url and auth_url here.
         /// </summary>
         public const string PodConfigFileName = "pod_config.json";
-        /// <summary>The production site; pod_config.json overrides it (e.g. preview).</summary>
+        /// <summary>The site an enrollment without base_url (and no site in pod_config.json) uses.</summary>
         public const string DefaultBaseUrl = "https://app.sentientx.io";
         private const string CredentialsDirectoryName = "sx_pod";
         private const string CredentialFileName = "machine-credential.json"; // libsx_rig's
@@ -183,6 +183,13 @@ namespace RealityLog.Rig
         private volatile string nativeSummaryJson = "";
         private System.Threading.Timer? nativeStatusTimer;
         private int nativeStatusBusy;
+        private const string DeviceReportClassName = "com.samusynth.questcamera.pod.DeviceReport";
+        private const int DeviceReportIntervalMs = 15000;
+        private System.Threading.Thread? deviceReportThread;
+        private readonly System.Threading.ManualResetEvent deviceReportStop = new(false);
+        private volatile int deviceReportsSent;
+        private volatile string deviceReportJson = "null";
+        private volatile string? deviceReportError;
         private volatile bool collectorSignedIn;
         private volatile bool signInCuePending;
         private bool floorObserved; // native-status timer thread only
@@ -193,7 +200,8 @@ namespace RealityLog.Rig
             "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false," +
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
             "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
-            "\"embodiment_assets\":null,\"embodimentInstall\":null," +
+            "\"embodiment_assets\":null,\"embodimentInstall\":null,\"nativeState\":null," +
+            "\"deviceReport\":null,\"deviceReportError\":null," +
             "\"native\":null,\"lastRefusal\":null}";
 
         /// <summary>
@@ -390,20 +398,29 @@ namespace RealityLog.Rig
         /// </summary>
         public RigRefusal? PrepareEnrollment(string? baseUrl)
         {
-            if (!string.IsNullOrEmpty(baseUrl))
+            // The site is chosen at enrollment: base_url when given, else the one pod_config.json
+            // names, else production. rig_type_id is provisioning's (pod_config.json), never a
+            // default in code: the rig commissions as exactly that registered type.
+            try
             {
-                try
+                var site = ReadPodConfig();
+                if (site["rig_type_id"] is not JValue { Type: JTokenType.String })
                 {
-                    var site = ReadPodConfig();
-                    var trimmed = baseUrl!.TrimEnd('/');
+                    return new RigRefusal("pod_config_incomplete",
+                        $"{PodConfigFileName} has no rig_type_id (provisioning writes it, e.g. \"rig_yubi\")");
+                }
+                if (!string.IsNullOrEmpty(baseUrl) || site["factory_url"] == null)
+                {
+                    var trimmed = (string.IsNullOrEmpty(baseUrl) ? DefaultBaseUrl : baseUrl!).TrimEnd('/');
                     site["factory_url"] = trimmed + "/d/factory/";
                     site["auth_url"] = trimmed + "/d/auth/";
                     File.WriteAllText(podConfigPath, site.ToString(Formatting.Indented));
                 }
-                catch (Exception ex)
-                {
-                    return new RigRefusal("rig_open_failed", $"cannot write {PodConfigFileName}: {ex.Message}");
-                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException
+                || ex is UnauthorizedAccessException)
+            {
+                return new RigRefusal("pod_config_incomplete", $"{PodConfigFileName}: {ex.Message}");
             }
             PollIdentity(force: true);
             if (libraryMissing)
@@ -556,6 +573,7 @@ namespace RealityLog.Rig
                 opened = true;
                 openErrorJson = null;
                 nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
+                StartDeviceReports();
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
             }
             catch (SxRigLibraryMissingException ex)
@@ -587,11 +605,9 @@ namespace RealityLog.Rig
             var config = ReadPodConfig();
             config["staging_dir"] = stagingPath;
             config["credentials_dir"] = credentialsPath;
-            if (config["factory_url"] == null && config["auth_url"] == null)
-            {
-                config["factory_url"] = DefaultBaseUrl + "/d/factory/";
-                config["auth_url"] = DefaultBaseUrl + "/d/auth/";
-            }
+            // factory_url, auth_url and rig_type_id come only from pod_config.json (provisioning
+            // and POST /api/enroll write them); without a site the rig records and seals but
+            // does not upload or join the Factory floor.
             // Apps cannot read ro.serialno on the Quest 3S: provisioning writes headset_serial
             // into pod_config.json over adb, and the rig reads it through pod_config_path.
             config["pod_config_path"] = podConfigPath;
@@ -792,17 +808,65 @@ namespace RealityLog.Rig
             }
             else
             {
-                json.Append(",\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null");
+                json.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null");
                 // The rig's verdict on the meshes ({ready, configured, assets, missing}) comes
                 // with its status; until the rig is open, say only that it has none yet.
                 json.Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
             }
+            // The last battery/charging/network-time report the heartbeat sees, and its error.
+            json.Append(",\"deviceReport\":").Append(deviceReportJson)
+                .Append(",\"deviceReportError\":").Append(deviceReportError is string error ? JsonString(error) : "null");
             // The app's install of the meshes into filesDir: state, assets, copied, error.
             json.Append(",\"embodimentInstall\":").Append(embodimentStateJson);
             json.Append(",\"native\":").Append(nativeJson)
                 .Append(",\"lastRefusal\":").Append(lastRefusal?.ToJson() ?? "null")
                 .Append('}');
             statusJson = json.ToString();
+        }
+
+        /// <summary>
+        /// Reports battery, charging and the network-time fix (Kotlin DeviceReport) to the rig
+        /// every 15 s on a background thread; the heartbeat trusts a report for 60 s, so a
+        /// stalled app reads not ready instead of stale-ready. A report Kotlin cannot make
+        /// (no battery state) is skipped, never invented.
+        /// </summary>
+        private void StartDeviceReports()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (deviceReportThread != null || activity == null) return;
+            var context = activity;
+            deviceReportThread = new System.Threading.Thread(() =>
+            {
+                AndroidJNI.AttachCurrentThread();
+                try
+                {
+                    using var report = new AndroidJavaClass(DeviceReportClassName);
+                    var wait = 0; // the first report goes at once
+                    while (!deviceReportStop.WaitOne(wait))
+                    {
+                        wait = DeviceReportIntervalMs;
+                        if (!opened) continue;
+                        try
+                        {
+                            var json = report.CallStatic<string>("json", context);
+                            if (string.IsNullOrEmpty(json)) continue;
+                            SxRig.ReportDevice(json);
+                            deviceReportJson = json;
+                            deviceReportsSent++;
+                        }
+                        catch (Exception ex)
+                        {
+                            deviceReportError = ex.Message;
+                        }
+                    }
+                }
+                finally
+                {
+                    AndroidJNI.DetachCurrentThread();
+                }
+            }) { IsBackground = true, Name = "RigDeviceReport" };
+            deviceReportThread.Start();
+#endif
         }
 
         private void PollNativeStatus()
@@ -817,6 +881,7 @@ namespace RealityLog.Rig
                 {
                     nativeSummaryJson = new JObject
                     {
+                        ["nativeState"] = status["state"],
                         ["podId"] = status["pod_id"],
                         ["registeredRig"] = status["registered_rig"],
                         ["seals"] = status["seals"],
@@ -909,6 +974,8 @@ namespace RealityLog.Rig
             attached.Clear();
             nativeStatusTimer?.Dispose();
             nativeStatusTimer = null;
+            deviceReportStop.Set();
+            deviceReportThread?.Join(1000);
             if (opened)
             {
                 SxRig.Close();

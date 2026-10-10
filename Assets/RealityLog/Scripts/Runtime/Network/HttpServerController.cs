@@ -1318,6 +1318,20 @@ namespace RealityLog.Network
                 return TypedError(400, "unknown_command",
                     "command must be one of " + string.Join(", ", CollectorCommands));
             }
+            // command_id is the command's idempotency key: the caller's, when it sends one (a
+            // retry of the same command), else a fresh one; the library's buffer retry resends
+            // these same bytes.
+            if (fields["command_id"] is JToken id && id.Type != JTokenType.Null)
+            {
+                if (id.Type != JTokenType.String || !Guid.TryParse((string?)id, out _))
+                {
+                    return TypedError(400, "invalid_body", "command_id must be a UUID");
+                }
+            }
+            else
+            {
+                fields["command_id"] = Guid.NewGuid().ToString();
+            }
             if (RigForFloor(out var rig) is HttpResponse refused) return refused;
             try
             {
@@ -1434,7 +1448,8 @@ namespace RealityLog.Network
             }
             if (prepareRefusal != null)
             {
-                return TypedError(503, "enroll_failed", prepareRefusal.Message, prepareRefusal.Code, prepareRefusal.DetailJson);
+                return TypedError(prepareRefusal.Code == "pod_config_incomplete" ? 409 : 503,
+                    "enroll_failed", prepareRefusal.Message, prepareRefusal.Code, prepareRefusal.DetailJson);
             }
             try
             {
