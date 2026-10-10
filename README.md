@@ -201,11 +201,20 @@ any rig USB device is on the bus; with neither, nothing below happens and record
 
   ```bash
   serial=$(adb shell getprop ro.serialno | tr -d '\r')
-  printf '{"headset_serial":"%s"}\n' "$serial" > pod_config.json
+  printf '{"headset_serial":"%s","rig_type_id":"rig_yubi"}\n' "$serial" > pod_config.json
   adb push pod_config.json /sdcard/Android/data/com.samusynth.OpenQuestCapture/files/pod_config.json
   ```
 
-  The app passes this file to the rig as `pod_config_path`.
+  The app passes this file to the rig as `pod_config_path`. `rig_type_id` (the registered rig
+  type the headset commissions as) has no default in code; `POST /api/enroll` refuses with
+  `409 enroll_failed` (reason `pod_config_incomplete`) without it. The site (`factory_url`,
+  `auth_url`) is written by enrollment: its `base_url`, else production.
+* **Heartbeat readiness:** every 15 s the app reports `battery_percent`, `charging` (plugged in)
+  and `network_time_synchronized` to the rig; the Factory heartbeat trusts a report for 60 s.
+  The time flag is true only when `SystemClock.currentNetworkTimeClock()` answers (the platform
+  holds a network time fix; Quest 3S is SDK 34). A stalled app stops reporting and the pod reads
+  not ready. `rig.deviceReport` in `/api/status` is the last report; `rig.nativeState` is the
+  rig's state, `failed` after an internal failure (every rig call then fails until it is reopened).
 * **Collector sign-in:** on an enrolled headset a start needs a signed-in collector, else
   `409 {"error":"rig_not_ready","reason":"collector_signed_out"}`. `POST /api/sign-in` answers
   `{"status":"pending","user_code","verification_uri_complete","expires_in"}`; the caller (pod
@@ -214,7 +223,8 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   `rig.floor.operator.signed_in` turns true. `POST /api/sign-out` signs out (409 while recording).
 * **Collector commands:** `POST /api/command` passes `{"command":"review_success"|"review_failure",
   "episode_id","answers":[...],"failure_cause"?}` or `{"command":"end_collection"|"finalize"|
-  "close_failed_collection"}` to the rig and answers `{"answer","floor"}`. Errors:
+  "close_failed_collection"}` to the rig and answers `{"answer","floor"}`; a `command_id` (UUID)
+  makes a retried command the same command, and one is generated when absent. Errors:
   400 `invalid_body` | `unknown_command` | `command_refused` (argument), 409 `not_enrolled` |
   `command_refused` (reason `state`, e.g. a review before the Factory observed the attempt:
   retry), 503 `command_refused`.
