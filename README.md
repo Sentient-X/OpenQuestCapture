@@ -91,7 +91,9 @@ Example structure:
     ├── hmd_poses.csv
     ├── left_controller_poses.csv
     ├── right_controller_poses.csv
-    └── imu.csv
+    ├── imu.csv
+    ├── stream_manifest.json
+    └── rig_stop_receipt.json      (only when the wrist rig recorded; see below)
 ```
 
 ---
@@ -116,7 +118,7 @@ Example structure:
 ### Camera Video (MP4)
 
 * Files: `left_camera.mp4` (left camera), `right_camera.mp4` (right camera)
-* Codec: H.264 inside MP4 container
+* Codec: H.264 inside a **fragmented** MP4 (since app 1.5.0): an empty-sample `moov`, then one `moof`+`mdat` per one-second GOP, each fsynced as it is written. A process killed mid-recording (`am force-stop`, crash) leaves a file that plays up to the last complete GOP, and the `*_timestamps.csv` sidecar is flushed and fsynced with every fragment, so it covers the same frames (minus rows still waiting on their capture result) instead of being 0 bytes. A clean stop patches the real duration into the `moov`. `ffprobe` reports `nb_frames` as N/A for a fragmented file; count frames with `-count_frames` or use `avg_frame_rate`.
 * Geometry (capture contract 1.4.3, written by OpenQuestCapture 1.4.5 — app version and contract version are different numbers: app 1.4.5 ↔ contract 1.4.3, app 1.4.4 ↔ contract 1.4.2, app 1.4.3 ↔ contract 1.4.1): the recorder asks Camera2 for the sensor's native listed stream — the `pixelArraySize`, 1280×1280 on the Quest 3S — and encodes it at 720×720, an isotropic resample of the whole array (`fx, fy, cx, cy` of the MP4 are 720/1280 of the sensor calibration; no crop, no stretch). Before contract 1.4.3 the recorder asked for 720×720, a size the passthrough camera does not list; the camera service silently rounded that to 720×576, the virtual camera centre-cropped its 1280×1280 source to 5:4 to fill it, and the recorder stretched the result square — so those MP4s show a 5:4 slice of the field of view stretched to a square, and nothing in the sidecar recorded it. OpenQuestCapture 1.4.5 (capture contract 1.4.3) refuses to start (the start request fails with the reason; nothing is written) when the requested source size is not in the camera's listed `outputSizes` or the encoder output does not keep its aspect, and its metadata states the four geometry keys below so a consumer can check what was delivered instead of assuming it.
 * Camera videos are intentionally video-only. The app requests Camera2 `CONTROL_AE_TARGET_FPS_RANGE` `[60,60]`; the Quest 3S HAL answers with 50 fps on one 20 ms lattice shared by both cameras, whose `SENSOR_TIMESTAMP`s are identical (at `[30,30]` it decimates that lattice independently per camera, so paired frames landed 20 ms apart about half the time). A MediaCodec/EGL path selects the first fresh exposure in each absolute 33.33 ms bin of the sensor clock, so both eyes deliver the same instants — 3 of every 5 lattice slots, gaps of 20/40/40 ms, mean 30 Hz — never manufactures a duplicate, and writes an exact n/30 presentation timeline into the MP4. A source already at ≤35 Hz passes through. Frame stamps remain `SENSOR_TIMESTAMP` (start of exposure).
 * `left_camera_timestamps.csv` and `right_camera_timestamps.csv` contain one row per encoded frame. `sensor_timestamp_ns` is the Camera2 exposure-start `SENSOR_TIMESTAMP` (the SurfaceTexture timestamp of the frame that was encoded, so it is never missing). `exposure_time_ns` and `capture_frame_number` are joined from the frame's `TotalCaptureResult`; since capture contract 1.4.1 the recorder writes `-1` when the HAL omitted the exposure duration (Quest 3S does so sporadically) or never delivered the result, and counts both in the metadata `capture_report`. Bookkeeping never truncates an eye — only an encoder/EGL failure ends a recording, and that is reported verbatim as `capture_error`.
@@ -169,6 +171,24 @@ recording-start estimate or MP4 packet delivery time. Horizon OS reports the pas
 cameras' Android timestamp source as `UNKNOWN`; the converter preserves that provenance and
 maps the Quest sensor/OVR clock to `mono_time_ns` only after the episode's HMD clock pairs prove
 a residual of at most 2 ms.
+
+### Wrist rig (libsx_rig)
+
+When the headset is the whole pod, its wrist cameras (UVC `32e4:9230`) and gripper encoders
+(ESP32-C6, `303a:*`) are plugged into it and recorded by `libsx_rig.so` (Rust, sx
+`experience/data-factory/quest-rig`, C ABI `include/sx_rig.h`; the one C# binding is
+`Assets/RealityLog/Scripts/Runtime/Rig/SxRig.cs`). The rig is **expected** when
+`rig_config.json` (roles and calibration bundle from Factory) is in the app's files directory or
+any rig USB device is on the bus; with neither, nothing below happens and recording is as before.
+
+* `POST /api/start-recording` runs the rig's device check before anything starts and refuses with
+  `503 {"error":"rig_not_ready","reason":"rig_library_missing|rig_open_failed|rig_usb_permission|rig_check_failed|rig_start_failed","message":...,"rig":<library error>}`.
+  The rig starts with `CLOCK_MONOTONIC` and UTC anchors read back to back.
+* `POST /api/stop-recording` returns the rig's stop receipt as `"rig"` (and writes it to
+  `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
+* USB permission: plugging a rig device in the first time asks, in the headset, which app opens
+  it; tick "always open" for OpenQuestCapture once and later replugs are silent.
+* `tools/sx-rig-stub` builds a stub `libsx_rig.so` for tests only; no APK ships it.
 
 `tracking_origin.json` records the configured and runtime tracking-origin modes, whether
 recentering was allowed, the runtime floor-reference semantics, the recenter counter at both
