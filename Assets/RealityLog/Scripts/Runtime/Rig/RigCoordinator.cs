@@ -96,6 +96,7 @@ namespace RealityLog.Rig
         public const string StagingDirectoryName = "rig_staging";
         private const string BridgeClassName = "com.samusynth.questcamera.usb.RigUsbBridge";
         private const string PodIdentityClassName = "com.samusynth.questcamera.pod.PodIdentity";
+        private const string EmbodimentAssetsClassName = "com.samusynth.questcamera.pod.EmbodimentAssets";
         private const float PollIntervalSeconds = 0.5f;
         private const float OpenRetrySeconds = 5f;
 
@@ -132,6 +133,27 @@ namespace RealityLog.Rig
         private volatile string headsetSerial = "";
         private volatile string tailscaleIp = "";
         private volatile string apkBuildId = "";
+        // EmbodimentAssets' install of the seal's meshes into filesDir; the rig opens only once
+        // it is settled, because the library verifies the directory at open.
+        private string embodimentDir = "";
+        private volatile string embodimentStateJson = "{\"state\":\"pending\"}";
+        private string EmbodimentState
+        {
+            get
+            {
+                try
+                {
+                    return (string?)JObject.Parse(embodimentStateJson)["state"] ?? "pending";
+                }
+                catch (JsonException)
+                {
+                    return "pending";
+                }
+            }
+        }
+        // "absent" (no meshes in this APK), "ready" and "failed" are settled; on a non-Android
+        // player nothing installs, so the state stays pending and the rig opens without them.
+        private bool EmbodimentSettled => activity == null || EmbodimentState is "ready" or "failed" or "absent";
         // What the rig was opened with; a change reopens it before an enrollment.
         private string openedConfigJson = "";
         private string stagingPath = "";
@@ -171,6 +193,7 @@ namespace RealityLog.Rig
             "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false," +
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
             "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
+            "\"embodiment_assets\":null,\"embodimentInstall\":null," +
             "\"native\":null,\"lastRefusal\":null}";
 
         /// <summary>
@@ -221,6 +244,9 @@ namespace RealityLog.Rig
                 credentialsPath = Path.Combine(
                     identity.CallStatic<string>("privateFilesDir", activity), CredentialsDirectoryName);
                 bridge = new AndroidJavaObject(BridgeClassName, activity);
+                using var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName);
+                embodimentDir = embodiment.CallStatic<string>("installDir", activity);
+                embodiment.CallStatic("installAsync", activity);
             }
             catch (Exception ex)
             {
@@ -496,7 +522,7 @@ namespace RealityLog.Rig
 
             awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
             expected = Expected;
-            if (Expected && !opened && !libraryMissing
+            if (Expected && !opened && !libraryMissing && EmbodimentSettled
                 && Time.unscaledTime - lastOpenAttempt >= OpenRetrySeconds)
             {
                 TryOpen();
@@ -569,6 +595,13 @@ namespace RealityLog.Rig
             // Apps cannot read ro.serialno on the Quest 3S: provisioning writes headset_serial
             // into pod_config.json over adb, and the rig reads it through pod_config_path.
             config["pod_config_path"] = podConfigPath;
+            // The seal's meshes, installed by EmbodimentAssets. Passed when installed, and when
+            // the install failed, so the rig's own readiness names what is missing; omitted
+            // when this APK carries none (the rig then reports configured: false).
+            if (embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed")
+            {
+                config["embodiment_assets_dir"] = embodimentDir;
+            }
             if (config["tailscale_ip"] == null && tailscaleIp.Length > 0)
             {
                 config["tailscale_ip"] = tailscaleIp;
@@ -603,12 +636,17 @@ namespace RealityLog.Rig
         private void PollIdentity(bool force)
         {
             if (activity == null) return;
-            if (!force && Time.unscaledTime - lastIdentityPoll < IdentityPollSeconds && apkBuildId.Length > 0) return;
+            if (!force && Time.unscaledTime - lastIdentityPoll < IdentityPollSeconds
+                && apkBuildId.Length > 0 && EmbodimentSettled) return;
             lastIdentityPoll = Time.unscaledTime;
             try
             {
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
                 headsetSerial = ReadPodConfigSerial();
+                using (var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName))
+                {
+                    embodimentStateJson = embodiment.CallStatic<string>("stateJson") ?? embodimentStateJson;
+                }
                 tailscaleIp = identity.CallStatic<string>("tailscaleIp") ?? "";
                 apkBuildId = identity.CallStatic<string>("apkBuildId", activity) ?? "";
             }
@@ -755,7 +793,12 @@ namespace RealityLog.Rig
             else
             {
                 json.Append(",\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null");
+                // The rig's verdict on the meshes ({ready, configured, assets, missing}) comes
+                // with its status; until the rig is open, say only that it has none yet.
+                json.Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
             }
+            // The app's install of the meshes into filesDir: state, assets, copied, error.
+            json.Append(",\"embodimentInstall\":").Append(embodimentStateJson);
             json.Append(",\"native\":").Append(nativeJson)
                 .Append(",\"lastRefusal\":").Append(lastRefusal?.ToJson() ?? "null")
                 .Append('}');
@@ -779,6 +822,7 @@ namespace RealityLog.Rig
                         ["seals"] = status["seals"],
                         ["uplink"] = status["uplink"],
                         ["floor"] = status["floor"],
+                        ["embodiment_assets"] = status["embodiment_assets"],
                     }.ToString(Formatting.None);
                     var signedIn = CollectorSignedIn(status) == true;
                     // Only a transition seen while running cues; a sign-in already held at
