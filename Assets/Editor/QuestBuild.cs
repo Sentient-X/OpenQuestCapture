@@ -13,6 +13,18 @@ public class QuestBuild
             outputPath = "Builds/OpenQuestCapture.apk";
         }
         
+        // The on-headset seal's embodiment meshes ship as StreamingAssets, generated (not
+        // committed) by scripts/build_embodiment_assets.sh. An APK without them could never
+        // seal an episode, so the build refuses instead.
+        const string embodimentManifest = "Assets/StreamingAssets/sx-embodiments/manifest.json";
+        if (!System.IO.File.Exists(embodimentManifest))
+        {
+            Debug.LogError("Build refused: " + embodimentManifest + " is missing; run " +
+                "SX_QUEST_RIG=<sx>/experience/data-factory/quest-rig scripts/build_embodiment_assets.sh");
+            EditorApplication.Exit(1);
+            return;
+        }
+
         PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
         
         BuildPlayerOptions opts = new BuildPlayerOptions();
