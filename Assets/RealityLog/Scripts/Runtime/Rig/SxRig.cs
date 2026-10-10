@@ -65,6 +65,7 @@ namespace RealityLog.Rig
     {
         private const string Library = "sx_rig"; // libsx_rig.so in Plugins/Android/libs/arm64-v8a
         private const int InitialBufferBytes = 4096;
+        private const int EnrollBufferBytes = 65536; // a Factory pod record; avoids a second network call
 
 #if (UNITY_ANDROID && !UNITY_EDITOR) || SX_RIG_HOST_TEST
         /// <summary>True on platforms where libsx_rig.so can exist (the headset).</summary>
@@ -72,6 +73,9 @@ namespace RealityLog.Rig
 
         [DllImport(Library, EntryPoint = "sx_rig_open")]
         private static extern int NativeOpen(byte[] configJson);
+
+        [DllImport(Library, EntryPoint = "sx_rig_enroll")]
+        private static extern int NativeEnroll(byte[] joinCode, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
         [DllImport(Library, EntryPoint = "sx_rig_attach_usb")]
         private static extern int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName);
@@ -101,6 +105,8 @@ namespace RealityLog.Rig
 
         private const string NotOnThisPlatform = "libsx_rig.so exists only in the Android player";
         private static int NativeOpen(byte[] configJson) => throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeEnroll(byte[] joinCode, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
+            throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeDetachUsb(byte[] deviceName) => throw new DllNotFoundException(NotOnThisPlatform);
@@ -122,6 +128,20 @@ namespace RealityLog.Rig
         /// <summary><c>sx_rig_open</c>: <c>{"staging_dir": "...", "rig": {...}}</c>.</summary>
         public static void Open(string configJson) =>
             Check("sx_rig_open", () => NativeOpen(Utf8(configJson)));
+
+        /// <summary>
+        /// <c>sx_rig_enroll</c>: redeem a join code (<c>sxj_...</c>) and commission this headset
+        /// as a Factory pod; with a credential already held, re-assert the commission and ignore
+        /// the code. Returns <c>{"pod_id": ..., "pod": {...}}</c>. Network-bound, up to 60 s;
+        /// never call it on Unity's main thread. A retry (undersized buffer) only re-asserts.
+        /// </summary>
+        public static string Enroll(string joinCode)
+        {
+            var code = Utf8(joinCode);
+            return CallJson("sx_rig_enroll",
+                (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeEnroll(code, outJson, cap, out needed),
+                EnrollBufferBytes);
+        }
 
         /// <summary>
         /// <c>sx_rig_attach_usb</c>. The fd stays owned by the caller (Kotlin's
@@ -191,11 +211,11 @@ namespace RealityLog.Rig
             }
         }
 
-        private static string CallJson(string function, JsonOut call)
+        private static string CallJson(string function, JsonOut call, int initialBytes = InitialBufferBytes)
         {
             try
             {
-                var buffer = new byte[InitialBufferBytes];
+                var buffer = new byte[initialBytes];
                 var code = call(buffer, (UIntPtr)buffer.Length, out var needed);
                 if (code == (int)SxRigError.Buffer && (ulong)needed > (ulong)buffer.Length)
                 {

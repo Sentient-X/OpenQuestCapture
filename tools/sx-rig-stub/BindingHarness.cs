@@ -16,6 +16,10 @@ static class Harness {
         Expect(SxRig.Status().Contains("no_rig"), "status after open: " + SxRig.Status());
         try { SxRig.RunCheck(); Expect(false, "check throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device && e.ErrorJson.Contains("no_rig") && e.Function == "sx_rig_check", "check -> Device " + e.ErrorJson); }
+        try { SxRig.Enroll("nope"); Expect(false, "bad join code throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_enroll", "enroll bad code -> Argument " + e.ErrorJson); }
+        try { SxRig.Enroll("sxj_aaaa"); Expect(false, "enroll without site throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.State, "enroll without site -> State " + e.ErrorJson); }
         var (mono, utc) = SxRig.ReadAnchors(() => 123L);
         Expect(mono == 123 && Math.Abs(utc / 1_000_000 - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) < 5000, "anchors " + mono + " " + utc);
         try { SxRig.Start("{\"session\":\"ü\"}", mono, utc); Expect(false, "start throws"); }
