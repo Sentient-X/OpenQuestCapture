@@ -10,6 +10,7 @@ using UnityEngine;
 using RealityLog.Common;
 using RealityLog.Core;
 using RealityLog.FileOperations;
+using RealityLog.Rig;
 using RealityLog.UI;
 
 namespace RealityLog.Network
@@ -234,6 +235,7 @@ namespace RealityLog.Network
                 $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
                 $"  \"controllers\": {HeadTrackingMonitor.ControllersJson("  ")},\n" +
+                $"  \"rig\": {RigCoordinator.StatusJsonOrDefault},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"uptimeMs\": {uptimeMs}\n" +
                 "}";
@@ -255,6 +257,7 @@ namespace RealityLog.Network
             bool storageFull = false;
             long freeBytes = 0;
             string? errorMessage = null;
+            RigRefusal? rigRefusal = null;
             // 0 = pending, 1 = the main thread took the start, 2 = this thread gave up on it.
             int claim = 0;
 
@@ -302,6 +305,11 @@ namespace RealityLog.Network
 
                     success = true;
                 }
+                catch (RigRefusedException ex)
+                {
+                    rigRefusal = ex.Refusal;
+                    errorMessage = ex.Message;
+                }
                 catch (Exception ex)
                 {
                     errorMessage = ex.Message;
@@ -336,6 +344,11 @@ namespace RealityLog.Network
                     "}");
             }
 
+            if (rigRefusal != null)
+            {
+                return RigNotReadyResponse(rigRefusal);
+            }
+
             if (!success)
             {
                 return HttpResponse.InternalError(errorMessage ?? "Failed to start recording");
@@ -367,6 +380,7 @@ namespace RealityLog.Network
             string? startedAt = null;
             long stopDurationMs = -1;
             string? streamsJson = null;
+            string? rigReceiptJson = null;
 
             // Show the stop in /api/status (recording.state) before the main thread reaches it.
             var manager = recordingManager;
@@ -398,6 +412,7 @@ namespace RealityLog.Network
                     recordingManager.StopRecording();
                     stopDurationMs = recordingManager.LastStopDurationMs;
                     streamsJson = recordingManager.LastStreamManifestJson;
+                    rigReceiptJson = recordingManager.LastRigStopReceiptJson;
 
                     // Clear recording state
                     currentRecordingFile = null;
@@ -472,7 +487,8 @@ namespace RealityLog.Network
                 $"  \"startedAt\": \"{EscapeJson(startedAt ?? "")}\",\n" +
                 $"  \"stoppedAt\": \"{EscapeJson(stoppedAt)}\",\n" +
                 $"  \"stopDurationMs\": {stopDurationMs},\n" +
-                $"  \"streams\": {streamsJson ?? "null"}\n" +
+                $"  \"streams\": {streamsJson ?? "null"},\n" +
+                $"  \"rig\": {rigReceiptJson ?? "null"}\n" +
                 "}";
 
             return HttpResponse.Ok(json);
@@ -1107,6 +1123,18 @@ namespace RealityLog.Network
         // it is refused at once instead of timing out.
         private static HttpResponse AppPausedResponse() => ServiceUnavailable("app_paused",
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
+
+        // The rig (wrist cameras, gripper encoders) is configured or plugged in and not ready.
+        // 503 like the other refusals of a not-ready headset; `error` is "rig_not_ready",
+        // `reason` the closed RigRefusal code, `rig` the library's own error JSON.
+        private static HttpResponse RigNotReadyResponse(RigRefusal refusal)
+        {
+            var response = HttpResponse.Json(503,
+                $"{{\"error\":\"rig_not_ready\",\"reason\":\"{EscapeJson(refusal.Code)}\"," +
+                $"\"message\":\"{EscapeJson(refusal.Message)}\",\"rig\":{refusal.DetailJson}}}");
+            response.StatusText = "Service Unavailable";
+            return response;
+        }
 
         private static HttpResponse MainThreadTimeoutResponse(string message) =>
             ServiceUnavailable("main_thread_timeout", message);

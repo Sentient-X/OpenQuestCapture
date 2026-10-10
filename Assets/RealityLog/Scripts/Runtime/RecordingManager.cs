@@ -11,6 +11,7 @@ using RealityLog.Common;
 using RealityLog.Core;
 using RealityLog.Depth;
 using RealityLog.OVR;
+using RealityLog.Rig;
 
 namespace RealityLog
 {
@@ -69,6 +70,7 @@ namespace RealityLog
         private const long MinExpectedVideoBytes = 1024;
         private const long MinExpectedTimestampBytes = 128;
         private const string TrackingOriginFileName = "tracking_origin.json";
+        private const string RigStopReceiptFileName = "rig_stop_receipt.json";
         private TrackingOriginSession? trackingOriginSession;
         private bool recenterEventSubscribed;
 
@@ -91,6 +93,12 @@ namespace RealityLog
         private static readonly int IsRunningParam = Animator.StringToHash("IsRunning");
 
         public bool IsRecording => isRecording;
+
+        /// <summary>
+        /// The rig's stop receipt from the last stop (a JSON object), or null when that
+        /// recording ran without a rig. Written to the session as rig_stop_receipt.json.
+        /// </summary>
+        public string? LastRigStopReceiptJson { get; private set; }
         public string? CurrentSessionDirectory => currentSessionDirectory;
 
         // RecordingState as an int so the HTTP thread can read it and flip
@@ -186,6 +194,18 @@ namespace RealityLog
                 throw new InvalidOperationException(message);
             }
 
+            // The wrist cameras and gripper encoders, when configured or plugged in: a session
+            // that expects them never starts without them. With neither, this is null and
+            // touches nothing (the laptop-pod flow is unchanged).
+            var rig = RigCoordinator.Instance;
+            if (rig is not null && rig.CheckBeforeStart() is RigRefusal rigRefusal)
+            {
+                var rigRefused = new RigRefusedException(rigRefusal);
+                Debug.LogError($"[{Constants.LOG_TAG}] {rigRefused.Message}");
+                throw rigRefused;
+            }
+            LastRigStopReceiptJson = null;
+
             // Generate session directory name if needed
             if (generateTimestampedDirectories)
             {
@@ -237,6 +257,23 @@ namespace RealityLog
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
+
+            // The rig starts first, so a refusal leaves nothing of OQC's started.
+            if (rig is not null)
+            {
+                try
+                {
+                    rig.StartEpisode(
+                        currentSessionDirectory,
+                        Path.Combine(Application.persistentDataPath, currentSessionDirectory));
+                }
+                catch (RigRefusedException refused)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] {refused.Message}");
+                    currentSessionDirectory = null;
+                    throw;
+                }
+            }
 
             // Step 1: Update camera paths for new session
             // This ensures format info and images are written to the new directory
@@ -349,6 +386,9 @@ namespace RealityLog
                     provider.RequestStopRecordingSession();
                     EndPhase($"request_stop:{provider.name}");
                 }
+                // The rig's streams stop with the head cameras' (bounded 5 s by the ABI).
+                StopRig(savedDirectory);
+                EndPhase("rig");
                 foreach (var provider in cameraProviders)
                 {
                     provider.StopRecordingSession();
@@ -515,6 +555,7 @@ namespace RealityLog
 
                 foreach (var provider in cameraProviders)
                     provider.RequestStopRecordingSession();
+                StopRig(currentSessionDirectory ?? string.Empty);
                 foreach (var provider in cameraProviders)
                     provider.StopRecordingSession();
 
@@ -602,6 +643,31 @@ namespace RealityLog
 
             Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App interruption ({reason}) during recording; forcing stop to finalize files.");
             StopRecording();
+        }
+
+        /// <summary>
+        /// Stops the rig's episode, if one ran, and writes its receipt into the session.
+        /// Never throws: a rig that fails to stop reports it in the receipt.
+        /// </summary>
+        private void StopRig(string sessionDirectoryName)
+        {
+            var rig = RigCoordinator.Instance;
+            var receipt = rig is null ? null : rig.StopEpisode();
+            LastRigStopReceiptJson = receipt;
+            if (receipt == null || string.IsNullOrEmpty(sessionDirectoryName))
+            {
+                return;
+            }
+            try
+            {
+                var sessionDir = Path.Join(Application.persistentDataPath, sessionDirectoryName);
+                Directory.CreateDirectory(sessionDir);
+                File.WriteAllText(Path.Join(sessionDir, RigStopReceiptFileName), receipt);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] Failed to write {RigStopReceiptFileName}: {ex.Message}");
+            }
         }
 
         private void WriteVideoStartTime()

@@ -11,6 +11,7 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-feature android:name="com.oculus.software.body_tracking" android:required="false" />
+  <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <application android:label="@string/app_name" android:icon="@mipmap/app_icon" android:allowBackup="false">
     <service
         android:name="com.samusynth.questcamera.core.RecordingForegroundService"
@@ -22,6 +23,13 @@
         <category android:name="android.intent.category.LAUNCHER" />
         <category android:name="com.oculus.intent.category.VR" />
       </intent-filter>
+      <!-- The rig's wrist cameras and gripper encoders (res/xml/device_filter.xml, in
+           questcameralib.aar). Once "always open" is chosen, plugging one in grants the app
+           USB permission without a prompt; RigUsbBridge opens it for libsx_rig. -->
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+      </intent-filter>
+      <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/device_filter" />
       <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
     </activity>
     <meta-data android:name="unityplayer.SkipPermissionsDialog" android:value="false" />
