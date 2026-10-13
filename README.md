@@ -201,6 +201,23 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   /api/recordings` lists each session's `seal` and `episodeMcap`, and
   `GET /api/recordings/<session>?artifact=mcap` downloads it (HTTP ranges supported). The operator
   hears every outcome: start rises, stop falls, sealed is three high blips, refused a low buzz.
+* **Start order.** `POST /api/start-recording` checks the rig (`sx_rig_check`), starts OQC's
+  session, then calls `sx_rig_start_armed`: the rig arms every stream and anchors the episode
+  itself once all deliver (about 2–3 s), so the episode's window lies inside OQC's recording, as
+  the seal requires (it refuses an episode whose HMD poses do not cover it). The start response's
+  `rig` holds that anchor (`episode_id`, `monotonic_anchor_ns`, `utc_anchor_ns`,
+  `arm_utc_anchor`, `arming_ms`), also written to the session as `rig_start.json`. A refused
+  arming stops OQC's session again (`rig_refusal.json` beside its files) and answers the
+  refusal with the session as `file`. A storage refusal is `507` with the rig's numbers under
+  `rig.refusal` (`free_bytes`, `required_bytes`, `episode_bytes`, `backlog_bytes`,
+  `backlog_episodes`, `max_episode_seconds`); every refusal plays the refused cue.
+* **Bench test rig (local mode):** `tools/rig_config.bench.json` is a rig config for the two Sonix
+  test cameras (05a3:9230) and two ESP32-C6 encoders: the registered-rig shape from sx's test
+  fixture (placeholder calibration) with `"profile": "bench"` and `"binding": "order"` (devices
+  bound by USB device name, left first). Provision it with
+  `adb push tools/rig_config.bench.json /sdcard/Android/data/com.samusynth.OpenQuestCapture/files/rig_config.json`
+  and give `pod_config.json` an `operator_id` (no `factory_url`). Bench episodes stay seal
+  `pending` until the seal build carries the bench profile.
 * **USB permission on Horizon OS:** a UVC camera's USB permission is silently denied unless the
   app holds `android.permission.CAMERA` and `horizonos.permission.USB_CAMERA`; both are asked at
   first launch with the passthrough permissions (someone wearing the headset accepts them once).
