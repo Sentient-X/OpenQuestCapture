@@ -86,6 +86,11 @@ int32_t sx_rig_start(const char *episode_json, int64_t monotonic_anchor_ns, int6
     return fail(SX_RIG_E_DEVICE, "no_rig", "stub libsx_rig: no rig");
 }
 
+int32_t sx_rig_start_armed(const char *episode_json, char *out_json, size_t cap, size_t *needed) {
+    (void)episode_json; (void)out_json; (void)cap; (void)needed;
+    return fail(SX_RIG_E_DEVICE, "no_rig", "stub libsx_rig: no rig");
+}
+
 int32_t sx_rig_stop(char *out_json, size_t cap, size_t *needed) {
     (void)out_json; (void)cap; (void)needed;
     return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: nothing was started");

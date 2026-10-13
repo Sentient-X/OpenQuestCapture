@@ -35,6 +35,8 @@ static class Harness {
         Expect(mono == 123 && Math.Abs(utc / 1_000_000 - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) < 5000, "anchors " + mono + " " + utc);
         try { SxRig.Start("{\"session\":\"ü\"}", mono, utc); Expect(false, "start throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device, "start -> Device"); }
+        try { SxRig.StartArmed("{\"episode_id\":\"e1\"}"); Expect(false, "start_armed throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.Device && e.Function == "sx_rig_start_armed", "start_armed -> Device"); }
         try { SxRig.Stop(); Expect(false, "stop throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State, "stop -> State " + e.ErrorJson); }
         SxRig.Close();

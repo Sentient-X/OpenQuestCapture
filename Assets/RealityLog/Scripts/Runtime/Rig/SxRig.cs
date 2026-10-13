@@ -101,6 +101,9 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_start")]
         private static extern int NativeStart(byte[] episodeJson, long monotonicAnchorNs, long utcAnchorNs);
 
+        [DllImport(Library, EntryPoint = "sx_rig_start_armed")]
+        private static extern int NativeStartArmed(byte[] episodeJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
+
         [DllImport(Library, EntryPoint = "sx_rig_stop")]
         private static extern int NativeStop(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
@@ -131,6 +134,8 @@ namespace RealityLog.Rig
         private static int NativeCheck(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStart(byte[] episodeJson, long monotonicAnchorNs, long utcAnchorNs) =>
+            throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeStartArmed(byte[] episodeJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStop(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
@@ -214,6 +219,20 @@ namespace RealityLog.Rig
         /// </summary>
         public static void Start(string episodeJson, long monotonicAnchorNs, long utcAnchorNs) =>
             Check("sx_rig_start", () => NativeStart(Utf8(episodeJson), monotonicAnchorNs, utcAnchorNs));
+
+        /// <summary>
+        /// <c>sx_rig_start_armed</c>: arm every stream, then anchor the episode once all deliver
+        /// (the rig reads CLOCK_MONOTONIC and UTC itself). Returns <c>{"episode_id",
+        /// "monotonic_anchor_ns", "utc_anchor_ns", "arm_utc_anchor": {...}, "arming_ms"}</c>.
+        /// Blocks for the arming (seconds): never on Unity's main thread. An undersized buffer
+        /// keeps the answer, so the retry does not re-arm.
+        /// </summary>
+        public static string StartArmed(string episodeJson)
+        {
+            var episode = Utf8(episodeJson);
+            return CallJson("sx_rig_start_armed",
+                (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeStartArmed(episode, outJson, cap, out needed));
+        }
 
         /// <summary><c>sx_rig_stop</c>: the stop receipt. Bounded 5 s.</summary>
         public static string Stop() => CallJson("sx_rig_stop", NativeStop);
