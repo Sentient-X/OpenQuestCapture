@@ -211,13 +211,24 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   refusal with the session as `file`. A storage refusal is `507` with the rig's numbers under
   `rig.refusal` (`free_bytes`, `required_bytes`, `episode_bytes`, `backlog_bytes`,
   `backlog_episodes`, `max_episode_seconds`); every refusal plays the refused cue.
-* **Bench test rig (local mode):** `tools/rig_config.bench.json` is a rig config for the two Sonix
-  test cameras (05a3:9230) and two ESP32-C6 encoders: the registered-rig shape from sx's test
-  fixture (placeholder calibration) with `"profile": "bench"` and `"binding": "order"` (devices
-  bound by USB device name, left first). Provision it with
-  `adb push tools/rig_config.bench.json /sdcard/Android/data/com.samusynth.OpenQuestCapture/files/rig_config.json`
-  and give `pod_config.json` an `operator_id` (no `factory_url`). Bench episodes stay seal
-  `pending` until the seal build carries the bench profile.
+* **Bench test rig (local mode).** Provision a headset for the two Sonix test cameras
+  (05a3:9230) and two ESP32-C6 encoders, with no Factory:
+
+  ```bash
+  files=/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
+  serial=$(adb shell getprop ro.serialno | tr -d '\r')
+  # No factory_url: the headset records and seals locally. operator_id names the collector
+  # when a start body carries none.
+  printf '{"headset_serial":"%s","operator_id":"<operator>"}\n' "$serial" > pod_config.json
+  adb push pod_config.json "$files/pod_config.json"
+  adb push tools/rig_config.bench.json "$files/rig_config.json"
+  ```
+
+  `tools/rig_config.bench.json` is the minimal bench rig, `{"profile":"bench","binding":"order",
+  "rig_id":"bench-<name>"}`: devices bound by USB device name, left first, no identities. Add
+  `"calibration": {"left.json"|"right.json"|"left.mount.json"|"right.mount.json"|
+  "yubi_hands.urdf": "<file text>"}` only with real measured calibration; absent calibration is
+  recorded as absent, never invented. Bench episodes seal under the seal's bench profile.
 * **USB permission on Horizon OS:** a UVC camera's USB permission is silently denied unless the
   app holds `android.permission.CAMERA` and `horizonos.permission.USB_CAMERA`; both are asked at
   first launch with the passthrough permissions (someone wearing the headset accepts them once).
