@@ -258,12 +258,17 @@ namespace RealityLog.Network
                 return AppPausedResponse();
             }
 
-            // The wrist rig, when expected, is checked and armed here on the HTTP worker thread:
-            // sx_rig_check (≤ 5 s) and sx_rig_start (≤ 12 s) must not block Unity's main thread.
-            // The main-thread start below then records under the armed session; if it does not
-            // happen, the episode is stopped again before answering.
+            // The wrist rig, when expected, on this HTTP worker thread (its calls take seconds and
+            // must not block Unity's main thread): (1) sx_rig_check and reserve the session name;
+            // (2) OQC's session starts on the main thread under that name; (3) sx_rig_start_armed
+            // arms every stream and anchors the episode once all deliver, inside OQC's recording,
+            // which keeps running until the rig stops after it. A refused arming stops OQC's
+            // session again and answers the typed refusal.
             var rig = RigCoordinator.Instance;
-            string? armedSession = null;
+            string? reservedSession = null;
+            string operatorForRig = "";
+            string? taskForRig = null;
+            string? modeForRig = null;
             if (rig is not null && rig.IsExpected)
             {
                 if (recordingManager is not null && recordingManager.State != RecordingState.Idle)
@@ -279,24 +284,21 @@ namespace RealityLog.Network
                 {
                     return collectionError!;
                 }
-                var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                if (rig.Arm(session, operatorId, taskAssignmentId, mode) is RigRefusal armRefusal)
+                if (rig.CheckReady() is RigRefusal checkRefusal)
                 {
-                    return armRefusal.Code switch
-                    {
-                        "collector_signed_out" => RigNotReadyResponse(armRefusal, 409),
-                        // Same status as the app's own storage refusal (507 storage_full).
-                        "rig_storage_low" => RigNotReadyResponse(armRefusal, 507),
-                        _ => RigNotReadyResponse(armRefusal),
-                    };
+                    return RigRefusalResponse(rig, checkRefusal);
                 }
-                armedSession = rig.ArmedSession;
+                reservedSession = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                rig.Reserve(reservedSession);
+                operatorForRig = operatorId;
+                taskForRig = taskAssignmentId;
+                modeForRig = mode;
             }
             void DisarmUnlessStarted()
             {
-                if (armedSession != null && rig is not null && rig.ArmedSession == armedSession)
+                if (reservedSession != null && rig is not null)
                 {
-                    rig.StopEpisode();
+                    rig.Unreserve(reservedSession);
                 }
             }
 
@@ -403,10 +405,49 @@ namespace RealityLog.Network
                 return HttpResponse.InternalError(errorMessage ?? "Failed to start recording");
             }
 
+            // (3) OQC records; the rig arms and anchors the episode inside that recording.
+            string rigStartJson = "null";
+            if (reservedSession != null && rig is not null)
+            {
+                var (started, armRefusal) = rig.StartArmed(reservedSession, operatorForRig, taskForRig, modeForRig);
+                if (armRefusal != null)
+                {
+                    // No episode without the rig: stop OQC's session again (its files stay, with
+                    // the refusal beside them) and answer the refusal.
+                    var stopped = server!.EnqueueOnMainThread(() =>
+                    {
+                        try
+                        {
+                            if (recordingManager != null && recordingManager.IsRecording
+                                && recordingManager.CurrentSessionDirectory == reservedSession)
+                            {
+                                recordingManager.StopRecording();
+                                currentRecordingFile = null;
+                                currentRecordingStartedAt = null;
+                                currentRecordingStartMs = 0;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: stop after a refused arming: {ex}");
+                        }
+                    });
+                    stopped.Wait(5000);
+                    WriteSessionJson(reservedSession, "rig_refusal.json", armRefusal.ToJson());
+                    return RigRefusalResponse(rig, armRefusal, reservedSession);
+                }
+                rigStartJson = started ?? "null";
+                WriteSessionJson(reservedSession, "rig_start.json", rigStartJson);
+                rig.QueueCue(RigCues.Cue.Start); // the operator cannot see the display
+            }
+
             var json = "{\n" +
                 $"  \"status\": \"recording\",\n" +
                 $"  \"file\": \"{EscapeJson(currentRecordingFile ?? "")}\",\n" +
-                $"  \"startedAt\": \"{EscapeJson(currentRecordingStartedAt ?? "")}\"\n" +
+                $"  \"startedAt\": \"{EscapeJson(currentRecordingStartedAt ?? "")}\",\n" +
+                // The rig's anchors are the episode's start: episode_id, monotonic_anchor_ns,
+                // utc_anchor_ns, arm_utc_anchor, arming_ms.
+                $"  \"rig\": {rigStartJson}\n" +
                 "}";
 
             return HttpResponse.Ok(json);
@@ -578,6 +619,7 @@ namespace RealityLog.Network
                     $"      \"createdAt\": \"{rec.CreationTime:O}\",\n" +
                     $"      \"metadata\": {metaJson},\n" +
                     $"      \"seal\": {sealJson},\n" +
+                    $"      \"rigRefusal\": {SessionJsonOrNull(rec.DirectoryName, "rig_refusal.json")},\n" +
                     $"      \"episodeMcap\": {mcapJson}\n" +
                     "    }");
             }
@@ -1550,6 +1592,51 @@ namespace RealityLog.Network
             return HttpResponse.Json(status, body.ToString(Formatting.None));
         }
 
+        /// <summary>
+        /// A rig refusal as its typed response, with a refused cue for the operator: 507 for
+        /// rig_storage_low (as the app's own storage refusal; the rig's numbers are under
+        /// rig.refusal), 409 for collector_signed_out, 503 otherwise.
+        /// </summary>
+        private static HttpResponse RigRefusalResponse(RigCoordinator rig, RigRefusal refusal, string? session = null)
+        {
+            rig.QueueCue(RigCues.Cue.Refused);
+            var status = refusal.Code switch
+            {
+                "rig_storage_low" => 507,
+                "collector_signed_out" => 409,
+                _ => 503,
+            };
+            return RigNotReadyResponse(refusal, status, session);
+        }
+
+        /// <summary>A JSON file the app wrote into a session (compact), or "null".</summary>
+        private string SessionJsonOrNull(string session, string fileName)
+        {
+            try
+            {
+                var path = Path.Combine(cachedDataPath, session, fileName);
+                return File.Exists(path) ? JToken.Parse(File.ReadAllText(path)).ToString(Formatting.None) : "null";
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                return "null";
+            }
+        }
+
+        private void WriteSessionJson(string session, string fileName, string json)
+        {
+            try
+            {
+                var directory = Path.Combine(cachedDataPath, session);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, fileName), json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: write {fileName}: {ex.Message}");
+            }
+        }
+
         private HttpResponse AlreadyRecordingResponse() =>
             HttpResponse.Json(409,
                 "{\n" +
@@ -1561,11 +1648,13 @@ namespace RealityLog.Network
         // The rig (wrist cameras, gripper encoders) is configured or plugged in and not ready.
         // 503 like the other refusals of a not-ready headset; `error` is "rig_not_ready",
         // `reason` the closed RigRefusal code, `rig` the library's own error JSON.
-        private static HttpResponse RigNotReadyResponse(RigRefusal refusal, int status = 503)
+        private static HttpResponse RigNotReadyResponse(RigRefusal refusal, int status = 503, string? session = null)
         {
+            // file: the OQC session a refused arming left behind (stopped), when there is one.
+            var file = session == null ? "" : $",\"file\":\"{EscapeJson(session)}\"";
             var response = HttpResponse.Json(status,
                 $"{{\"error\":\"rig_not_ready\",\"reason\":\"{EscapeJson(refusal.Code)}\"," +
-                $"\"message\":\"{EscapeJson(refusal.Message)}\",\"rig\":{refusal.DetailJson}}}");
+                $"\"message\":\"{EscapeJson(refusal.Message)}\",\"rig\":{refusal.DetailJson}{file}}}");
             if (status == 503) response.StatusText = "Service Unavailable";
             return response;
         }

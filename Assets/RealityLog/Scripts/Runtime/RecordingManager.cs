@@ -195,13 +195,13 @@ namespace RealityLog
             }
 
             // The wrist cameras and gripper encoders, when configured or plugged in: a session
-            // that expects them never starts without them. POST /api/start-recording arms the
-            // rig off the main thread (sx_rig_start blocks up to 12 s) and this session takes
-            // the armed episode's name; any other start path finds nothing armed and is
-            // refused. With no rig expected, rigSession is null and nothing here changes the
-            // laptop-pod flow.
+            // that expects them never starts without them. POST /api/start-recording checks the
+            // rig and reserves this session's name (the rig's episode_id); once this start has
+            // OQC recording, it arms the rig, which anchors the episode inside this recording.
+            // Any other start path finds nothing reserved and is refused. With no rig expected,
+            // rigSession is null and nothing here changes the laptop-pod flow.
             var rig = RigCoordinator.Instance;
-            var rigSession = rig is null ? null : rig.ArmedSession;
+            var rigSession = rig is null ? null : rig.ReservedSession;
             if (rigSession == null && rig is not null && rig.IsExpected)
             {
                 var rigRefused = new RigRefusedException(new RigRefusal("rig_not_armed",
@@ -331,18 +331,12 @@ namespace RealityLog
             }
             catch
             {
-                // A start that failed after the rig's episode was armed stops that episode, so
-                // the rig is not left recording for a session that never started.
+                // The rig is not armed yet; a start that failed releases its reservation.
                 if (rigSession != null && rig is not null)
                 {
-                    rig.StopEpisode();
+                    rig.Unreserve(rigSession);
                 }
                 throw;
-            }
-            if (rigSession != null && rig is not null)
-            {
-                rig.MarkRecording();
-                rig.Cue(RigCues.Cue.Start); // the operator cannot see the display
             }
         }
 
