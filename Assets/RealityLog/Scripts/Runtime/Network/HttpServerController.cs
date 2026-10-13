@@ -105,6 +105,13 @@ namespace RealityLog.Network
         {
             server?.ProcessMainThreadQueue();
 
+            // The left controller's menu button (three lines; in OpenXR the app's menu button,
+            // never the system one, which is the right Oculus button) toggles recording.
+            if (OVRInput.GetDown(OVRInput.Button.Start, OVRInput.Controller.LTouch))
+            {
+                OnMenuButton();
+            }
+
             // Refresh cached values on main thread (safe for JNI)
             cachedIsRecording = recordingManager != null && recordingManager.IsRecording;
             cachedDuration = recordingManager != null ? recordingManager.RecordingDuration : 0f;
@@ -166,6 +173,73 @@ namespace RealityLog.Network
         {
             // Keep server alive through pause/resume — it's low-overhead when idle.
             // HeadTrackingMonitor tracks the pause itself (app.paused in /api/status).
+        }
+
+        // ── Left menu button: start / stop recording ──
+
+        // 1 while a menu-button start or stop runs; presses meanwhile are ignored (a start arms
+        // the rig for ~3.5 s).
+        private int menuBusy;
+
+        /// <summary>
+        /// Starts or stops a recording exactly as POST /api/start-recording (rig check, OQC
+        /// session first, sx_rig_start_armed) or /api/stop-recording does, with an empty body,
+        /// so operator_id comes from pod_config.json. Runs on a worker thread, since a start
+        /// waits on the main thread and on the rig. The operator never sees the display:
+        /// every outcome is a sound (start rises, stop falls, refused buzzes).
+        /// </summary>
+        private void OnMenuButton()
+        {
+            if (server == null || recordingManager == null)
+            {
+                return;
+            }
+            var state = recordingManager.State;
+            if (state == RecordingState.Stopping || Interlocked.CompareExchange(ref menuBusy, 1, 0) != 0)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] menu-button ignored: a start or stop is in progress");
+                return;
+            }
+            var start = state == RecordingState.Idle;
+            var rigExpected = RigCoordinator.Instance is { } r && r.IsExpected;
+            Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")}");
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var request = new HttpRequest
+                    {
+                        Method = "POST",
+                        Path = start ? "/api/start-recording" : "/api/stop-recording",
+                        Body = "{}",
+                    };
+                    var response = start ? HandleStartRecording(request) : HandleStopRecording(request);
+                    var ok = response.StatusCode is >= 200 and < 300;
+                    Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} -> {response.StatusCode} {response.Body}");
+                    // The rig path cues its own start, stop and refusals (rig_not_ready); every
+                    // other outcome is cued here.
+                    var cue = (ok, start) switch
+                    {
+                        (true, true) when !rigExpected => RigCues.Cue.Start,
+                        (true, false) when !rigExpected => RigCues.Cue.Stop,
+                        (false, _) when !(response.Body ?? "").Contains("\"rig_not_ready\"") => RigCues.Cue.Refused,
+                        _ => (RigCues.Cue?)null,
+                    };
+                    if (cue is RigCues.Cue play && RigCoordinator.Instance is { } rig)
+                    {
+                        rig.QueueCue(play);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} failed: {ex}");
+                    RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+                }
+                finally
+                {
+                    Volatile.Write(ref menuBusy, 0);
+                }
+            });
         }
 
         // ── Route registration ──
