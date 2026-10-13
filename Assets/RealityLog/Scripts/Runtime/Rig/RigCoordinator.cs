@@ -137,6 +137,8 @@ namespace RealityLog.Rig
         // EmbodimentAssets' install of the seal's meshes into filesDir; the rig opens only once
         // it is settled, because the library verifies the directory at open.
         private string embodimentDir = "";
+        // What failed while the coordinator started (by part), surfaced in /api/status.
+        private readonly Dictionary<string, string> startupErrors = new();
         private volatile string embodimentStateJson = "{\"state\":\"pending\"}";
         private string EmbodimentState
         {
@@ -206,7 +208,7 @@ namespace RealityLog.Rig
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
             "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
             "\"embodiment_assets\":null,\"embodimentInstall\":null,\"nativeState\":null," +
-            "\"deviceReport\":null,\"deviceReportError\":null," +
+            "\"deviceReport\":null,\"deviceReportError\":null,\"startupErrors\":{}," +
             "\"native\":null,\"lastRefusal\":null}";
 
         /// <summary>
@@ -249,28 +251,65 @@ namespace RealityLog.Rig
             credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
 #if UNITY_ANDROID && !UNITY_EDITOR
+            // Each Android piece starts on its own, and a failure is kept for /api/status: on the
+            // 3S a bridge constructor failure (an androidx call the app's core lacked) once
+            // skipped the embodiment install too, and its log line had left logcat's buffer by
+            // the time anyone looked.
             try
             {
                 using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
                 activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
-                using var identity = new AndroidJavaClass(PodIdentityClassName);
-                credentialsPath = Path.Combine(
-                    identity.CallStatic<string>("privateFilesDir", activity), CredentialsDirectoryName);
-                bridge = new AndroidJavaObject(BridgeClassName, activity);
-                using var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName);
-                embodimentDir = embodiment.CallStatic<string>("installDir", activity);
-                embodiment.CallStatic("installAsync", activity);
             }
             catch (Exception ex)
             {
-                // Without the bridge no USB device can be opened; a rig_config.json still
-                // makes the rig expected, so a configured headset refuses instead of
-                // recording without its wrist streams.
-                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: USB bridge unavailable: {ex.Message}");
-                bridge = null;
+                RecordStartupError("activity", ex);
+            }
+            if (activity != null)
+            {
+                try
+                {
+                    using var identity = new AndroidJavaClass(PodIdentityClassName);
+                    credentialsPath = Path.Combine(
+                        identity.CallStatic<string>("privateFilesDir", activity), CredentialsDirectoryName);
+                }
+                catch (Exception ex)
+                {
+                    RecordStartupError("pod_identity", ex);
+                }
+                try
+                {
+                    using var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName);
+                    embodimentDir = embodiment.CallStatic<string>("installDir", activity);
+                    embodiment.CallStatic("installAsync", activity);
+                }
+                catch (Exception ex)
+                {
+                    // Settled as failed, so the rig still opens and its own readiness says why.
+                    embodimentStateJson = new JObject { ["state"] = "failed", ["error"] = ex.Message }
+                        .ToString(Formatting.None);
+                    RecordStartupError("embodiment_assets", ex);
+                }
+                try
+                {
+                    bridge = new AndroidJavaObject(BridgeClassName, activity);
+                }
+                catch (Exception ex)
+                {
+                    // Without the bridge no USB device can be opened; a rig_config.json still
+                    // makes the rig expected, so a configured headset refuses instead of
+                    // recording without its wrist streams.
+                    bridge = null;
+                    RecordStartupError("usb_bridge", ex);
+                }
             }
 #endif
             Poll();
+        }
+
+        private void RecordStartupError(string what, Exception ex)
+        {
+            startupErrors[what] = ex.ToString();
+            Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {what} failed at startup: {ex}");
         }
 
         private void Update()
@@ -829,7 +868,7 @@ namespace RealityLog.Rig
 
         private void RefreshStatus()
         {
-            if (!Expected && !opened && lastRefusal == null)
+            if (!Expected && !opened && lastRefusal == null && startupErrors.Count == 0)
             {
                 statusJson = NotExpectedStatus;
                 return;
@@ -893,6 +932,7 @@ namespace RealityLog.Rig
                 json.Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
             }
             // The last battery/charging/network-time report the heartbeat sees, and its error.
+            json.Append(",\"startupErrors\":").Append(JsonConvert.SerializeObject(startupErrors));
             json.Append(",\"deviceReport\":").Append(deviceReportJson)
                 .Append(",\"deviceReportError\":").Append(deviceReportError is string error ? JsonString(error) : "null");
             // The app's install of the meshes into filesDir: state, assets, copied, error.
