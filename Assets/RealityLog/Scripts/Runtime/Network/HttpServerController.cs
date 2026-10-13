@@ -271,7 +271,7 @@ namespace RealityLog.Network
                     return AlreadyRecordingResponse();
                 }
                 // The rig's seal names the operator; a headset pod's start must carry one.
-                if (StartBodyOperatorId(request.Body, out var bodyError) is not string operatorId)
+                if (StartBodyOperatorId(request.Body, rig.DefaultOperatorId, out var bodyError) is not string operatorId)
                 {
                     return bodyError!;
                 }
@@ -282,9 +282,13 @@ namespace RealityLog.Network
                 var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 if (rig.Arm(session, operatorId, taskAssignmentId, mode) is RigRefusal armRefusal)
                 {
-                    return armRefusal.Code == "collector_signed_out"
-                        ? RigNotReadyResponse(armRefusal, 409)
-                        : RigNotReadyResponse(armRefusal);
+                    return armRefusal.Code switch
+                    {
+                        "collector_signed_out" => RigNotReadyResponse(armRefusal, 409),
+                        // Same status as the app's own storage refusal (507 storage_full).
+                        "rig_storage_low" => RigNotReadyResponse(armRefusal, 507),
+                        _ => RigNotReadyResponse(armRefusal),
+                    };
                 }
                 armedSession = rig.ArmedSession;
             }
@@ -565,13 +569,16 @@ namespace RealityLog.Network
                     if (sidecarMeta != null) metaJson = sidecarMeta;
                 }
 
+                var (sealJson, mcapJson) = RigEpisodeArtifacts(rec.DirectoryName);
                 items.Add(
                     "    {\n" +
                     $"      \"file\": \"{EscapeJson(rec.DirectoryName)}\",\n" +
                     $"      \"durationMs\": {(int)(rec.DurationSeconds * 1000)},\n" +
                     $"      \"fileSizeBytes\": {rec.SizeBytes},\n" +
                     $"      \"createdAt\": \"{rec.CreationTime:O}\",\n" +
-                    $"      \"metadata\": {metaJson}\n" +
+                    $"      \"metadata\": {metaJson},\n" +
+                    $"      \"seal\": {sealJson},\n" +
+                    $"      \"episodeMcap\": {mcapJson}\n" +
                     "    }");
             }
 
@@ -585,11 +592,66 @@ namespace RealityLog.Network
             return HttpResponse.Ok(json);
         }
 
-        // ── GET /api/recordings/:filename[?camera=left|right] ──
+        /// <summary>
+        /// The rig's verdict for a session (its seal.json: state sealed | refused | pending,
+        /// detail, sha256, size_bytes, frames, build) and its sealed episode.mcap
+        /// (<c>{"path", "sizeBytes", "download"}</c>), each "null" when absent (a recording
+        /// without the rig, or a seal still to come).
+        /// </summary>
+        private (string seal, string mcap) RigEpisodeArtifacts(string session)
+        {
+            var directory = RigCoordinator.EpisodeDirectory(cachedDataPath, session);
+            var seal = "null";
+            var mcap = "null";
+            try
+            {
+                var sealPath = Path.Combine(directory, "seal.json");
+                if (File.Exists(sealPath))
+                {
+                    seal = JToken.Parse(File.ReadAllText(sealPath)).ToString(Formatting.None);
+                }
+                var mcapPath = Path.Combine(directory, "episode.mcap");
+                if (File.Exists(mcapPath))
+                {
+                    mcap = new JObject
+                    {
+                        ["path"] = mcapPath,
+                        ["sizeBytes"] = new FileInfo(mcapPath).Length,
+                        ["download"] = $"/api/recordings/{session}?artifact=mcap",
+                    }.ToString(Formatting.None);
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                seal = new JObject { ["state"] = "unreadable", ["detail"] = ex.Message }.ToString(Formatting.None);
+            }
+            return (seal, mcap);
+        }
+
+        // ── GET /api/recordings/:filename[?camera=left|right | ?artifact=mcap] ──
 
         private HttpResponse HandleStreamRecording(HttpRequest request)
         {
             var filename = request.PathParam;
+
+            // The rig's sealed episode.mcap, through the same ranged file response.
+            if (request.QueryParams.TryGetValue("artifact", out var artifact) && !string.IsNullOrEmpty(artifact))
+            {
+                if (artifact != "mcap")
+                {
+                    return HttpResponse.BadRequest($"Unknown artifact '{artifact}' — expected 'mcap'");
+                }
+                if (!RecordingDirPattern.IsMatch(filename))
+                {
+                    return HttpResponse.BadRequest($"Invalid recording name: {filename}");
+                }
+                var mcapPath = Path.Combine(RigCoordinator.EpisodeDirectory(cachedDataPath, filename), "episode.mcap");
+                if (!File.Exists(mcapPath))
+                {
+                    return HttpResponse.NotFound($"No sealed episode.mcap for {filename}");
+                }
+                return HttpResponse.File(mcapPath, "application/octet-stream");
+            }
 
             // Default to the left stream so existing clients keep getting the same file.
             var camera = "left";
@@ -1170,10 +1232,11 @@ namespace RealityLog.Network
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
 
         /// <summary>
-        /// operator_id of a start body (a non-empty string), or null with the typed 400 to
-        /// answer: invalid_body for a body that is not a JSON object, operator_id_required.
+        /// operator_id of a start body (a non-empty string), else pod_config.json's, or null
+        /// with the typed 400 to answer: invalid_body for a body that is not a JSON object,
+        /// operator_id_required.
         /// </summary>
-        private static string? StartBodyOperatorId(string body, out HttpResponse? error)
+        private static string? StartBodyOperatorId(string body, string? defaultOperatorId, out HttpResponse? error)
         {
             error = null;
             JObject? fields = null;
@@ -1196,6 +1259,11 @@ namespace RealityLog.Network
                 && ((string?)value)?.Trim() is { Length: > 0 } operatorId)
             {
                 return operatorId;
+            }
+            // A local headset may name its operator once, in pod_config.json.
+            if (defaultOperatorId != null)
+            {
+                return defaultOperatorId;
             }
             error = TypedError(400, "operator_id_required",
                 "the wrist rig is configured, enrolled or plugged in, so the start body must carry operator_id (a non-empty string) for the episode's seal");
