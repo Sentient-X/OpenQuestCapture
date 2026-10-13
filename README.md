@@ -189,6 +189,21 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   calibration) are refused with `rig_not_armed`.
 * `POST /api/stop-recording` returns the rig's stop receipt as `"rig"` (and writes it to
   `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
+* **Local mode (no Factory).** With no `factory_url` in `pod_config.json` the headset records on
+  its own: put the rig in `rig_config.json` (roles, identities, calibration, and the seal profile
+  the rig defines; passed through as the open config's `rig`), and `operator_id` in
+  `pod_config.json` if start bodies will not carry one. Nothing asks for enrollment or sign-in.
+  `POST /api/start-recording` and `/api/stop-recording` record episode after episode; each stop
+  seals that episode on the headset (`rig_staging/<session>/episode.mcap` + `seal.json`).
+  `/api/status` → `rig.seals` holds each episode's verdict (`sealed` | `refused` | `pending`, with
+  `detail`), `storageFreeBytes` the free space; a start without room is refused `507`
+  (`storage_full`, or `rig_not_ready`/`rig_storage_low` below the rig's floor). `GET
+  /api/recordings` lists each session's `seal` and `episodeMcap`, and
+  `GET /api/recordings/<session>?artifact=mcap` downloads it (HTTP ranges supported). The operator
+  hears every outcome: start rises, stop falls, sealed is three high blips, refused a low buzz.
+* **USB permission on Horizon OS:** a UVC camera's USB permission is silently denied unless the
+  app holds `android.permission.CAMERA` and `horizonos.permission.USB_CAMERA`; both are asked at
+  first launch with the passthrough permissions (someone wearing the headset accepts them once).
 * Enrollment: `POST /api/enroll {"join_code": "sxj_...", "base_url": "https://app.preview.sentientx.io"}`
   (`base_url` optional; production otherwise, saved to `pod_config.json`) commissions the headset
   as a Factory pod of kind `headset`. The machine credential is kept in app-private storage; once
