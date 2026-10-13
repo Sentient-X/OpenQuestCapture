@@ -211,24 +211,46 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   refusal with the session as `file`. A storage refusal is `507` with the rig's numbers under
   `rig.refusal` (`free_bytes`, `required_bytes`, `episode_bytes`, `backlog_bytes`,
   `backlog_episodes`, `max_episode_seconds`); every refusal plays the refused cue.
-* **Bench test rig (local mode).** Provision a headset for the two Sonix test cameras
-  (05a3:9230) and two ESP32-C6 encoders, with no Factory:
+* **Bench test rig (local mode).** Two Sonix test cameras (05a3:9230) and two ESP32-C6
+  encoders through a powered hub, no Factory. A bench rig binds by identity and **requires all
+  four calibration files** (`left.json`, `right.json` with `camera_identity` `usb_port`;
+  `left.mount.json`, `right.mount.json` with `device_id` = that side's encoder
+  `usb-serial:<MAC>`); without them the rig refuses to open (`calibration_missing`). The URDF
+  is the packaged embodiment's (`yubi_description/urdf/yubi_hands.urdf`, shipped in the APK).
+  The test cameras have no readable flash UID, so they are identified by their physical USB
+  port path, which stays the same across replugs into the same hub port.
 
-  ```bash
-  files=/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
-  serial=$(adb shell getprop ro.serialno | tr -d '\r')
-  # No factory_url: the headset records and seals locally. operator_id names the collector
-  # when a start body carries none.
-  printf '{"headset_serial":"%s","operator_id":"<operator>"}\n' "$serial" > pod_config.json
-  adb push pod_config.json "$files/pod_config.json"
-  adb push tools/rig_config.bench.json "$files/rig_config.json"
-  ```
+  1. Read the port paths first. Push `pod_config.json` with no `rig_config.json`; the rig opens
+     with the devices plugged in and reports each one:
 
-  `tools/rig_config.bench.json` is the minimal bench rig, `{"profile":"bench","binding":"order",
-  "rig_id":"bench-<name>"}`: devices bound by USB device name, left first, no identities. Add
-  `"calibration": {"left.json"|"right.json"|"left.mount.json"|"right.mount.json"|
-  "yubi_hands.urdf": "<file text>"}` only with real measured calibration; absent calibration is
-  recorded as absent, never invented. Bench episodes seal under the seal's bench profile.
+     ```bash
+     files=/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
+     serial=$(adb shell getprop ro.serialno | tr -d '\r')
+     # No factory_url: records and seals locally. operator_id names the collector.
+     printf '{"headset_serial":"%s","operator_id":"<operator>"}\n' "$serial" > pod_config.json
+     adb push pod_config.json "$files/pod_config.json"
+     adb shell rm -f "$files/rig_config.json"
+     # restart the app, then:
+     curl -s http://<headset>:8080/api/status | jq '.rig.native.devices[] | {port, identity}'
+     ```
+
+  2. Generate the calibration for those ports and MACs and build `rig_config.json`:
+     `{"profile":"bench","binding":"identity","rig_id":"bench-<name>","roles":{"left_camera":
+     "usb-port:<path>","right_camera":"usb-port:<path>","left_encoder":"usb-serial:<MAC>",
+     "right_encoder":"usb-serial:<MAC>"},"calibration":{"left.json":"…","right.json":"…",
+     "left.mount.json":"…","right.mount.json":"…"}}`. `tools/rig_config.bench.json` is this
+     bench's (`bench-quest3s`: cameras on hub ports 1-1.1 / 1-1.2), generated with its measured
+     calibration.
+
+  3. Push it and restart the app:
+     `adb push tools/rig_config.bench.json "$files/rig_config.json"`. `/api/status` →
+     `rig.open` true, four devices attached; bench episodes seal under the bench profile.
+* **Controls.** The operator wears the headset on the forehead and never sees the display. The
+  **left controller's menu button** (three lines) starts a recording and, pressed again, stops it
+  (the same path as `POST /api/start-recording` / `/api/stop-recording`, with the operator from
+  `pod_config.json`); presses while a start or stop is running are ignored. Outcomes are sounds:
+  start rises, stop falls, a refusal buzzes, a sealed episode blips three times. **Home** is the
+  right controller's Oculus button.
 * **USB permission on Horizon OS:** a UVC camera's USB permission is silently denied unless the
   app holds `android.permission.CAMERA` and `horizonos.permission.USB_CAMERA`; both are asked at
   first launch with the passthrough permissions (someone wearing the headset accepts them once).
