@@ -18,7 +18,8 @@ namespace RealityLog.Rig
         /// <summary>
         /// One of <c>rig_library_missing</c>, <c>rig_open_failed</c>, <c>rig_usb_permission</c>,
         /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>,
-        /// <c>rig_identity_pending</c>, <c>collector_signed_out</c>.
+        /// <c>rig_identity_pending</c>, <c>collector_signed_out</c>, <c>rig_storage_low</c>,
+        /// <c>pod_config_incomplete</c>.
         /// </summary>
         public string Code { get; }
         public string Message { get; }
@@ -192,8 +193,12 @@ namespace RealityLog.Rig
         private volatile string? deviceReportError;
         private volatile bool collectorSignedIn;
         private volatile bool signInCuePending;
+        // Seal verdicts seen so far (native-status timer thread); a change to sealed or refused
+        // after the first observation queues a cue for the main thread.
+        private readonly Dictionary<string, string> sealStates = new();
+        private bool sealsObserved;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<RigCues.Cue> cues = new();
         private bool floorObserved; // native-status timer thread only
-        private AudioSource? cueSource;
 
         private const string NotExpectedStatus =
             "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"headsetSerial\":null," +
@@ -273,8 +278,12 @@ namespace RealityLog.Rig
             if (signInCuePending)
             {
                 signInCuePending = false;
-                PlaySignInCue();
+                RigCues.Play(RigCues.Cue.SignedIn, gameObject);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector signed in");
+            }
+            while (cues.TryDequeue(out var cue))
+            {
+                RigCues.Play(cue, gameObject);
             }
             if (Time.unscaledTime - lastPoll >= PollIntervalSeconds)
             {
@@ -347,7 +356,9 @@ namespace RealityLog.Rig
             }
             catch (SxRigException ex)
             {
-                return new RigRefusal("rig_check_failed", ex.Message, ex.ErrorJson);
+                return ex.Error == SxRigError.Storage
+                    ? new RigRefusal("rig_storage_low", ex.Message, ex.ErrorJson)
+                    : new RigRefusal("rig_check_failed", ex.Message, ex.ErrorJson);
             }
 
             var (mono, utc) = SxRig.ReadAnchors(MonotonicClock.Nanos);
@@ -380,6 +391,11 @@ namespace RealityLog.Rig
                 {
                     return new RigRefusal("collector_signed_out",
                         "the collector signed out; POST /api/sign-in and approve the code", ex.ErrorJson);
+                }
+                if (ex.Error == SxRigError.Storage)
+                {
+                    return new RigRefusal("rig_storage_low",
+                        "not enough free space to record the rig's streams", ex.ErrorJson);
                 }
                 return new RigRefusal("rig_start_failed", ex.Message, ex.ErrorJson);
             }
@@ -457,6 +473,34 @@ namespace RealityLog.Rig
             expected = true;
             return result;
         }
+
+        /// <summary>
+        /// The operator a local headset records under when the start body names none:
+        /// pod_config.json's <c>operator_id</c>. Null when absent or unreadable. Any thread.
+        /// </summary>
+        public string? DefaultOperatorId
+        {
+            get
+            {
+                try
+                {
+                    return ReadPodConfig()["operator_id"] is JValue { Type: JTokenType.String } value
+                        && ((string?)value)?.Trim() is { Length: > 0 } id ? id : null;
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The rig's episode directory for an OQC session (the session name is its episode_id):
+        /// <c>&lt;persistentDataPath&gt;/rig_staging/&lt;session&gt;</c>, holding episode.mcap and
+        /// seal.json once sealed. Any thread.
+        /// </summary>
+        public static string EpisodeDirectory(string persistentDataPath, string session) =>
+            Path.Combine(persistentDataPath, StagingDirectoryName, session);
 
         /// <summary>True once the rig is open (an enrolled headset opens it on its own).</summary>
         public bool IsOpen => opened;
@@ -898,6 +942,7 @@ namespace RealityLog.Rig
                     }
                     collectorSignedIn = signedIn;
                     floorObserved = true;
+                    QueueSealCues(status["seals"] as JObject);
                 }
             }
             catch (SxRigException ex)
@@ -912,6 +957,30 @@ namespace RealityLog.Rig
                 System.Threading.Volatile.Write(ref nativeStatusBusy, 0);
             }
         }
+
+        /// <summary>
+        /// Queues a sealed or refused cue for each episode whose verdict changed to it since the
+        /// last status; verdicts already present at the first status (an earlier run's) do not cue.
+        /// </summary>
+        private void QueueSealCues(JObject? seals)
+        {
+            if (seals == null) return;
+            foreach (var entry in seals)
+            {
+                var state = (string?)entry.Value?["state"] ?? "";
+                sealStates.TryGetValue(entry.Key, out var previous);
+                if (sealsObserved && state != previous)
+                {
+                    if (state == "sealed") cues.Enqueue(RigCues.Cue.Sealed);
+                    else if (state == "refused") cues.Enqueue(RigCues.Cue.Refused);
+                }
+                sealStates[entry.Key] = state;
+            }
+            sealsObserved = true;
+        }
+
+        /// <summary>Plays a cue (main thread) when the rig took part in the recording.</summary>
+        public void Cue(RigCues.Cue cue) => RigCues.Play(cue, gameObject);
 
         /// <summary>floor.operator.signed_in of a status, or null when the status has no floor.</summary>
         private static bool? CollectorSignedIn(JObject? status) =>
@@ -930,28 +999,6 @@ namespace RealityLog.Rig
             {
                 return null;
             }
-        }
-
-        /// <summary>
-        /// A short rising two-tone chime, synthesized (no asset), for a collector's sign-in: the
-        /// operator wears the headset on the forehead and cannot see a confirmation.
-        /// </summary>
-        private void PlaySignInCue()
-        {
-            const int rate = 44100;
-            var samples = new float[rate * 3 / 10];
-            for (var i = 0; i < samples.Length; i++)
-            {
-                var t = (float)i / rate;
-                var frequency = i < samples.Length / 2 ? 880f : 1320f;
-                var envelope = Mathf.Min(1f, Mathf.Min(i, samples.Length - i) / (rate * 0.01f));
-                samples[i] = 0.35f * envelope * Mathf.Sin(2f * Mathf.PI * frequency * t);
-            }
-            var clip = AudioClip.Create("SignInCue", samples.Length, 1, rate, false);
-            clip.SetData(samples, 0);
-            cueSource ??= gameObject.AddComponent<AudioSource>();
-            cueSource.spatialBlend = 0f;
-            cueSource.PlayOneShot(clip);
         }
 
         private static string JsonString(string value) =>

@@ -342,6 +342,7 @@ namespace RealityLog
             if (rigSession != null && rig is not null)
             {
                 rig.MarkRecording();
+                rig.Cue(RigCues.Cue.Start); // the operator cannot see the display
             }
         }
 
@@ -430,6 +431,10 @@ namespace RealityLog
                 // sidecars are, since their stop above is synchronous.
                 StopRig(savedDirectory);
                 EndPhase("rig");
+                if (LastRigStopReceiptJson != null && RigCoordinator.Instance is { } rigForCue)
+                {
+                    rigForCue.Cue(RigCues.Cue.Stop);
+                }
             }
             catch
             {
