@@ -537,46 +537,23 @@ namespace RealityLog.Rig
         public void QueueCue(RigCues.Cue cue) => cues.Enqueue(cue);
 
         /// <summary>
-        /// Main thread, before <see cref="Enroll"/>: records the site to enroll with (when
-        /// <paramref name="baseUrl"/> is given, into pod_config.json), then opens the rig — even
-        /// when no rig is expected yet — or reopens it when its config changed (a new tailnet
-        /// address, say) and no episode is active. Returns a refusal or null.
+        /// Main thread, before <see cref="Enroll"/>: opens the rig (even when no rig is expected
+        /// yet) or reopens it when its config changed and no episode is active, so the open
+        /// config carries what sx_rig_enroll_site needs (credentials_dir, quest_apk_build_id,
+        /// the serial through pod_config_path). The site travels in the enroll request, so
+        /// nothing is written to pod_config.json. Returns a refusal or null.
         /// </summary>
-        public RigRefusal? PrepareEnrollment(string? baseUrl)
+        public RigRefusal? BeginEnrollment()
         {
-            if (localOnly)
-            {
-                return new RigRefusal("local_only",
-                    "this headset is set to Local only: it never contacts the Factory (turn it off in the recordings menu or POST /api/settings)");
-            }
-            // The site is chosen at enrollment: base_url when given, else the one pod_config.json
-            // names, else production. rig_type_id is provisioning's (pod_config.json), never a
-            // default in code: the rig commissions as exactly that registered type.
-            try
-            {
-                var site = ReadPodConfig();
-                if (site["rig_type_id"] is not JValue { Type: JTokenType.String })
-                {
-                    return new RigRefusal("pod_config_incomplete",
-                        $"{PodConfigFileName} has no rig_type_id (provisioning writes it, e.g. \"rig_yubi\")");
-                }
-                if (!string.IsNullOrEmpty(baseUrl) || site["factory_url"] == null)
-                {
-                    var trimmed = (string.IsNullOrEmpty(baseUrl) ? DefaultBaseUrl : baseUrl!).TrimEnd('/');
-                    site["factory_url"] = trimmed + "/d/factory/";
-                    site["auth_url"] = trimmed + "/d/auth/";
-                    File.WriteAllText(podConfigPath, site.ToString(Formatting.Indented));
-                }
-            }
-            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException
-                || ex is UnauthorizedAccessException)
-            {
-                return new RigRefusal("pod_config_incomplete", $"{PodConfigFileName}: {ex.Message}");
-            }
             PollIdentity(force: true);
             if (libraryMissing)
             {
                 return new RigRefusal("rig_library_missing", "this build has no libsx_rig.so", openErrorJson);
+            }
+            if (apkBuildId.Length == 0)
+            {
+                return new RigRefusal("rig_identity_pending",
+                    "the installed APK's build id is still being computed; retry in a few seconds");
             }
             if (opened && BuildConfig() is string config && config != openedConfigJson)
             {
@@ -596,49 +573,61 @@ namespace RealityLog.Rig
             return opened ? null : new RigRefusal("rig_open_failed", "sx_rig_open failed", openErrorJson);
         }
 
-        private bool enrollmentRestoresLocalOnly;
-
         /// <summary>
-        /// Main thread, to start an enrollment (the pod setup panel, POST /api/enroll): turns
-        /// Local only off for it (enrolling contacts the Factory), then
-        /// <see cref="PrepareEnrollment"/>. On a refusal Local only is restored. The caller then
-        /// runs <see cref="Enroll"/> off the main thread and reports back with
-        /// <see cref="FinishEnrollment"/>.
-        /// </summary>
-        public RigRefusal? BeginEnrollment(string? baseUrl)
-        {
-            enrollmentRestoresLocalOnly = localOnly;
-            if (localOnly && SetLocalOnly(false) is string error)
-            {
-                enrollmentRestoresLocalOnly = false;
-                return new RigRefusal("rig_open_failed", error);
-            }
-            var refusal = PrepareEnrollment(baseUrl);
-            if (refusal != null) FinishEnrollment(false);
-            return refusal;
-        }
-
-        /// <summary>
-        /// Main thread, after <see cref="Enroll"/>: a successful enrollment leaves Local only off
-        /// (the headset is a Factory pod now); a failed one restores it if it was on.
+        /// Main thread, after <see cref="Enroll"/>: a successful enrollment turns Local only off
+        /// (the headset is a Factory pod now) and reads the API token.
         /// </summary>
         public void FinishEnrollment(bool enrolledNow)
         {
-            if (!enrolledNow && enrollmentRestoresLocalOnly) SetLocalOnly(true);
-            enrollmentRestoresLocalOnly = false;
+            if (!enrolledNow) return;
+            if (localOnly) SetLocalOnly(false);
+            RefreshApiToken();
         }
 
         /// <summary>
-        /// <c>sx_rig_enroll</c> on the calling (worker) thread, after
-        /// <see cref="PrepareEnrollment"/>. Returns the pod record JSON; throws
-        /// <see cref="SxRigException"/>.
+        /// <c>sx_rig_enroll_site</c> on the calling (worker) thread, after
+        /// <see cref="BeginEnrollment"/>: returns the answer (<c>{"pod_id", "pod", "steps"}</c>);
+        /// throws <see cref="SxRigException"/> (a failed join or commission carries its steps in
+        /// the error's refusal). rig_type_id comes from pod_config.json when it names one.
         /// </summary>
-        public string Enroll(string joinCode)
+        public string Enroll(string factoryUrl, string authUrl, string joinCode)
         {
-            var result = SxRig.Enroll(joinCode);
+            string? rigTypeId = null;
+            try
+            {
+                rigTypeId = ReadPodConfig()["rig_type_id"] is JValue { Type: JTokenType.String } type ? (string?)type : null;
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+            {
+            }
+            var result = SxRig.EnrollSite(PodSetupJson.Request(factoryUrl, authUrl, joinCode, rigTypeId));
             enrolled = true;
             expected = true;
             return result;
+        }
+
+        /// <summary>
+        /// The HTTP API's bearer token (sx_rig_api_token), or null before enrollment or while
+        /// the rig is closed. Never logged or put in a status. Any thread.
+        /// </summary>
+        public string? ApiToken => apiToken;
+        private volatile string? apiToken;
+
+        private void RefreshApiToken()
+        {
+            if (!opened || !enrolled)
+            {
+                apiToken = null;
+                return;
+            }
+            try
+            {
+                apiToken = JToken.Parse(SxRig.ApiToken())["token"] is JValue { Type: JTokenType.String } t ? (string?)t : null;
+            }
+            catch (Exception ex) when (ex is SxRigException || ex is JsonException)
+            {
+                apiToken = null;
+            }
         }
 
         /// <summary>
@@ -721,6 +710,7 @@ namespace RealityLog.Rig
             lastPoll = Time.unscaledTime;
             configPresent = File.Exists(configPath);
             enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
+            if (opened && enrolled && apiToken == null) RefreshApiToken();
             PollIdentity(force: false);
             if (bridge != null)
             {
@@ -807,6 +797,7 @@ namespace RealityLog.Rig
                 opened = true;
                 openErrorJson = null;
                 nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
+                RefreshApiToken();
                 StartDeviceReports();
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
             }

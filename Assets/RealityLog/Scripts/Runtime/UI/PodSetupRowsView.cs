@@ -10,11 +10,12 @@ namespace RealityLog.UI
     public class PodSetupRowsView : MonoBehaviour
     {
         private PodSetupController? setup;
-        private TextMeshProUGUI? status, scan, site, code, enroll;
+        private TextMeshProUGUI? status, scan, site, auth, code, enroll;
 
         public void Bind(PodSetupController controller, TextMeshProUGUI statusText, TextMeshProUGUI scanText,
-            TextMeshProUGUI siteText, TextMeshProUGUI codeText, TextMeshProUGUI enrollText)
+            TextMeshProUGUI siteText, TextMeshProUGUI authText, TextMeshProUGUI codeText, TextMeshProUGUI enrollText)
         {
+            auth = authText;
             setup = controller;
             status = statusText;
             scan = scanText;
@@ -31,7 +32,8 @@ namespace RealityLog.UI
             if (setup == null) return;
             if (status != null) status.text = "Pod setup: " + setup.Status;
             if (scan != null) scan.text = setup.Scanning ? "Cancel scan" : "Scan QR code";
-            if (site != null) site.text = setup.Site.Length > 0 ? $"Site: {setup.Site}" : "Site: tap to type";
+            if (site != null) site.text = $"Factory URL: {setup.FactoryUrl}";
+            if (auth != null) auth.text = $"Auth URL: {setup.AuthUrl}";
             if (code != null) code.text = setup.JoinCode.Length > 0 ? "Join code: entered" : "Join code: tap to type";
             if (enroll != null) enroll.text = setup.Busy && !setup.Scanning ? "Enrolling..." : "Enroll";
         }

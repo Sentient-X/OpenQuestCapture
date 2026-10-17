@@ -1,7 +1,9 @@
 # nullable enable
 
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using UnityEngine;
 using RealityLog.Camera;
@@ -11,22 +13,26 @@ namespace RealityLog.Rig
 {
     /// <summary>
     /// The in-headset Pod setup: enroll this headset as a Factory pod. <b>Scan QR</b> reads the
-    /// console's code ({"site", "join_code"}) through the left passthrough camera and enrolls at
-    /// once (the wearer cannot see a button); the Quest system keyboard fills <b>Site</b> and
-    /// <b>Join code</b> as a fallback, then <b>Enroll</b>. Each step answers with a status line
-    /// and a sound: scanned (blips), enrolled (chime), any failure (buzz, with its reason). A
-    /// successful enrollment leaves Local only off; a failed one restores it. The headset serial
-    /// stays pod_config.json's. Shown by the recordings menu (RecordingListUI).
+    /// console's code ({"factory_url", "auth_url", "join_code"}) through the left passthrough
+    /// camera and enrolls at once (the wearer cannot see a button); the Quest system keyboard
+    /// fills <b>Factory URL</b>, <b>Auth URL</b> (prefilled with production) and <b>Join code</b>
+    /// as a fallback, then <b>Enroll</b>. sx_rig_enroll_site answers with its steps (join,
+    /// commission, rig, builds); each is told on the status line and with a sound: succeeded
+    /// blips, unavailable a falling tone (it completes later), failed the buzz; enrolled ends
+    /// with the chime and turns Local only off. The headset serial stays pod_config.json's.
+    /// Shown by the recordings menu (RecordingListUI).
     /// </summary>
     public class PodSetupController : MonoBehaviour
     {
         private const float ScanTimeoutSeconds = 60f;
+        private const float StepCueSpacingSeconds = 0.7f;
 
         public static PodSetupController? Instance { get; private set; }
 
-        public string Site { get; private set; } = "";
+        public string FactoryUrl { get; private set; } = PodSetupJson.DefaultFactoryUrl;
+        public string AuthUrl { get; private set; } = PodSetupJson.DefaultAuthUrl;
         public string JoinCode { get; private set; } = "";
-        public string Status { get; private set; } = "Not set up: scan the console's QR code, or type the site and join code.";
+        public string Status { get; private set; } = "Not set up: scan the console's QR code, or type the join code.";
         public bool Busy => scanning || enrolling;
         public bool Scanning => scanning;
 
@@ -75,27 +81,34 @@ namespace RealityLog.Rig
             Status = "Scan cancelled.";
         }
 
-        /// <summary>Opens the system keyboard for the site.</summary>
-        public void EditSite() => OpenKeyboard(Site, false, text =>
+        public void EditFactoryUrl() => OpenKeyboard(FactoryUrl, false, text =>
         {
-            var (site, error) = PodSetupJson.NormalizeSite(text);
+            var (url, error) = PodSetupJson.NormalizeUrl(text, "Factory URL");
             if (error != null) Fail(error);
-            else { Site = site!; Status = $"Site: {Site}"; }
+            else { FactoryUrl = url!; Status = $"Factory URL: {FactoryUrl}"; }
         });
 
-        /// <summary>Opens the system keyboard for the join code.</summary>
+        public void EditAuthUrl() => OpenKeyboard(AuthUrl, false, text =>
+        {
+            var (url, error) = PodSetupJson.NormalizeUrl(text, "Auth URL");
+            if (error != null) Fail(error);
+            else { AuthUrl = url!; Status = $"Auth URL: {AuthUrl}"; }
+        });
+
         public void EditJoinCode() => OpenKeyboard(JoinCode, true, text =>
         {
             if (PodSetupJson.CheckJoinCode(text) is string error) Fail(error);
             else { JoinCode = text.Trim(); Status = "Join code entered."; }
         });
 
-        /// <summary>Enrolls with the site and join code entered.</summary>
+        /// <summary>Enrolls with the URLs and join code entered (or scanned).</summary>
         public void Enroll()
         {
             if (Busy) return;
-            var (site, siteError) = PodSetupJson.NormalizeSite(Site);
-            if (siteError != null) { Fail(siteError); return; }
+            var (factory, factoryError) = PodSetupJson.NormalizeUrl(FactoryUrl, "Factory URL");
+            if (factoryError != null) { Fail(factoryError); return; }
+            var (auth, authError) = PodSetupJson.NormalizeUrl(AuthUrl, "Auth URL");
+            if (authError != null) { Fail(authError); return; }
             if (PodSetupJson.CheckJoinCode(JoinCode) is string codeError) { Fail(codeError); return; }
             var rig = RigCoordinator.Instance;
             if (rig is null) { Fail("The rig coordinator is not running."); return; }
@@ -104,39 +117,66 @@ namespace RealityLog.Rig
                 Fail("Stop the recording before setting up the pod.");
                 return;
             }
-            enrolling = true;
-            Status = $"Enrolling with {site}...";
-            if (rig.BeginEnrollment(site) is RigRefusal refusal)
+            if (rig.BeginEnrollment() is RigRefusal refusal)
             {
-                enrolling = false;
                 Fail($"Cannot enroll: {refusal.Message}");
                 return;
             }
+            enrolling = true;
+            Status = $"Enrolling at {factory}...";
             var code = JoinCode;
             Task.Run(() =>
             {
                 try
                 {
-                    var answer = rig.Enroll(code);
+                    var answer = rig.Enroll(factory!, auth!, code);
+                    var steps = PodSetupJson.Steps(answer);
                     mainThread.Enqueue(() =>
                     {
                         rig.FinishEnrollment(true);
                         enrolling = false;
                         JoinCode = "";
-                        Status = "Enrolled: " + RigStatusJson.EnrollmentSummary(answer) + ". Local only is off.";
-                        rig.QueueCue(RigCues.Cue.SignedIn);
+                        Status = "Enrolled (" + RigStatusJson.EnrollmentSummary(answer) + "): " + PodSetupJson.Describe(steps) + ". Local only is off.";
+                        StartCoroutine(PlaySteps(steps, enrolled: true));
                     });
                 }
                 catch (SxRigException ex)
                 {
+                    var steps = PodSetupJson.Steps(ex.ErrorJson);
                     mainThread.Enqueue(() =>
                     {
-                        rig.FinishEnrollment(false);
                         enrolling = false;
-                        Fail("Enrollment failed: " + RigStatusJson.ErrorDetail(ex.ErrorJson, ex.Message));
+                        var detail = steps.Count > 0 ? PodSetupJson.Describe(steps) : RigStatusJson.ErrorDetail(ex.ErrorJson, ex.Message);
+                        Status = "Enrollment failed: " + detail;
+                        Debug.LogWarning($"[{Constants.LOG_TAG}] PodSetup: {Status}");
+                        if (steps.Count > 0) StartCoroutine(PlaySteps(steps, enrolled: false));
+                        else rig.QueueCue(RigCues.Cue.Refused);
                     });
                 }
             });
+        }
+
+        /// <summary>One sound per step, spaced so each is heard, then the chime when enrolled.</summary>
+        private IEnumerator PlaySteps(List<EnrollmentStep> steps, bool enrolled)
+        {
+            var rig = RigCoordinator.Instance;
+            if (rig is null) yield break;
+            foreach (var step in steps)
+            {
+                RigCues.Cue? cue = step.State switch
+                {
+                    "succeeded" => RigCues.Cue.Sealed,
+                    "unavailable" => RigCues.Cue.Stop,
+                    "failed" => RigCues.Cue.Refused,
+                    _ => null, // skipped: already done
+                };
+                if (cue is RigCues.Cue play)
+                {
+                    rig.Cue(play);
+                    yield return new WaitForSecondsRealtime(StepCueSpacingSeconds);
+                }
+            }
+            if (enrolled) rig.Cue(RigCues.Cue.SignedIn);
         }
 
         private void Update()
@@ -149,16 +189,17 @@ namespace RealityLog.Rig
                 {
                     scanCamera.StopQrScan();
                     scanning = false;
-                    var (site, code, error) = PodSetupJson.ParseQr(text);
+                    var (factory, auth, code, error) = PodSetupJson.ParseQr(text);
                     if (error != null)
                     {
                         Fail(error);
                     }
                     else
                     {
-                        Site = site!;
+                        FactoryUrl = factory!;
+                        AuthUrl = auth!;
                         JoinCode = code!;
-                        Status = $"Scanned the code for {Site}.";
+                        Status = $"Scanned the code for {FactoryUrl}.";
                         RigCoordinator.Instance?.QueueCue(RigCues.Cue.Sealed);
                         Enroll(); // the wearer cannot see a button: a scanned code enrolls at once
                     }

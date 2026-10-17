@@ -60,5 +60,5 @@ cp "$newtonsoft" "$out/"
 # PodSetupJson: the console's QR payload and the keyboard inputs.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-setup-harness.exe" "$here/PodSetupJsonHarness.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodSetupJson.cs"
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodSetupJson.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigApiGuard.cs"
 "$mono" "$out/pod-setup-harness.exe"

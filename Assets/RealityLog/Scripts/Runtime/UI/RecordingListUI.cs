@@ -174,8 +174,8 @@ namespace RealityLog.UI
         private readonly List<GameObject> podSetupRows = new();
 
         /// <summary>
-        /// Pod setup at the top of the list: a status line, Scan QR (or Cancel), Site and Join
-        /// code (the Quest keyboard) and Enroll (PodSetupController). The texts refresh while the
+        /// Pod setup at the top of the list: a status line, Scan QR (or Cancel), Factory URL,
+        /// Auth URL and Join code (the Quest keyboard) and Enroll (PodSetupController). The texts refresh while the
         /// menu is open.
         /// </summary>
         private void CreatePodSetupRows()
@@ -188,17 +188,18 @@ namespace RealityLog.UI
             // Created in reverse: each SetAsFirstSibling puts the row on top.
             var enroll = CreateRow("PodSetupEnroll", new Color(0.15f, 0.3f, 0.55f, 0.85f), setup.Enroll, out var enrollText);
             var code = CreateRow("PodSetupJoinCode", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditJoinCode, out var codeText);
-            var site = CreateRow("PodSetupSite", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditSite, out var siteText);
+            var auth = CreateRow("PodSetupAuthUrl", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditAuthUrl, out var authText);
+            var site = CreateRow("PodSetupFactoryUrl", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditFactoryUrl, out var siteText);
             var scan = CreateRow("PodSetupScan", new Color(0.15f, 0.3f, 0.55f, 0.85f),
                 () => { if (setup.Scanning) setup.CancelScan(); else setup.StartScan(); }, out var scanText);
             var status = CreateRow("PodSetupStatus", new Color(0.1f, 0.1f, 0.1f, 0.85f), null, out var statusText);
             statusText.enableAutoSizing = true;
             statusText.fontSizeMin = 10;
             statusText.fontSizeMax = 14;
-            podSetupRows.AddRange(new[] { enroll, code, site, scan, status });
+            podSetupRows.AddRange(new[] { enroll, code, auth, site, scan, status });
 
             var view = status.AddComponent<PodSetupRowsView>();
-            view.Bind(setup, statusText, scanText, siteText, codeText, enrollText);
+            view.Bind(setup, statusText, scanText, siteText, authText, codeText, enrollText);
         }
 
         private GameObject CreateRow(string name, Color color, System.Action? onClick, out TextMeshProUGUI text)

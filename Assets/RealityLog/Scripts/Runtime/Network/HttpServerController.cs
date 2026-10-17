@@ -338,6 +338,17 @@ namespace RealityLog.Network
         {
             if (server == null) return;
 
+            // An enrolled headset that is not Local only requires the rig's bearer token on every
+            // request; Local only (or not enrolled yet) keeps the open LAN API.
+            server.Guard = request =>
+            {
+                var rig = RigCoordinator.Instance;
+                if (rig is null) return null;
+                request.Headers.TryGetValue("Authorization", out var authorization);
+                return RigApiGuard.Authorized(authorization, rig.ApiToken, rig.LocalOnly)
+                    ? null
+                    : TypedError(401, "unauthorized", "this headset is enrolled: send Authorization: Bearer <api token>");
+            };
             server.Get("/api/status", HandleStatus);
             server.Post("/api/start-recording", HandleStartRecording);
             server.Post("/api/stop-recording", HandleStopRecording);
@@ -1682,14 +1693,14 @@ namespace RealityLog.Network
         // ── POST /api/enroll ──
 
         /// <summary>
-        /// Body <c>{"join_code": "sxj_...", "base_url": "https://app.preview.sentientx.io"}</c>
-        /// (base_url optional; the production site, or the one pod_config.json already names,
-        /// otherwise). Commissions this headset as a Factory pod of kind headset through
-        /// libsx_rig (up to 60 s, on this worker thread). With a credential already held the
-        /// code is ignored and the commission re-asserted. Errors are
-        /// <c>{"error", "reason"?, "message", "rig"?}</c>: 400 invalid_body /
-        /// join_code_required / enroll_failed (argument), 409 recording, 503 app_paused /
-        /// enroll_failed (reason: the rig's error code or its refusal code).
+        /// Body <c>{"join_code": "sxj_...", "factory_url"?, "auth_url"?}</c> (the console's QR
+        /// carries all three; the URLs default to production). Enrolls this headset as a Factory
+        /// pod of kind headset through sx_rig_enroll_site (up to 60 s per request, on this worker
+        /// thread) and answers <c>{"status": "enrolled", "enrollment": {"pod_id", "pod",
+        /// "steps"}}</c>; Local only turns off. Errors are <c>{"error", "reason"?, "message",
+        /// "rig"?}</c>: 400 invalid_body / join_code_required / enroll_failed (argument), 409
+        /// recording, 503 app_paused / enroll_failed (the steps in message, the error with its
+        /// refusal {kind: enrollment_failed, steps} in rig).
         /// </summary>
         private HttpResponse HandleEnroll(HttpRequest request)
         {
@@ -1714,16 +1725,15 @@ namespace RealityLog.Network
             {
                 return TypedError(400, "join_code_required", "the body must carry join_code (an sxj_... string)");
             }
-            string? baseUrl = null;
-            if (fields["base_url"] is JToken baseToken && baseToken.Type != JTokenType.Null)
+            // The site: factory_url and auth_url (the console's QR carries both), production
+            // when absent.
+            string Url(string key, string fallback) =>
+                fields[key] is JValue { Type: JTokenType.String } v ? (string?)v ?? fallback : fallback;
+            var (factoryUrl, factoryError) = PodSetupJson.NormalizeUrl(Url("factory_url", PodSetupJson.DefaultFactoryUrl), "factory_url");
+            var (authUrl, authError) = PodSetupJson.NormalizeUrl(Url("auth_url", PodSetupJson.DefaultAuthUrl), "auth_url");
+            if (factoryError != null || authError != null)
             {
-                if (baseToken.Type != JTokenType.String
-                    || !Uri.TryCreate((string?)baseToken, UriKind.Absolute, out var baseUri)
-                    || baseUri.Scheme != Uri.UriSchemeHttps)
-                {
-                    return TypedError(400, "invalid_body", "base_url must be an https URL");
-                }
-                baseUrl = baseUri.GetLeftPart(UriPartial.Authority);
+                return TypedError(400, "invalid_body", factoryError ?? authError!);
             }
             var manager = recordingManager;
             if (manager is not null && manager.State != RecordingState.Idle)
@@ -1737,19 +1747,19 @@ namespace RealityLog.Network
             }
 
             RigRefusal? prepareRefusal = null;
-            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.BeginEnrollment(baseUrl));
+            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.BeginEnrollment());
             if (!signal.Wait(5000))
             {
                 return MainThreadTimeoutResponse("Main thread did not prepare the enrollment within 5 s; nothing was enrolled");
             }
             if (prepareRefusal != null)
             {
-                return TypedError(prepareRefusal.Code is "pod_config_incomplete" or "local_only" ? 409 : 503,
+                return TypedError(503,
                     "enroll_failed", prepareRefusal.Message, prepareRefusal.Code, prepareRefusal.DetailJson);
             }
             try
             {
-                var enrollment = rig.Enroll(joinCode);
+                var enrollment = rig.Enroll(factoryUrl!, authUrl!, joinCode);
                 server!.EnqueueOnMainThread(() => rig.FinishEnrollment(true));
                 Debug.Log($"[{Constants.LOG_TAG}] HttpServerController: enrolled as a headset pod");
                 return HttpResponse.Ok("{\"status\":\"enrolled\",\"enrollment\":" + enrollment + "}");
@@ -1765,9 +1775,10 @@ namespace RealityLog.Network
                 {
                 }
                 Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: {ex.Message}");
-                server!.EnqueueOnMainThread(() => rig.FinishEnrollment(false));
+                // The error's refusal carries the steps (enrollment_failed); they are in rig.
                 return TypedError(ex.Error == SxRigError.Argument ? 400 : 503,
-                    "enroll_failed", ex.Message, reason, ex.ErrorJson);
+                    "enroll_failed", PodSetupJson.Describe(PodSetupJson.Steps(ex.ErrorJson)) is { Length: > 0 } steps ? steps : ex.Message,
+                    reason, ex.ErrorJson);
             }
         }
 
