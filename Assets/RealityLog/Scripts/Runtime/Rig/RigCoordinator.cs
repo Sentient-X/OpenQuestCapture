@@ -193,6 +193,8 @@ namespace RealityLog.Rig
         private volatile int deviceReportsSent;
         private volatile string deviceReportJson = "null";
         private volatile string? deviceReportError;
+        // The last sx_rig_check report (or its error), for /api/status rig.lastCheck.
+        private volatile string lastCheckJson = "null";
         private volatile bool collectorSignedIn;
         private volatile bool signInCuePending;
         // Seal verdicts seen so far (native-status timer thread); a change to sealed or refused
@@ -208,7 +210,7 @@ namespace RealityLog.Rig
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
             "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
             "\"embodiment_assets\":null,\"embodimentInstall\":null,\"nativeState\":null," +
-            "\"deviceReport\":null,\"deviceReportError\":null,\"startupErrors\":{}," +
+            "\"deviceReport\":null,\"deviceReportError\":null,\"startupErrors\":{},\"lastCheck\":null," +
             "\"native\":null,\"lastRefusal\":null}";
 
         /// <summary>
@@ -383,13 +385,24 @@ namespace RealityLog.Rig
                 return new RigRefusal("collector_signed_out",
                     "no collector is signed in on this headset; POST /api/sign-in and approve the code");
             }
+            string report;
             try
             {
-                SxRig.RunCheck();
+                report = SxRig.RunCheck();
             }
             catch (SxRigException ex)
             {
+                lastCheckJson = new JObject { ["ready"] = false, ["error"] = JToken.Parse(ex.ErrorJson) }
+                    .ToString(Formatting.None);
                 return Refusal(ex, "rig_check_failed");
+            }
+            lastCheckJson = report;
+            // A check that answers is not a check that passed: its report says ready or lists
+            // why not, and the start never arms on one that did not pass.
+            var (ready, problems) = RigStatusJson.Check(report);
+            if (!ready)
+            {
+                return new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, report);
             }
             return null;
         }
@@ -933,6 +946,7 @@ namespace RealityLog.Rig
             }
             // The last battery/charging/network-time report the heartbeat sees, and its error.
             json.Append(",\"startupErrors\":").Append(JsonConvert.SerializeObject(startupErrors));
+            json.Append(",\"lastCheck\":").Append(lastCheckJson);
             json.Append(",\"deviceReport\":").Append(deviceReportJson)
                 .Append(",\"deviceReportError\":").Append(deviceReportError is string error ? JsonString(error) : "null");
             // The app's install of the meshes into filesDir: state, assets, copied, error.
@@ -1042,7 +1056,7 @@ namespace RealityLog.Rig
             if (seals == null) return;
             foreach (var entry in seals)
             {
-                var state = (string?)entry.Value?["state"] ?? "";
+                var state = RigStatusJson.SealState(entry.Value);
                 sealStates.TryGetValue(entry.Key, out var previous);
                 if (sealsObserved && state != previous)
                 {
@@ -1058,9 +1072,7 @@ namespace RealityLog.Rig
         public void Cue(RigCues.Cue cue) => RigCues.Play(cue, gameObject);
 
         /// <summary>floor.operator.signed_in of a status, or null when the status has no floor.</summary>
-        private static bool? CollectorSignedIn(JObject? status) =>
-            status?["floor"]?["operator"]?["signed_in"] is JValue { Type: JTokenType.Boolean } value
-                ? (bool)value : (bool?)null;
+        private static bool? CollectorSignedIn(JObject? status) => RigStatusJson.CollectorSignedIn(status);
 
         /// <summary>sx_rig_status parsed, or null (busy, failed, unparsable). Any thread.</summary>
         private static JObject? SafeStatus()

@@ -1678,6 +1678,9 @@ namespace RealityLog.Network
             {
                 "rig_storage_low" => 507,
                 "collector_signed_out" => 409,
+                // The rig's devices are not as the check requires (rig = its report); fix them
+                // and retry. 409 like the other refusals of a state the operator must change.
+                "rig_check_failed" => 409,
                 _ => 503,
             };
             return RigNotReadyResponse(refusal, status, session);

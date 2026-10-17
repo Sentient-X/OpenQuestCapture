@@ -21,3 +21,11 @@ else
     echo "FAIL library missing was not typed" >&2
     exit 1
 fi
+
+# RigStatusJson against Newtonsoft.Json from the Unity project's package cache.
+newtonsoft="$(ls "$repo"/Library/PackageCache/com.unity.nuget.newtonsoft-json@*/Runtime/Newtonsoft.Json.dll | head -n 1)"
+facades="$editor/Data/MonoBleedingEdge/lib/mono/4.5/Facades"
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/status-harness.exe" "$here/RigStatusJsonHarness.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+cp "$newtonsoft" "$out/"
+"$mono" "$out/status-harness.exe"
