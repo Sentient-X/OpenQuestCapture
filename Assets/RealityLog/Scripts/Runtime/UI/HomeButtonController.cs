@@ -8,7 +8,9 @@ namespace RealityLog.UI
     /// <summary>
     /// Sends the app to the Oculus Home when the left controller menu button (three lines) is pressed.
     /// Uses Android's moveTaskToBack to background the app, which brings up the Quest Home environment.
-    /// Auto-bootstraps itself so no manual scene setup is needed.
+    /// No longer bootstrapped (1.5.0): the left menu button toggles recording
+    /// (HttpServerController's menu-button path), the one control a forehead-mounted operator
+    /// has. Add this component by hand to restore the old binding on another button.
     /// </summary>
     public class HomeButtonController : MonoBehaviour
     {
@@ -19,7 +21,6 @@ namespace RealityLog.UI
         [Tooltip("Controller to check for button input (left controller has the menu button)")]
         [SerializeField] private OVRInput.Controller controller = OVRInput.Controller.LTouch;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
             var go = new GameObject("HomeButtonController");

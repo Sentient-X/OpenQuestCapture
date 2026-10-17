@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Events;
 using RealityLog.Camera;
@@ -11,6 +12,7 @@ using RealityLog.Common;
 using RealityLog.Core;
 using RealityLog.Depth;
 using RealityLog.OVR;
+using RealityLog.Rig;
 
 namespace RealityLog
 {
@@ -69,6 +71,7 @@ namespace RealityLog
         private const long MinExpectedVideoBytes = 1024;
         private const long MinExpectedTimestampBytes = 128;
         private const string TrackingOriginFileName = "tracking_origin.json";
+        private const string RigStopReceiptFileName = "rig_stop_receipt.json";
         private TrackingOriginSession? trackingOriginSession;
         private bool recenterEventSubscribed;
 
@@ -91,6 +94,12 @@ namespace RealityLog
         private static readonly int IsRunningParam = Animator.StringToHash("IsRunning");
 
         public bool IsRecording => isRecording;
+
+        /// <summary>
+        /// The rig's stop receipt from the last stop (a JSON object), or null when that
+        /// recording ran without a rig. Written to the session as rig_stop_receipt.json.
+        /// </summary>
+        public string? LastRigStopReceiptJson { get; private set; }
         public string? CurrentSessionDirectory => currentSessionDirectory;
 
         // RecordingState as an int so the HTTP thread can read it and flip
@@ -144,6 +153,22 @@ namespace RealityLog
             {
                 infoCanvasAnimator = infoCanvas.GetComponent<Animator>();
             }
+
+            // After the body loggers are discovered: the close-out lists the stop's own streams.
+            // Sessions a killed process left without stream_manifest.json are closed out as
+            // interrupted, so the rig's seal can judge them instead of waiting forever. Off the
+            // main thread (it counts CSV rows); no recording is running yet at launch.
+            var dataPath = Application.persistentDataPath;
+            var streamFiles = CurrentStreams().Select(e => e.File).ToList(); // the stop's own list
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var closed = SessionRecovery.CloseOut(dataPath, currentSessionDirectory, streamFiles,
+                    (session, ex) => Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: could not close out {session}: {ex.Message}"));
+                foreach (var session in closed)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: closed out interrupted session {session} (no stream manifest)");
+                }
+            });
         }
 
         /// <summary>
@@ -186,10 +211,27 @@ namespace RealityLog
                 throw new InvalidOperationException(message);
             }
 
+            // The wrist cameras and gripper encoders, when configured or plugged in: a session
+            // that expects them never starts without them. POST /api/start-recording checks the
+            // rig and reserves this session's name (the rig's episode_id); once this start has
+            // OQC recording, it arms the rig, which anchors the episode inside this recording.
+            // Any other start path finds nothing reserved and is refused. With no rig expected,
+            // rigSession is null and nothing here changes the laptop-pod flow.
+            var rig = RigCoordinator.Instance;
+            var rigSession = rig is null ? null : rig.ReservedSession;
+            if (rigSession == null && rig is not null && rig.IsExpected)
+            {
+                var rigRefused = new RigRefusedException(new RigRefusal("rig_not_armed",
+                    "the wrist rig is configured or plugged in; start recording through POST /api/start-recording, which arms it"));
+                Debug.LogError($"[{Constants.LOG_TAG}] {rigRefused.Message}");
+                throw rigRefused;
+            }
+            LastRigStopReceiptJson = null;
+
             // Generate session directory name if needed
             if (generateTimestampedDirectories)
             {
-                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var timestamp = rigSession ?? DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 currentSessionDirectory = timestamp;
                 if (recordDepthMaps && depthMapExporter != null)
                 {
@@ -238,69 +280,81 @@ namespace RealityLog
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
 
-            // Step 1: Update camera paths for new session
-            // This ensures format info and images are written to the new directory
-            foreach (var provider in cameraProviders)
+            try
             {
-                provider.PrepareRecordingSession();
-            }
-
-            // Step 2: Setup file writers and directories
-            // (Depth and camera systems are already initialized from app start)
-            if (depthMapExporter != null)
-            {
-                depthMapExporter.IsExportEnabled = recordDepthMaps;
-                if (recordDepthMaps)
+                // Step 1: Update camera paths for new session
+                // This ensures format info and images are written to the new directory
+                foreach (var provider in cameraProviders)
                 {
-                    depthMapExporter.StartExport();
+                    provider.PrepareRecordingSession();
                 }
-            }
-            foreach (var logger in poseLoggers)
-            {
-                logger.StartLogging();
-            }
-            foreach (var logger in imuLoggers)
-            {
-                logger.StartLogging();
-            }
-            foreach (var logger in bodyTrackingLoggers)
-            {
-                logger.StartLogging();
-            }
 
-            foreach (var provider in cameraProviders)
-            {
-                provider.StartRecordingSession();
-            }
+                // Step 2: Setup file writers and directories
+                // (Depth and camera systems are already initialized from app start)
+                if (depthMapExporter != null)
+                {
+                    depthMapExporter.IsExportEnabled = recordDepthMaps;
+                    if (recordDepthMaps)
+                    {
+                        depthMapExporter.StartExport();
+                    }
+                }
+                foreach (var logger in poseLoggers)
+                {
+                    logger.StartLogging();
+                }
+                foreach (var logger in imuLoggers)
+                {
+                    logger.StartLogging();
+                }
+                foreach (var logger in bodyTrackingLoggers)
+                {
+                    logger.StartLogging();
+                }
+
+                foreach (var provider in cameraProviders)
+                {
+                    provider.StartRecordingSession();
+                }
             
-            // Optional: Reset camera base time to sync with depth timestamps
-            // Currently commented out as both use system monotonic clock
-            // Uncomment if timestamp alignment issues occur
-            // foreach (var provider in cameraProviders)
-            // {
-            //     provider.ResetBaseTime();
-            // }
+                // Optional: Reset camera base time to sync with depth timestamps
+                // Currently commented out as both use system monotonic clock
+                // Uncomment if timestamp alignment issues occur
+                // foreach (var provider in cameraProviders)
+                // {
+                //     provider.ResetBaseTime();
+                // }
 
-            // Step 3: Start synchronized capture
-            // This begins the actual frame capture loop
-            captureTimer.StartCapture();
+                // Step 3: Start synchronized capture
+                // This begins the actual frame capture loop
+                captureTimer.StartCapture();
 
-            isRecording = true;
-            System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
-            recordingStartTime = Time.time;
-            StartTrackingOriginRecord();
-            HeadTrackingMonitor.BeginRecording();
+                isRecording = true;
+                System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
+                recordingStartTime = Time.time;
+                StartTrackingOriginRecord();
+                HeadTrackingMonitor.BeginRecording();
 
-            // Hide the standby label (green instruction box) regardless of how recording was started
-            infoCanvasAnimator?.SetBool(IsRunningParam, true);
+                // Hide the standby label (green instruction box) regardless of how recording was started
+                infoCanvasAnimator?.SetBool(IsRunningParam, true);
 
-            WriteVideoStartTime();
-            DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
+                WriteVideoStartTime();
+                DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
 
-            onRecordingStarted?.Invoke();
-            ForegroundServiceManager.UpdateNotification("Recording in progress");
+                onRecordingStarted?.Invoke();
+                ForegroundServiceManager.UpdateNotification("Recording in progress");
 
-            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
+            }
+            catch
+            {
+                // The rig is not armed yet; a start that failed releases its reservation.
+                if (rigSession != null && rig is not null)
+                {
+                    rig.Unreserve(rigSession);
+                }
+                throw;
+            }
         }
 
         /// <summary>
@@ -382,6 +436,18 @@ namespace RealityLog
                 WriteTrackingOriginRecord(savedDirectory);
 
                 EndPhase("tracking_origin");
+
+                // The rig stops last (bounded 5 s): its seal starts on the stop and reads this
+                // session, so every OQC file must be final first. The cameras' MP4s and
+                // sidecars are, since their stop above is synchronous.
+                StopRig(savedDirectory);
+                EndPhase("rig");
+                // A failed rig episode already buzzed when it failed; a clean one chimes stop.
+                if (LastRigStopReceiptJson != null && RigCoordinator.Instance is { } rigForCue
+                    && !RigStatusJson.StopFailed(LastRigStopReceiptJson))
+                {
+                    rigForCue.Cue(RigCues.Cue.Stop);
+                }
             }
             catch
             {
@@ -471,18 +537,44 @@ namespace RealityLog
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Missing CaptureTimer reference!");
         }
 
+        private void OnApplicationQuit()
+        {
+            // Unity calls this on every object before destroying any, so the stop below still
+            // sees every logger alive; OnDestroy's stop is the fallback when it is skipped.
+            recordingPauseStartTime = null;
+            StopForTeardown("OnApplicationQuit");
+        }
+
         private void OnDestroy()
         {
-            // Safety: ensure recording stops on cleanup.
-            // Can't rely on the coroutine here since Unity is tearing down the
-            // MonoBehaviour — do a synchronous stop and validate immediately.
-            // Native encoder stop/finalization is synchronous, and the bg poll is
-            // just a verification safety net, so skipping it on destroy is fine.
             recordingPauseStartTime = null; // Clear any pending grace period on destroy.
 
             if (isRecording)
             {
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: OnDestroy while recording; performing synchronous stop.");
+                StopForTeardown("OnDestroy");
+            }
+            else if (stopCoroutine != null)
+            {
+                // A finalization coroutine from a prior StopRecording() is still waiting.
+                // The bg thread will finish on its own; fire the events synchronously now
+                // since the coroutine won't survive OnDestroy.
+                // (savedDirectory was already cleared, so nothing further to do — the bg
+                //  thread's PollVideoFinalization will still log its result.)
+                stopCoroutine = null;
+            }
+        }
+
+        /// <summary>
+        /// Safety: ensure recording stops on teardown. Can't rely on the coroutine since
+        /// Unity is tearing down — do a synchronous stop and validate immediately. Native
+        /// encoder stop/finalization is synchronous, and the bg poll is just a verification
+        /// safety net, so skipping it here is fine.
+        /// </summary>
+        private void StopForTeardown(string reason)
+        {
+            if (isRecording)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; performing synchronous stop.");
 
                 captureTimer.StopCapture();
                 HeadTrackingMonitor.EndRecording();
@@ -504,6 +596,7 @@ namespace RealityLog
                 string savedDirectory = currentSessionDirectory ?? string.Empty;
                 WriteStreamManifest(savedDirectory);
                 WriteTrackingOriginRecord(savedDirectory);
+                StopRig(savedDirectory); // last: the rig's seal reads this session
                 isRecording = false;
                 System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
                 recordingStartTime = 0f;
@@ -516,15 +609,6 @@ namespace RealityLog
                     ValidateSavedSession(savedDirectory);
                 }
                 ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
-            }
-            else if (stopCoroutine != null)
-            {
-                // A finalization coroutine from a prior StopRecording() is still waiting.
-                // The bg thread will finish on its own; fire the events synchronously now
-                // since the coroutine won't survive OnDestroy.
-                // (savedDirectory was already cleared, so nothing further to do — the bg
-                //  thread's PollVideoFinalization will still log its result.)
-                stopCoroutine = null;
             }
         }
 
@@ -585,6 +669,31 @@ namespace RealityLog
 
             Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: App interruption ({reason}) during recording; forcing stop to finalize files.");
             StopRecording();
+        }
+
+        /// <summary>
+        /// Stops the rig's episode, if one ran, and writes its receipt into the session.
+        /// Never throws: a rig that fails to stop reports it in the receipt.
+        /// </summary>
+        private void StopRig(string sessionDirectoryName)
+        {
+            var rig = RigCoordinator.Instance;
+            var receipt = rig is null ? null : rig.StopEpisode();
+            LastRigStopReceiptJson = receipt;
+            if (receipt == null || string.IsNullOrEmpty(sessionDirectoryName))
+            {
+                return;
+            }
+            try
+            {
+                var sessionDir = Path.Join(Application.persistentDataPath, sessionDirectoryName);
+                Directory.CreateDirectory(sessionDir);
+                File.WriteAllText(Path.Join(sessionDir, RigStopReceiptFileName), receipt);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] Failed to write {RigStopReceiptFileName}: {ex.Message}");
+            }
         }
 
         private void WriteVideoStartTime()
@@ -758,49 +867,20 @@ namespace RealityLog
         /// Writes stream_manifest.json with the row count of every CSV stream. Must run after
         /// the loggers are stopped so the counts are final. A stream with 0 rows means the
         /// source never produced data (e.g. a frozen OVR pose stream). Never throws.
+        /// Loggers are tested with <c>is null</c>, not Unity's <c>== null</c>: on an app exit
+        /// (HOME, then the OS ends the activity) Unity may destroy a logger before this
+        /// manager's OnDestroy writes the manifest, and a destroyed component compares equal
+        /// to null although its stopped row count and stats are still readable — which is
+        /// how imu.csv went missing from the manifest.
         /// </summary>
         private void WriteStreamManifest(string sessionDirectoryName)
         {
             LastStreamManifestJson = null;
             try
             {
-                var streams = new System.Text.StringBuilder("[");
-                var emptyStreams = new List<string>();
-
-                void AppendStream(string file, long rows, string stats)
-                {
-                    if (streams.Length > 1) streams.Append(',');
-                    streams.Append("{\"file\":\"").Append(EscapeJson(file))
-                        .Append("\",\"rows\":").Append(rows.ToString(System.Globalization.CultureInfo.InvariantCulture))
-                        .Append(",\"stats\":").Append(string.IsNullOrEmpty(stats) ? "{}" : stats)
-                        .Append('}');
-                    if (rows == 0) emptyStreams.Add(file);
-                }
-
-                if (poseLoggers != null)
-                {
-                    foreach (var logger in poseLoggers)
-                    {
-                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
-                    }
-                }
-                if (imuLoggers != null)
-                {
-                    foreach (var logger in imuLoggers)
-                    {
-                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
-                    }
-                }
-                if (bodyTrackingLoggers != null)
-                {
-                    foreach (var logger in bodyTrackingLoggers)
-                    {
-                        if (logger != null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
-                    }
-                }
-                streams.Append(']');
-
-                var streamsJson = streams.ToString();
+                var entries = CurrentStreams();
+                var emptyStreams = entries.Where(e => e.Rows == 0).Select(e => e.File).ToList();
+                var streamsJson = StreamManifest.StreamsJson(entries);
                 LastStreamManifestJson = streamsJson;
 
                 if (emptyStreams.Count > 0)
@@ -820,7 +900,7 @@ namespace RealityLog
                 Directory.CreateDirectory(sessionDir);
                 File.WriteAllText(
                     Path.Join(sessionDir, StreamManifestFileName),
-                    "{\"schema\":1,\"streams\":" + streamsJson + "}"
+                    StreamManifest.Document(streamsJson)
                 );
             }
             catch (Exception ex)
@@ -829,6 +909,23 @@ namespace RealityLog
                     $"[{Constants.LOG_TAG}] Failed to write {StreamManifestFileName}: {ex.Message}"
                 );
             }
+        }
+
+        /// <summary>
+        /// Every CSV stream a stop lists, in the manifest's order: pose loggers, IMU loggers,
+        /// body loggers. Loggers are tested with <c>is null</c>, not Unity's <c>== null</c> (see
+        /// <see cref="WriteStreamManifest"/>). The launch close-out lists the same files.
+        /// </summary>
+        private List<StreamEntry> CurrentStreams()
+        {
+            var entries = new List<StreamEntry>();
+            foreach (var logger in poseLoggers ?? Array.Empty<PoseLogger>())
+                if (logger is not null) entries.Add(new StreamEntry(logger.FileName, logger.RowsWritten, logger.StatsJson()));
+            foreach (var logger in imuLoggers ?? Array.Empty<IMULogger>())
+                if (logger is not null) entries.Add(new StreamEntry(logger.FileName, logger.RowsWritten, logger.StatsJson()));
+            foreach (var logger in bodyTrackingLoggers ?? Array.Empty<BodyTrackingLogger>())
+                if (logger is not null) entries.Add(new StreamEntry(logger.FileName, logger.RowsWritten, logger.StatsJson()));
+            return entries;
         }
 
         private static string EscapeJson(string value)

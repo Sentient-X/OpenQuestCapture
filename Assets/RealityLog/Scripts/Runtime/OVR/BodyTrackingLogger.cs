@@ -460,8 +460,8 @@ namespace RealityLog.OVR
                 OVRPlugin.StopBodyTracking();
                 bodyTrackingStarted = false;
             }
-            writer?.Dispose();
-            writer = null;
+            // StopLogging keeps the row count, so a manifest written after this still has it.
+            StopLogging();
         }
     }
 }

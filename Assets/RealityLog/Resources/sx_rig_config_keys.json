@@ -1,0 +1,43 @@
+{
+  "keys": [
+    "staging_dir",
+    "rig",
+    "min_free_bytes",
+    "max_episode_seconds",
+    "seal",
+    "embodiment_assets_dir",
+    "factory_url",
+    "auth_url",
+    "credentials_dir",
+    "headset_serial",
+    "tailscale_ip",
+    "pod_name",
+    "pod_config_path",
+    "rig_type_id",
+    "upload_limit_mib_s",
+    "quest_apk_build_id",
+    "local_only"
+  ],
+  "rig": {
+    "bundle_schema_version": "sx.yubi-rig-bundle/v1",
+    "components": [
+      "left_camera",
+      "left_encoder",
+      "right_camera",
+      "right_encoder"
+    ],
+    "files": [
+      "left.json",
+      "right.json",
+      "left.mount.json",
+      "right.mount.json",
+      "yubi_hands.urdf"
+    ],
+    "keys": [
+      "bundle",
+      "bundle_id",
+      "rig_id"
+    ]
+  },
+  "schema": "sx.rig_config_keys/v1"
+}

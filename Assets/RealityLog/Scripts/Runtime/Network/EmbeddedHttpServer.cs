@@ -286,11 +286,21 @@ namespace RealityLog.Network
 
         // ── Routing ──
 
+        /// <summary>
+        /// Runs before every route; a non-null answer is sent instead of the route's (the
+        /// bearer-token guard of an enrolled headset). Any thread.
+        /// </summary>
+        public Func<HttpRequest, HttpResponse?>? Guard { get; set; }
+
         private HttpResponse RouteRequest(HttpRequest request)
         {
             try
             {
                 Debug.Log($"[{Constants.LOG_TAG}] HTTP: {request.Method} {request.Path}");
+                if (Guard?.Invoke(request) is HttpResponse refused)
+                {
+                    return refused;
+                }
 
                 // Try exact match first
                 Dictionary<string, Func<HttpRequest, HttpResponse>>? routes = request.Method switch
