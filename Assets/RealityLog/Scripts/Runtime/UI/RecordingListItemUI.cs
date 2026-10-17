@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using RealityLog.Common;
+using RealityLog.Rig;
 
 namespace RealityLog.UI
 {
@@ -82,7 +83,10 @@ namespace RealityLog.UI
 
             if (sizeText != null)
             {
-                sizeText.text = info.FormattedSize;
+                // The rig's outcome for this recording, when the rig took part: sealed (and the
+                // sealed episode.mcap's size), pending, or refused with the reason.
+                var rigLine = RigOutcome(info);
+                sizeText.text = rigLine.Length == 0 ? info.FormattedSize : $"{info.FormattedSize} | {rigLine}";
             }
 
             // Create health dot next to the directory name
@@ -105,6 +109,26 @@ namespace RealityLog.UI
         }
 
         public string GetDirectoryName() => recordingDirectoryName;
+
+        private static string RigOutcome(RecordingListManager.RecordingInfo info)
+        {
+            try
+            {
+                var episode = RigCoordinator.EpisodeDirectory(Application.persistentDataPath, info.DirectoryName);
+                var sealPath = System.IO.Path.Combine(episode, "seal.json");
+                var mcapPath = System.IO.Path.Combine(episode, "episode.mcap");
+                var refusalPath = System.IO.Path.Combine(info.FullPath, "rig_refusal.json");
+                return RigStatusJson.SealSummary(
+                    System.IO.File.Exists(sealPath) ? System.IO.File.ReadAllText(sealPath) : null,
+                    System.IO.File.Exists(refusalPath) ? System.IO.File.ReadAllText(refusalPath) : null,
+                    System.IO.File.Exists(mcapPath) ? new System.IO.FileInfo(mcapPath).Length : (long?)null);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListItemUI: rig outcome for {info.DirectoryName}: {ex.Message}");
+                return "";
+            }
+        }
 
         public void ToggleExpand()
         {

@@ -6,6 +6,7 @@ using UnityEngine.UI;
 using TMPro;
 using RealityLog.Common;
 using RealityLog.FileOperations;
+using RealityLog.Rig;
 
 namespace RealityLog.UI
 {
@@ -159,11 +160,68 @@ namespace RealityLog.UI
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Created {createdCount} list items");
 
+            CreateLocalOnlyToggle();
+
             // Delete All button disabled for now
             // if (recordings.Count > 0 && listContainer != null)
             // {
             //     CreateDeleteAllButton(recordings.Count);
             // }
+        }
+
+        private GameObject? localOnlyToggleObj;
+
+        /// <summary>
+        /// "Local only: ON|OFF" at the top of the list: on (the default), the headset never
+        /// contacts the Factory and the rig records and seals locally; persisted in
+        /// pod_config.json (local_only), the same setting as POST /api/settings.
+        /// </summary>
+        private void CreateLocalOnlyToggle()
+        {
+            if (localOnlyToggleObj != null)
+            {
+                Destroy(localOnlyToggleObj);
+                localOnlyToggleObj = null;
+            }
+            var rig = RigCoordinator.Instance;
+            if (rig is null || listContainer == null) return;
+
+            localOnlyToggleObj = new GameObject("LocalOnlyToggle", typeof(RectTransform));
+            localOnlyToggleObj.transform.SetParent(listContainer, false);
+            localOnlyToggleObj.transform.SetAsFirstSibling();
+            var layout = localOnlyToggleObj.AddComponent<LayoutElement>();
+            layout.preferredHeight = 40;
+            layout.flexibleWidth = 1;
+            var background = localOnlyToggleObj.AddComponent<Image>();
+            var button = localOnlyToggleObj.AddComponent<Button>();
+
+            var textObj = new GameObject("Text", typeof(RectTransform));
+            textObj.transform.SetParent(localOnlyToggleObj.transform, false);
+            var textRt = textObj.GetComponent<RectTransform>();
+            textRt.anchorMin = Vector2.zero;
+            textRt.anchorMax = Vector2.one;
+            textRt.sizeDelta = Vector2.zero;
+            var text = textObj.AddComponent<TextMeshProUGUI>();
+            text.fontSize = 16;
+            text.alignment = TextAlignmentOptions.Center;
+            text.color = Color.white;
+
+            void Show()
+            {
+                var on = rig.LocalOnly;
+                text.text = on ? "Local only: ON  (never contacts the Factory)" : "Local only: OFF  (Factory allowed)";
+                background.color = on ? new Color(0.15f, 0.45f, 0.2f, 0.85f) : new Color(0.35f, 0.35f, 0.35f, 0.85f);
+            }
+            Show();
+            button.onClick.AddListener(() =>
+            {
+                var error = rig.SetLocalOnly(!rig.LocalOnly);
+                if (error != null)
+                {
+                    OnOperationComplete("Local only", false, error);
+                }
+                Show();
+            });
         }
 
         private void CreateDeleteAllButton(int count)
