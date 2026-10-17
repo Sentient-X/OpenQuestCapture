@@ -29,3 +29,12 @@ facades="$editor/Data/MonoBleedingEdge/lib/mono/4.5/Facades"
     -out:"$out/status-harness.exe" "$here/RigStatusJsonHarness.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 cp "$newtonsoft" "$out/"
 "$mono" "$out/status-harness.exe"
+
+# RigStartGate (with the binding's types and RigCoordinator's RigRefusal compiled in).
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -define:SX_RIG_HOST_TEST -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/gate-harness.exe" "$here/RigStartGateHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStartGate.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SxRig.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigRefusal.cs"
+"$mono" "$out/gate-harness.exe"

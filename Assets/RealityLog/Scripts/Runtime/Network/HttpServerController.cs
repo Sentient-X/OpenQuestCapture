@@ -358,12 +358,13 @@ namespace RealityLog.Network
                 {
                     return collectionError!;
                 }
-                if (rig.CheckReady() is RigRefusal checkRefusal)
+                // The rig takes part (decided once, here): the check runs and must pass.
+                var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                if (rig.CheckAndReserve(session) is RigRefusal checkRefusal)
                 {
                     return RigRefusalResponse(rig, checkRefusal);
                 }
-                reservedSession = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                rig.Reserve(reservedSession);
+                reservedSession = session;
                 operatorForRig = operatorId;
                 taskForRig = taskAssignmentId;
                 modeForRig = mode;

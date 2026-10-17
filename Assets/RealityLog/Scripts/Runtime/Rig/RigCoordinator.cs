@@ -12,48 +12,6 @@ using RealityLog.Common;
 
 namespace RealityLog.Rig
 {
-    /// <summary>Why a start was refused for the rig: a closed code, a sentence, the rig's JSON.</summary>
-    public sealed class RigRefusal
-    {
-        /// <summary>
-        /// One of <c>rig_library_missing</c>, <c>rig_open_failed</c>, <c>rig_usb_permission</c>,
-        /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>,
-        /// <c>rig_identity_pending</c>, <c>collector_signed_out</c>, <c>rig_storage_low</c>,
-        /// <c>pod_config_incomplete</c>.
-        /// </summary>
-        public string Code { get; }
-        public string Message { get; }
-        /// <summary>A JSON value (the library's error object, or null).</summary>
-        public string DetailJson { get; }
-
-        public RigRefusal(string code, string message, string? detailJson = null)
-        {
-            Code = code;
-            Message = message;
-            DetailJson = string.IsNullOrEmpty(detailJson) ? "null" : detailJson!;
-        }
-
-        public string ToJson() =>
-            "{\"code\":\"" + RigJson.Escape(Code) + "\",\"message\":\"" + RigJson.Escape(Message) +
-            "\",\"detail\":" + DetailJson + "}";
-    }
-
-    /// <summary>
-    /// A recording start refused because the rig is expected and not ready (or, from a start
-    /// path other than the HTTP API, not armed). An <see cref="InvalidOperationException"/>, so
-    /// every start path that reports a refusal's message keeps doing so.
-    /// </summary>
-    public sealed class RigRefusedException : InvalidOperationException
-    {
-        public RigRefusal Refusal { get; }
-
-        public RigRefusedException(RigRefusal refusal)
-            : base($"RecordingManager: refusing to start — {refusal.Code}: {refusal.Message}")
-        {
-            Refusal = refusal;
-        }
-    }
-
     /// <summary>
     /// Owns the wrist cameras and gripper encoders through libsx_rig.so (<see cref="SxRig"/>)
     /// and the Kotlin <c>RigUsbBridge</c> that opens their USB devices.
@@ -69,8 +27,8 @@ namespace RealityLog.Rig
     /// attached to the rig, and a vanished one is detached from the rig before the bridge
     /// closes its connection (the ABI leaves fd ownership with Kotlin until the detach).</para>
     ///
-    /// <para><b>Episode.</b> POST /api/start-recording, on its worker thread: <see cref="CheckReady"/>
-    /// (<c>sx_rig_check</c>), <see cref="Reserve"/> the session name, OQC's session starts on the
+    /// <para><b>Episode.</b> POST /api/start-recording, on its worker thread: <see cref="CheckAndReserve"/>
+    /// (<c>sx_rig_check</c>, which must report ready, then the session name), OQC's session starts on the
     /// main thread under <see cref="ReservedSession"/>, then <see cref="StartArmed"/>
     /// (<c>sx_rig_start_armed</c>: the rig arms and anchors the episode itself, inside OQC's
     /// recording). <see cref="StopEpisode"/>, after OQC's files are final, returns the receipt.</para>
@@ -333,88 +291,45 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// Step 1 of a rig start (any thread, never Unity's main thread: <c>sx_rig_check</c> is
-        /// bounded 5 s): why the rig cannot record now, or null. Null when no rig is expected.
-        /// Uses the USB snapshot of the last main-thread poll (≤ 0.5 s old).
+        /// Steps 1–2 of a rig start, for a caller that decided the rig takes part (any thread,
+        /// never Unity's main thread: <c>sx_rig_check</c> is bounded 5 s): runs the device check
+        /// every time (<see cref="RigStartGate"/>) and, only when it passed, reserves
+        /// <paramref name="sessionName"/> (the rig's episode_id) for the OQC start that follows,
+        /// which <see cref="RecordingManager"/> reads as <see cref="ReservedSession"/>; a stop
+        /// before the arming cancels it. Returns why not, or null.
         /// </summary>
-        public RigRefusal? CheckReady()
+        public RigRefusal? CheckAndReserve(string sessionName)
         {
+            // Check and reservation under one lock: no second start can slip between a passing
+            // check and the reservation it allows.
             lock (episodeLock)
             {
                 var refusal = CheckReadyLocked();
                 lastRefusal = refusal;
+                if (refusal == null)
+                {
+                    reservedSession = sessionName;
+                }
                 return refusal;
             }
         }
 
         private RigRefusal? CheckReadyLocked()
         {
-            if (!expected) return null;
-            if (episodeActive || reservedSession != null)
+            // No "is the rig expected" test here: the caller decided that once (IsExpected), and
+            // re-reading it here once let a start skip sx_rig_check and arm on no passing check.
+            var facts = new RigStartFacts
             {
-                return new RigRefusal("rig_start_failed",
-                    $"rig episode '{armedSession ?? reservedSession ?? "?"}' is still active");
-            }
-            if (libraryMissing)
-            {
-                return new RigRefusal("rig_library_missing",
-                    "rig devices are configured or plugged in, but this build has no libsx_rig.so",
-                    openErrorJson);
-            }
-            if (!opened)
-            {
-                return new RigRefusal("rig_open_failed", "sx_rig_open failed", openErrorJson);
-            }
-            var awaiting = awaitingPermission;
-            if (awaiting.Length > 0)
-            {
-                return new RigRefusal("rig_usb_permission",
-                    "no USB permission for " + string.Join(", ", awaiting) +
-                    "; someone must accept the camera permissions and the USB prompt in the headset once");
-            }
-            if (apkBuildId.Length == 0)
-            {
-                return new RigRefusal("rig_identity_pending",
-                    "the installed APK's build id is still being computed; retry in a few seconds");
-            }
-            // An enrolled headset's start begins the Factory episode in the collector's open
-            // collection, so it needs a signed-in collector (the start answers SX_RIG_E_STATE
-            // otherwise). Asked fresh: the cached status may be a second old.
-            if (enrolled && CollectorSignedIn(SafeStatus()) == false)
-            {
-                return new RigRefusal("collector_signed_out",
-                    "no collector is signed in on this headset; POST /api/sign-in and approve the code");
-            }
-            string report;
-            try
-            {
-                report = SxRig.RunCheck();
-            }
-            catch (SxRigException ex)
-            {
-                lastCheckJson = new JObject { ["ready"] = false, ["error"] = JToken.Parse(ex.ErrorJson) }
-                    .ToString(Formatting.None);
-                return Refusal(ex, "rig_check_failed");
-            }
-            lastCheckJson = report;
-            // A check that answers is not a check that passed: its report says ready or lists
-            // why not, and the start never arms on one that did not pass.
-            var (ready, problems) = RigStatusJson.Check(report);
-            if (!ready)
-            {
-                return new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, report);
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Step 2: the session the next OQC start records under, so the rig's episode and OQC's
-        /// session share one name (the rig's episode_id). <see cref="RecordingManager"/> reads it
-        /// as <see cref="ReservedSession"/>; a stop before step 3 cancels it.
-        /// </summary>
-        public void Reserve(string sessionName)
-        {
-            lock (episodeLock) { reservedSession = sessionName; }
+                EpisodeBusy = episodeActive || reservedSession != null,
+                BusySession = armedSession ?? reservedSession,
+                LibraryMissing = libraryMissing,
+                Opened = opened,
+                OpenErrorJson = openErrorJson,
+                AwaitingPermission = awaitingPermission,
+                ApkBuildIdKnown = apkBuildId.Length > 0,
+                CollectorReady = !enrolled || CollectorSignedIn(SafeStatus()) != false,
+            };
+            return RigStartGate.Evaluate(facts, SxRig.RunCheck, report => lastCheckJson = report);
         }
 
         /// <summary>Cancels a reservation whose OQC start did not happen.</summary>
@@ -499,10 +414,7 @@ namespace RealityLog.Rig
         /// episode_bytes, backlog_bytes, backlog_episodes, max_episode_seconds}).
         /// </summary>
         private static RigRefusal Refusal(SxRigException ex, string otherwise) =>
-            ex.Error == SxRigError.Storage
-                ? new RigRefusal("rig_storage_low",
-                    "not enough free space for a worst-case episode and the unsealed backlog", ex.ErrorJson)
-                : new RigRefusal(otherwise, ex.Message, ex.ErrorJson);
+            RigStartGate.FromError(ex, otherwise);
 
         /// <summary>Queues a cue for the main thread (any thread).</summary>
         public void QueueCue(RigCues.Cue cue) => cues.Enqueue(cue);
@@ -1129,11 +1041,5 @@ namespace RealityLog.Rig
             // Instance is kept: a RecordingManager destroy-stop that runs after this still
             // reads the episode's receipt through StopEpisode.
         }
-    }
-
-    internal static class RigJson
-    {
-        public static string Escape(string value) =>
-            value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 }

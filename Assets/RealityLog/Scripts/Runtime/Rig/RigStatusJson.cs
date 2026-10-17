@@ -32,6 +32,29 @@ namespace RealityLog.Rig
                 : "";
 
         /// <summary>
+        /// A library error's <c>refusal</c>: its <c>kind</c> ("" when none) and, for
+        /// check_failed, its <c>problems</c> joined.
+        /// </summary>
+        public static (string kind, string problems) Refusal(string errorJson)
+        {
+            try
+            {
+                if (JToken.Parse(errorJson) is JObject error && error["refusal"] is JObject refusal)
+                {
+                    var kind = refusal["kind"] is JValue { Type: JTokenType.String } k ? (string?)k ?? "" : "";
+                    var problems = refusal["problems"] is JArray list
+                        ? string.Join("; ", list.Select(p => p.Type == JTokenType.String ? (string?)p : p.ToString(Formatting.None)))
+                        : "";
+                    return (kind, problems.Length > 0 ? problems : "the rig's device check did not pass");
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return ("", "");
+        }
+
+        /// <summary>
         /// A sx_rig_check report: whether it passed (<c>"ready": true</c>) and its problems
         /// joined for a sentence. A report that is not an object, or has no ready true, did
         /// not pass: the start never proceeds on a check it cannot read.
