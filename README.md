@@ -245,6 +245,21 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   3. Push it and restart the app:
      `adb push tools/rig_config.bench.json "$files/rig_config.json"`. `/api/status` →
      `rig.open` true, four devices attached; bench episodes seal under the bench profile.
+* **Local only (default on).** `pod_config.json` `local_only` (default `true`): the headset never
+  contacts the Factory (no enrollment, sign-in, commands or uplink, even with a `factory_url`)
+  and the rig records and seals in local mode. Toggle it in the in-headset recordings menu (the
+  "Local only" row at the top of the list) or with `POST /api/settings {"local_only": bool}`
+  (409 while recording); `/api/status` shows `local_only`. The cloud relay (FieldData Pro) is a
+  separate channel and is not affected. With Local only on, `/api/enroll`, `/api/sign-in`,
+  `/api/sign-out` and `/api/command` answer `409 local_only`.
+* **Recordings list in the headset** shows each recording's rig outcome next to its size:
+  `sealed 45.2 MB`, `pending: <why>`, or `refused: <reason>`.
+* **A rig episode failing mid-recording** (a camera gap over the law, a device dropping out) is
+  caught by the status poll within about a second: the refused buzz plays, the recording stops
+  through the normal stop path (the rig's stop receipt, `rig_stop_receipt.json`, says
+  `outcome: failed` with `cause`/`failure_cause`), and `rig_refusal.json` records
+  `rig_episode_failed` with the rig's detail. `GET /api/recordings` lists both (`rigRefusal`,
+  `rigStop`). The next menu-button press starts a new episode.
 * **Controls.** The operator wears the headset on the forehead and never sees the display. The
   **left controller's menu button** (three lines) starts a recording and, pressed again, stops it
   (the same path as `POST /api/start-recording` / `/api/stop-recording`, with the operator from
