@@ -57,6 +57,10 @@ static class RigOpenConfigHarness
         try { RigOpenConfig.ParseRigKeys("{\"nope\":1}"); } catch (InvalidOperationException) { bad = true; }
         Expect(bad, "a malformed key list is refused");
 
+        var otherSchema = false;
+        try { RigOpenConfig.ParseRigKeys("{\"schema\":\"sx.rig_config_keys/v2\",\"keys\":[\"staging_dir\"]}"); } catch (InvalidOperationException) { otherSchema = true; }
+        Expect(otherSchema, "a key list of another schema is refused");
+
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;
     }

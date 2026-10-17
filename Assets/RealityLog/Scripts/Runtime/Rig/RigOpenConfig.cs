@@ -18,6 +18,9 @@ namespace RealityLog.Rig
     /// </summary>
     public static class RigOpenConfig
     {
+        /// <summary>The key list's schema, as quest-rig publishes it.</summary>
+        public const string KeysSchema = "sx.rig_config_keys/v1";
+
         /// <summary>pod_config.json keys the app itself reads; never sent to the rig.</summary>
         public static readonly string[] AppKeys = { "operator_id", "local_only" };
 
@@ -47,6 +50,13 @@ namespace RealityLog.Rig
             catch (JsonException ex)
             {
                 throw new InvalidOperationException("sx_rig_config_keys.json is not JSON: " + ex.Message);
+            }
+            // quest-rig publishes {"schema": "sx.rig_config_keys/v1", "keys": [...]}; any other
+            // schema is a list this build does not understand.
+            if (token is JObject { } published && published["schema"] is JToken schema
+                && (schema.Type != JTokenType.String || (string?)schema != KeysSchema))
+            {
+                throw new InvalidOperationException($"sx_rig_config_keys.json schema is {schema}, this build reads {KeysSchema}");
             }
             var list = token as JArray ?? (token as JObject)?["keys"] as JArray
                 ?? throw new InvalidOperationException("sx_rig_config_keys.json is neither an array nor {\"keys\": [...]}");
