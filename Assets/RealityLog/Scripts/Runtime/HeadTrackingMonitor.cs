@@ -64,6 +64,21 @@ namespace RealityLog
         // Controller state sampled in Update. Written on the main thread, read from the
         // HTTP server's thread under controllerLock.
         private static readonly object controllerLock = new();
+        // BodyTrackingLogger starts the body runtime at app launch. This monitor reads it;
+        // it does not own or restart the body-tracking lifecycle.
+        private OVRPlugin.BodyState bodyState = new()
+        {
+            JointLocations = new OVRPlugin.BodyJointLocation[84]
+        };
+        private static BodySample bodySample;
+        private struct BodySample
+        {
+            public ControllerSample LeftShoulder;
+            public ControllerSample RightShoulder;
+            public float Confidence;
+            public double? AgeMs;
+        }
+        private static ControllerSample headSample;
         private static ControllerSample leftController;
         private static ControllerSample rightController;
         private static long controllerSampleTicks = NoPose;
@@ -72,6 +87,8 @@ namespace RealityLog
         {
             public bool Connected;
             public bool PositionTracked;
+            public bool OrientationTracked;
+            public OVRPlugin.Posef Pose;
             public float? DistanceToHeadM;
         }
 
@@ -94,6 +111,8 @@ namespace RealityLog
             }
             lock (controllerLock)
             {
+                bodySample = default;
+                headSample = default;
                 leftController = default;
                 rightController = default;
                 controllerSampleTicks = NoPose;
@@ -202,17 +221,51 @@ namespace RealityLog
 
         // Samples the controllers on the same OVR nodes the controller PoseLoggers use
         // (ControllerLeft = 12, ControllerRight = 13) and in the same tracking space.
-        private static void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked, long now)
+        private void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked, long now)
         {
             var left = SampleController(OVRInput.Controller.LTouch, OVRPlugin.Node.ControllerLeft, headPose, headTracked);
             var right = SampleController(OVRInput.Controller.RTouch, OVRPlugin.Node.ControllerRight, headPose, headTracked);
+            var body = SampleBody();
             lock (controllerLock)
             {
+                bodySample = body;
+                headSample = new ControllerSample
+                {
+                    PositionTracked = headTracked,
+                    OrientationTracked = orientationTracked,
+                    Pose = headPose.Pose,
+                };
                 leftController = left;
                 rightController = right;
                 controllerSampleTicks = now;
             }
         }
+
+        private BodySample SampleBody()
+        {
+            if (!OVRPlugin.GetBodyState4(OVRPlugin.Step.Render, OVRPlugin.BodyJointSet.FullBody, ref bodyState))
+                return default;
+            var ageMs = (OVRPlugin.GetTimeInSeconds() - bodyState.Time) * 1000.0;
+            // Render poses may be predicted ahead by one display interval. A frozen
+            // body timestamp ages even while Update and the controller poses continue.
+            if (double.IsNaN(ageMs) || double.IsInfinity(ageMs) || bodyState.Time <= 0 || ageMs < -100)
+                return default;
+            return new BodySample
+            {
+                LeftShoulder = Shoulder(bodyState.JointLocations[8]),
+                RightShoulder = Shoulder(bodyState.JointLocations[13]),
+                Confidence = bodyState.Confidence,
+                AgeMs = Math.Max(0, ageMs),
+            };
+        }
+
+        // FullBody joint indices match BodyTrackingLogger: LeftShoulder=8, RightShoulder=13.
+        private static ControllerSample Shoulder(OVRPlugin.BodyJointLocation joint) => new()
+        {
+            PositionTracked = (joint.LocationFlags & OVRPlugin.SpaceLocationFlags.PositionValid) != 0,
+            OrientationTracked = (joint.LocationFlags & OVRPlugin.SpaceLocationFlags.OrientationValid) != 0,
+            Pose = joint.Pose,
+        };
 
         private static ControllerSample SampleController(
             OVRInput.Controller controller, OVRPlugin.Node node, OVRPlugin.PoseStatef headPose, bool headTracked)
@@ -221,12 +274,14 @@ namespace RealityLog
             {
                 Connected = OVRInput.IsControllerConnected(controller),
                 PositionTracked = OVRPlugin.GetNodePositionTracked(node),
+                OrientationTracked = OVRPlugin.GetNodeOrientationTracked(node),
+                Pose = OVRPlugin.GetNodePoseStateImmediate(node).Pose,
             };
             // An untracked position is stale or predicted, not where the controller is, so
             // no distance is reported for it.
             if (sample.Connected && sample.PositionTracked && headTracked)
             {
-                var c = OVRPlugin.GetNodePoseStateImmediate(node).Pose.Position;
+                var c = sample.Pose.Position;
                 var h = headPose.Pose.Position;
                 float dx = c.x - h.x, dy = c.y - h.y, dz = c.z - h.z;
                 sample.DistanceToHeadM = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
@@ -372,21 +427,35 @@ namespace RealityLog
         /// </summary>
         public static string ControllersJson(string indent)
         {
+            BodySample body;
+            ControllerSample head;
             ControllerSample left;
             ControllerSample right;
             long sampleTicks;
             lock (controllerLock)
             {
+                body = bodySample;
+                head = headSample;
                 left = leftController;
                 right = rightController;
                 sampleTicks = controllerSampleTicks;
             }
             var sampleAge = sampleTicks == NoPose ? (double?)null : TicksToMs(Stopwatch.GetTimestamp() - sampleTicks);
             return "{\n" +
+                $"{indent}  \"body\": {BodyJson(body, sampleAge)},\n" +
+                $"{indent}  \"head\": {ControllerJson(head)},\n" +
                 $"{indent}  \"left\": {ControllerJson(left)},\n" +
                 $"{indent}  \"right\": {ControllerJson(right)},\n" +
                 $"{indent}  \"sampleAgeMs\": {Number(sampleAge)}\n" +
                 $"{indent}}}";
+        }
+
+        private static string BodyJson(BodySample body, double? statusAgeMs)
+        {
+            var age = body.AgeMs + statusAgeMs;
+            return $"{{\"sampleAgeMs\": {Number(age)}, \"confidence\": {Finite(body.Confidence)}, " +
+                $"\"leftShoulder\": {ControllerJson(body.LeftShoulder)}, " +
+                $"\"rightShoulder\": {ControllerJson(body.RightShoulder)}}}";
         }
 
         private static string ControllerJson(ControllerSample sample)
@@ -396,8 +465,24 @@ namespace RealityLog
                 : "null";
             return $"{{\"connected\": {Bool(sample.Connected)}, " +
                 $"\"positionTracked\": {Bool(sample.PositionTracked)}, " +
+                $"\"orientationTracked\": {Bool(sample.OrientationTracked)}, " +
+                $"\"pose\": {PoseJson(sample)}, " +
                 $"\"distanceToHeadM\": {distance}}}";
         }
+
+        // Raw OVR coordinates, as in the pose CSVs. Never mix Unity-converted rotations
+        // with these positions. The pod owns the start-pose policy.
+        private static string PoseJson(ControllerSample sample)
+        {
+            if (!sample.PositionTracked || !sample.OrientationTracked) return "null";
+            var p = sample.Pose.Position;
+            var q = sample.Pose.Orientation;
+            return $"{{\"position\": {{\"x\": {Finite(p.x)}, \"y\": {Finite(p.y)}, \"z\": {Finite(p.z)}}}, " +
+                $"\"orientation\": {{\"x\": {Finite(q.x)}, \"y\": {Finite(q.y)}, \"z\": {Finite(q.z)}, \"w\": {Finite(q.w)}}}}}";
+        }
+
+        private static string Finite(float value) => float.IsNaN(value) || float.IsInfinity(value)
+            ? "null" : value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
 
         private static string Describe()
         {
