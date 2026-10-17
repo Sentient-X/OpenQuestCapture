@@ -226,6 +226,32 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   it exists the rig is expected, resolves its registered rig from the Factory, and seals, uploads
   and retires episodes on its own. `pod_config.json` (files directory) may also set `pod_name`,
   `rig_type_id`, `upload_limit_mib_s`, `seal`, `min_free_bytes`, `tailscale_ip`.
+* **Provisioning a YUBI headset for local mode (until it is enrolled).** The rig is the
+  Factory's resolved-rig shape (`rig_id`, `bundle_id`, `bundle` with components, calibration
+  files and URDF digest), as the Factory serves it once enrolled; for local mode it is pushed:
+
+  ```bash
+  files=/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
+  serial=$(adb shell getprop ro.serialno | tr -d '\r')
+  printf '{"headset_serial":"%s","operator_id":"<operator>","rig_type_id":"rig_yubi"}\n' "$serial" > pod_config.json
+  adb push pod_config.json "$files/pod_config.json"
+  adb push <calibration dir>/rig_config.yubi.json "$files/rig_config.json"   # e.g. yubi-06-quest
+  adb push quest_builds.json "$files/quest_builds.json"   # accepted headset builds, shape defined by the rig
+  ```
+
+  Once enrolled the rig resolves its rig and the accepted builds from the Factory, and these
+  files are no longer read for them.
+* **Pod setup (enrolling a headset)** is in the in-headset recordings menu. *Scan QR code* reads
+  the console's *Enroll a pod → Headset* code (`{"site", "join_code"}`) through the passthrough
+  camera and enrolls at once; *Site* and *Join code* open the Quest keyboard as a fallback, then
+  *Enroll*. Each step answers with a status line and a sound (blips when scanned, a chime when
+  enrolled, a buzz with the reason on any failure). Enrolling turns Local only off for the
+  attempt and leaves it off on success (restored on failure). The serial stays
+  `pod_config.json`'s.
+* **The HTTP API in local mode** is the open LAN API it has always been (no token): Local only
+  never reaches the Factory, and the headset sits on the operator's network. A Factory-enrolled
+  headset will require the token the rig derives from its enrollment credential (follows the
+  rig's ABI).
 * **Provisioning (once per headset, before enrolling):** apps cannot read `ro.serialno` on the
   Quest 3S, so write the serial into `pod_config.json` over adb (the shell can read it). This
   overwrites the file; if one already exists, add the key by hand instead:
