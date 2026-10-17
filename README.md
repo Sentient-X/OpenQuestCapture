@@ -236,22 +236,30 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   printf '{"headset_serial":"%s","operator_id":"<operator>","rig_type_id":"rig_yubi"}\n' "$serial" > pod_config.json
   adb push pod_config.json "$files/pod_config.json"
   adb push <calibration dir>/rig_config.yubi.json "$files/rig_config.json"   # e.g. yubi-06-quest
-  adb push quest_builds.json "$files/quest_builds.json"   # accepted headset builds, shape defined by the rig
+  adb push quest_builds.json "$files/rig_staging/quest_builds.json"
   ```
 
-  Once enrolled the rig resolves its rig and the accepted builds from the Factory, and these
-  files are no longer read for them.
+  `quest_builds.json` is the accepted headset builds the seal judges an episode's app build by:
+  `[{"version": "1.5.0", "build_id": "sha256:<APK digest>"}]`. The APK's digest is its
+  `quest_apk_build_id` (the release's `build.json`, `scripts/archive_release.sh`); an episode
+  recorded by a build not on the list stays seal `pending`. Once enrolled the rig resolves its
+  rig and fetches the accepted builds from the Factory (kept in its app-private credentials
+  directory), and these files are no longer read for them.
 * **Pod setup (enrolling a headset)** is in the in-headset recordings menu. *Scan QR code* reads
-  the console's *Enroll a pod → Headset* code (`{"site", "join_code"}`) through the passthrough
-  camera and enrolls at once; *Site* and *Join code* open the Quest keyboard as a fallback, then
-  *Enroll*. Each step answers with a status line and a sound (blips when scanned, a chime when
-  enrolled, a buzz with the reason on any failure). Enrolling turns Local only off for the
-  attempt and leaves it off on success (restored on failure). The serial stays
-  `pod_config.json`'s.
-* **The HTTP API in local mode** is the open LAN API it has always been (no token): Local only
-  never reaches the Factory, and the headset sits on the operator's network. A Factory-enrolled
-  headset will require the token the rig derives from its enrollment credential (follows the
-  rig's ABI).
+  the console's *Enroll a pod → Headset* code (`{"factory_url", "auth_url", "join_code"}`)
+  through the passthrough camera and enrolls at once; *Factory URL* and *Auth URL* (prefilled
+  with production) and *Join code* open the Quest keyboard as a fallback, then *Enroll*. The
+  rig's `sx_rig_enroll_site` answers with its steps (join, commission, rig, builds), each told on
+  the status line and with a sound: succeeded blips, unavailable a falling tone (it completes
+  later: the rig once all four parts are attached, the builds once the Factory serves them),
+  failed the buzz with its reason; enrolled ends with the chime and turns Local only off. The
+  serial stays `pod_config.json`'s. `POST /api/enroll {"join_code", "factory_url"?, "auth_url"?}`
+  does the same over HTTP.
+* **The HTTP API** is open on the LAN in local mode (Local only, or not enrolled yet): the
+  headset sits on the operator's network and never reaches the Factory. An enrolled headset that
+  is not Local only requires `Authorization: Bearer <token>` on every request (401
+  `unauthorized` otherwise), the token the rig derives from its machine credential
+  (`sx_rig_api_token`); it is never logged or shown in a status.
 * **Provisioning (once per headset, before enrolling):** apps cannot read `ro.serialno` on the
   Quest 3S, so write the serial into `pod_config.json` over adb (the shell can read it). This
   overwrites the file; if one already exists, add the key by hand instead:
