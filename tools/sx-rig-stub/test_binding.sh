@@ -50,3 +50,9 @@ cp "$newtonsoft" "$out/"
     -out:"$out/recovery-harness.exe" "$here/SessionRecoveryHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/SessionRecovery.cs" "$repo/Assets/RealityLog/Scripts/Runtime/StreamManifest.cs"
 "$mono" "$out/recovery-harness.exe"
+
+# RecordingDeletePolicy: what a delete may touch.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/delete-harness.exe" "$here/DeletePolicyHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingDeletePolicy.cs"
+"$mono" "$out/delete-harness.exe"

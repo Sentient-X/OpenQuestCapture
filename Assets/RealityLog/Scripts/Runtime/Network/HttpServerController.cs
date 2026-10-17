@@ -918,12 +918,24 @@ namespace RealityLog.Network
                 return HttpResponse.Conflict("recording_in_progress", "Cannot delete file that is currently being recorded");
             }
 
-            // Application.persistentDataPath is a Unity API; this runs on the HTTP thread.
-            var dirPath = Path.Combine(cachedDataPath, filename);
-            if (!Directory.Exists(dirPath))
+            // The one delete rule (RecordingDeletePolicy): only a session directory (never
+            // rig_staging, the config or the credentials), not while its rig episode is
+            // unsettled, and a sealed one only with ?confirm=<episode_id>.
+            request.QueryParams.TryGetValue("confirm", out var confirm);
+            var (verdict, refusal, allowedPath) = RecordingDeletePolicy.Check(cachedDataPath, filename, confirm);
+            switch (verdict)
             {
-                return HttpResponse.NotFound("Recording not found");
+                case DeleteVerdict.InvalidName:
+                    return TypedError(400, "invalid_name", refusal);
+                case DeleteVerdict.NotFound:
+                    return HttpResponse.NotFound(refusal);
+                case DeleteVerdict.RigUnsettled:
+                    return TypedError(409, "rig_episode_unsettled", refusal);
+                case DeleteVerdict.NeedsConfirm:
+                    var body = new JObject { ["error"] = "confirm_required", ["message"] = refusal, ["episode_id"] = filename };
+                    return HttpResponse.Json(409, body.ToString(Formatting.None));
             }
+            var dirPath = allowedPath!;
 
             long freedBytes = 0;
             try
