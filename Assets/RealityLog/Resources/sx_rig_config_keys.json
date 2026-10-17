@@ -15,7 +15,8 @@
     "pod_config_path",
     "rig_type_id",
     "upload_limit_mib_s",
-    "quest_apk_build_id"
+    "quest_apk_build_id",
+    "local_only"
   ],
   "rig": {
     "bundle_schema_version": "sx.yubi-rig-bundle/v1",
