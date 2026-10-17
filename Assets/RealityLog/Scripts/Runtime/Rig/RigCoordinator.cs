@@ -683,7 +683,8 @@ namespace RealityLog.Rig
                 {
                     config = BuildConfig();
                 }
-                catch (Exception ex) when (ex is JsonException || ex is InvalidDataException || ex is IOException)
+                catch (Exception ex) when (ex is JsonException || ex is InvalidDataException || ex is IOException
+                    || ex is InvalidOperationException)
                 {
                     openErrorJson = new JObject { ["code"] = "argument", ["detail"] = ex.Message }.ToString(Formatting.None);
                     return;
@@ -724,38 +725,17 @@ namespace RealityLog.Rig
         /// </summary>
         private string BuildConfig()
         {
-            var config = ReadPodConfig();
-            config["staging_dir"] = stagingPath;
-            config["credentials_dir"] = credentialsPath;
-            // factory_url, auth_url and rig_type_id come only from pod_config.json (provisioning
-            // and POST /api/enroll write them); without a site the rig records and seals but
-            // does not upload or join the Factory floor. Local only (the default) removes the
-            // site, so the rig never contacts the Factory whatever the file names.
-            if (localOnly)
-            {
-                config.Remove("factory_url");
-                config.Remove("auth_url");
-            }
-            config.Remove("local_only");
-            // Apps cannot read ro.serialno on the Quest 3S: provisioning writes headset_serial
-            // into pod_config.json over adb, and the rig reads it through pod_config_path.
-            config["pod_config_path"] = podConfigPath;
-            // The seal's meshes, installed by EmbodimentAssets. Passed when installed, and when
-            // the install failed, so the rig's own readiness names what is missing; omitted
-            // when this APK carries none (the rig then reports configured: false).
-            if (embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed")
-            {
-                config["embodiment_assets_dir"] = embodimentDir;
-            }
-            if (config["tailscale_ip"] == null && tailscaleIp.Length > 0)
-            {
-                config["tailscale_ip"] = tailscaleIp;
-            }
-            if (File.Exists(configPath))
-            {
-                config["rig"] = JObject.Parse(File.ReadAllText(configPath));
-            }
-            return config.ToString(Formatting.None);
+            // An explicit allow-list (RigOpenConfig): the rig refuses unknown keys, and
+            // pod_config.json carries app-only ones (operator_id, local_only). Local only (the
+            // default) drops the site, so the rig never contacts the Factory. Apps cannot read
+            // ro.serialno on the 3S: provisioning writes headset_serial into pod_config.json,
+            // which the rig also reads through pod_config_path. The seal's meshes are passed
+            // when installed, and when the install failed (the rig's readiness then names what
+            // is missing); omitted when this APK carries none.
+            var meshes = embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed" ? embodimentDir : null;
+            JToken? rig = File.Exists(configPath) ? JObject.Parse(File.ReadAllText(configPath)) : null;
+            return RigOpenConfig.Build(ReadPodConfig(), stagingPath, credentialsPath, podConfigPath,
+                meshes, tailscaleIp, rig, localOnly).ToString(Formatting.None);
         }
 
         private string ReadPodConfigSerial()

@@ -38,3 +38,9 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SxRig.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigRefusal.cs"
 "$mono" "$out/gate-harness.exe"
+
+# RigOpenConfig: the sx_rig_open allow-list.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/open-config-harness.exe" "$here/RigOpenConfigHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigOpenConfig.cs"
+"$mono" "$out/open-config-harness.exe"
