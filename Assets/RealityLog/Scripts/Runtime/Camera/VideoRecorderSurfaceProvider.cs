@@ -205,6 +205,51 @@ namespace RealityLog.Camera
             return null;
         }
 
+        /// <summary>
+        /// Pod setup's Scan QR: decode QR codes from this camera's frames while not recording.
+        /// False when there is no recorder (the camera never opened).
+        /// </summary>
+        public bool StartQrScan()
+        {
+            if (currentInstance == null) return false;
+            try
+            {
+                currentInstance.Call("startQrScan");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: startQrScan: {ex.Message}");
+                return false;
+            }
+        }
+
+        public void StopQrScan()
+        {
+            try
+            {
+                currentInstance?.Call("stopQrScan");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: stopQrScan: {ex.Message}");
+            }
+        }
+
+        /// <summary>The first QR text decoded since <see cref="StartQrScan"/>, or null.</summary>
+        public string? QrResult()
+        {
+            try
+            {
+                var text = currentInstance?.Call<string>("getQrResult");
+                return string.IsNullOrEmpty(text) ? null : text;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
         public override void SetDataDirectoryName(string directoryName)
         {
             dataDirectoryName = directoryName;

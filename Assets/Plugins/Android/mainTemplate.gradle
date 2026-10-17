@@ -50,5 +50,7 @@ repositories {
 }
 dependencies {
     implementation "androidx.appcompat:appcompat:1.5.1"
+    // questcameralib.aar's QR decoder (pod setup); an AAR does not carry its dependencies.
+    implementation "com.google.zxing:core:3.5.3"
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3"
 }
