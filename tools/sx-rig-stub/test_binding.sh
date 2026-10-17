@@ -56,3 +56,9 @@ cp "$newtonsoft" "$out/"
     -out:"$out/delete-harness.exe" "$here/DeletePolicyHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingDeletePolicy.cs"
 "$mono" "$out/delete-harness.exe"
+
+# PodSetupJson: the console's QR payload and the keyboard inputs.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/pod-setup-harness.exe" "$here/PodSetupJsonHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodSetupJson.cs"
+"$mono" "$out/pod-setup-harness.exe"

@@ -160,6 +160,7 @@ namespace RealityLog.UI
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Created {createdCount} list items");
 
+            CreatePodSetupRows();
             CreateLocalOnlyToggle();
 
             // Delete All button disabled for now
@@ -170,6 +171,63 @@ namespace RealityLog.UI
         }
 
         private GameObject? localOnlyToggleObj;
+        private readonly List<GameObject> podSetupRows = new();
+
+        /// <summary>
+        /// Pod setup at the top of the list: a status line, Scan QR (or Cancel), Site and Join
+        /// code (the Quest keyboard) and Enroll (PodSetupController). The texts refresh while the
+        /// menu is open.
+        /// </summary>
+        private void CreatePodSetupRows()
+        {
+            foreach (var row in podSetupRows) if (row != null) Destroy(row);
+            podSetupRows.Clear();
+            var setup = PodSetupController.Instance;
+            if (setup is null || listContainer == null) return;
+
+            // Created in reverse: each SetAsFirstSibling puts the row on top.
+            var enroll = CreateRow("PodSetupEnroll", new Color(0.15f, 0.3f, 0.55f, 0.85f), setup.Enroll, out var enrollText);
+            var code = CreateRow("PodSetupJoinCode", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditJoinCode, out var codeText);
+            var site = CreateRow("PodSetupSite", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditSite, out var siteText);
+            var scan = CreateRow("PodSetupScan", new Color(0.15f, 0.3f, 0.55f, 0.85f),
+                () => { if (setup.Scanning) setup.CancelScan(); else setup.StartScan(); }, out var scanText);
+            var status = CreateRow("PodSetupStatus", new Color(0.1f, 0.1f, 0.1f, 0.85f), null, out var statusText);
+            statusText.enableAutoSizing = true;
+            statusText.fontSizeMin = 10;
+            statusText.fontSizeMax = 14;
+            podSetupRows.AddRange(new[] { enroll, code, site, scan, status });
+
+            var view = status.AddComponent<PodSetupRowsView>();
+            view.Bind(setup, statusText, scanText, siteText, codeText, enrollText);
+        }
+
+        private GameObject CreateRow(string name, Color color, System.Action? onClick, out TextMeshProUGUI text)
+        {
+            var row = new GameObject(name, typeof(RectTransform));
+            row.transform.SetParent(listContainer, false);
+            row.transform.SetAsFirstSibling();
+            var layout = row.AddComponent<LayoutElement>();
+            layout.preferredHeight = 40;
+            layout.flexibleWidth = 1;
+            var background = row.AddComponent<Image>();
+            background.color = color;
+            if (onClick != null)
+            {
+                var button = row.AddComponent<Button>();
+                button.onClick.AddListener(() => onClick());
+            }
+            var textObj = new GameObject("Text", typeof(RectTransform));
+            textObj.transform.SetParent(row.transform, false);
+            var textRt = textObj.GetComponent<RectTransform>();
+            textRt.anchorMin = Vector2.zero;
+            textRt.anchorMax = Vector2.one;
+            textRt.sizeDelta = new Vector2(-12, 0);
+            text = textObj.AddComponent<TextMeshProUGUI>();
+            text.fontSize = 15;
+            text.alignment = TextAlignmentOptions.Center;
+            text.color = Color.white;
+            return row;
+        }
 
         /// <summary>
         /// "Local only: ON|OFF" at the top of the list: on (the default), the headset never

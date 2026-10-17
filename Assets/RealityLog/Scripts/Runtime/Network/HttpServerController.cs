@@ -1737,7 +1737,7 @@ namespace RealityLog.Network
             }
 
             RigRefusal? prepareRefusal = null;
-            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.PrepareEnrollment(baseUrl));
+            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.BeginEnrollment(baseUrl));
             if (!signal.Wait(5000))
             {
                 return MainThreadTimeoutResponse("Main thread did not prepare the enrollment within 5 s; nothing was enrolled");
@@ -1750,6 +1750,7 @@ namespace RealityLog.Network
             try
             {
                 var enrollment = rig.Enroll(joinCode);
+                server!.EnqueueOnMainThread(() => rig.FinishEnrollment(true));
                 Debug.Log($"[{Constants.LOG_TAG}] HttpServerController: enrolled as a headset pod");
                 return HttpResponse.Ok("{\"status\":\"enrolled\",\"enrollment\":" + enrollment + "}");
             }
@@ -1764,6 +1765,7 @@ namespace RealityLog.Network
                 {
                 }
                 Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: {ex.Message}");
+                server!.EnqueueOnMainThread(() => rig.FinishEnrollment(false));
                 return TypedError(ex.Error == SxRigError.Argument ? 400 : 503,
                     "enroll_failed", ex.Message, reason, ex.ErrorJson);
             }

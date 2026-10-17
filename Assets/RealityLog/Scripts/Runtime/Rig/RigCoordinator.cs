@@ -596,6 +596,38 @@ namespace RealityLog.Rig
             return opened ? null : new RigRefusal("rig_open_failed", "sx_rig_open failed", openErrorJson);
         }
 
+        private bool enrollmentRestoresLocalOnly;
+
+        /// <summary>
+        /// Main thread, to start an enrollment (the pod setup panel, POST /api/enroll): turns
+        /// Local only off for it (enrolling contacts the Factory), then
+        /// <see cref="PrepareEnrollment"/>. On a refusal Local only is restored. The caller then
+        /// runs <see cref="Enroll"/> off the main thread and reports back with
+        /// <see cref="FinishEnrollment"/>.
+        /// </summary>
+        public RigRefusal? BeginEnrollment(string? baseUrl)
+        {
+            enrollmentRestoresLocalOnly = localOnly;
+            if (localOnly && SetLocalOnly(false) is string error)
+            {
+                enrollmentRestoresLocalOnly = false;
+                return new RigRefusal("rig_open_failed", error);
+            }
+            var refusal = PrepareEnrollment(baseUrl);
+            if (refusal != null) FinishEnrollment(false);
+            return refusal;
+        }
+
+        /// <summary>
+        /// Main thread, after <see cref="Enroll"/>: a successful enrollment leaves Local only off
+        /// (the headset is a Factory pod now); a failed one restores it if it was on.
+        /// </summary>
+        public void FinishEnrollment(bool enrolledNow)
+        {
+            if (!enrolledNow && enrollmentRestoresLocalOnly) SetLocalOnly(true);
+            enrollmentRestoresLocalOnly = false;
+        }
+
         /// <summary>
         /// <c>sx_rig_enroll</c> on the calling (worker) thread, after
         /// <see cref="PrepareEnrollment"/>. Returns the pod record JSON; throws

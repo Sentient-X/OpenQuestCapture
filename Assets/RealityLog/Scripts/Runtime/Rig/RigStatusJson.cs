@@ -43,6 +43,41 @@ namespace RealityLog.Rig
             return episode["failure"] as JObject;
         }
 
+        /// <summary>A sentence for an enrollment answer: its pod id, or that it enrolled.</summary>
+        public static string EnrollmentSummary(string answerJson)
+        {
+            try
+            {
+                if (JToken.Parse(answerJson) is JObject answer
+                    && answer["pod_id"] is JValue { Type: JTokenType.String } pod)
+                {
+                    return "pod " + (string?)pod;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return "pod commissioned";
+        }
+
+        /// <summary>A library error's detail sentence, or <paramref name="fallback"/>.</summary>
+        public static string ErrorDetail(string errorJson, string fallback)
+        {
+            try
+            {
+                if (JToken.Parse(errorJson) is JObject error
+                    && error["detail"] is JValue { Type: JTokenType.String } detail
+                    && ((string?)detail)?.Length > 0)
+                {
+                    return (string)detail!;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return fallback;
+        }
+
         /// <summary>True when a stop receipt's outcome is not complete (failed, an error).</summary>
         public static bool StopFailed(string receiptJson)
         {
