@@ -1,0 +1,17 @@
+[
+  "staging_dir",
+  "rig",
+  "min_free_bytes",
+  "max_episode_seconds",
+  "seal",
+  "embodiment_assets_dir",
+  "factory_url",
+  "auth_url",
+  "credentials_dir",
+  "headset_serial",
+  "tailscale_ip",
+  "pod_name",
+  "pod_config_path",
+  "rig_type_id",
+  "upload_limit_mib_s"
+]

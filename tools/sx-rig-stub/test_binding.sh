@@ -43,4 +43,4 @@ cp "$newtonsoft" "$out/"
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/open-config-harness.exe" "$here/RigOpenConfigHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigOpenConfig.cs"
-"$mono" "$out/open-config-harness.exe"
+"$mono" "$out/open-config-harness.exe" "$repo/Assets/RealityLog/Resources/sx_rig_config_keys.json"

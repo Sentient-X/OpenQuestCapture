@@ -96,7 +96,11 @@ namespace RealityLog.Rig
         // it is settled, because the library verifies the directory at open.
         private string embodimentDir = "";
         // What failed while the coordinator started (by part), surfaced in /api/status.
-        private readonly Dictionary<string, string> startupErrors = new();
+        private readonly Dictionary<string, JToken> startupErrors = new();
+        // libsx_rig's open-config keys (Resources/sx_rig_config_keys.json, shipped with the .so).
+        private HashSet<string>? rigKeys;
+        // The pod_config.json key problem last reported (so the refused cue plays once per change).
+        private string? podConfigProblem;
         private volatile string embodimentStateJson = "{\"state\":\"pending\"}";
         private string EmbodimentState
         {
@@ -218,6 +222,45 @@ namespace RealityLog.Rig
             credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
             localOnly = ReadLocalOnly(); // before the first open
+            try
+            {
+                var keysAsset = Resources.Load<TextAsset>("sx_rig_config_keys")
+                    ?? throw new InvalidOperationException("Resources/sx_rig_config_keys.json is not in this build");
+                rigKeys = RigOpenConfig.ParseRigKeys(keysAsset.text);
+                if (RigOpenConfig.PolicyKeysUnknownToRig(rigKeys) is { Length: > 0 } stale)
+                {
+                    throw new InvalidOperationException(
+                        "this build sends keys the shipped libsx_rig does not know: " + string.Join(", ", stale));
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                rigKeys = null;
+                RecordStartupError("rig_config_keys", ex);
+            }
+            // At launch, rig or no rig: a pod_config.json the app would partly not understand is
+            // reported (startupErrors.pod_config) and buzzed, never silently ignored.
+            if (rigKeys != null && File.Exists(podConfigPath))
+            {
+                try
+                {
+                    if (RigOpenConfig.UnknownPodConfigKeys(ReadPodConfig(), rigKeys) is { Length: > 0 } unknownAtLaunch)
+                    {
+                        startupErrors["pod_config"] = new JObject
+                        {
+                            ["code"] = "pod_config_unknown_keys",
+                            ["keys"] = new JArray(unknownAtLaunch),
+                            ["detail"] = $"{PodConfigFileName} has keys neither the app nor the rig accepts: {string.Join(", ", unknownAtLaunch)}",
+                        };
+                        podConfigProblem = string.Join(",", unknownAtLaunch);
+                        QueueCue(RigCues.Cue.Refused);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+                {
+                    RecordStartupError("pod_config", ex);
+                }
+            }
 #if UNITY_ANDROID && !UNITY_EDITOR
             // Each Android piece starts on its own, and a failure is kept for /api/status: on the
             // 3S a bridge constructor failure (an androidx call the app's core lacked) once
@@ -277,6 +320,7 @@ namespace RealityLog.Rig
         private void RecordStartupError(string what, Exception ex)
         {
             startupErrors[what] = ex.ToString();
+            QueueCue(RigCues.Cue.Refused); // the operator cannot read /api/status
             Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {what} failed at startup: {ex}");
         }
 
@@ -678,6 +722,39 @@ namespace RealityLog.Rig
             lastOpenAttempt = Time.unscaledTime;
             try
             {
+                if (rigKeys == null)
+                {
+                    openErrorJson = new JObject
+                    {
+                        ["code"] = "rig_config_keys_missing",
+                        ["detail"] = "the rig's open-config key set did not load (see startupErrors.rig_config_keys)",
+                    }.ToString(Formatting.None);
+                    return;
+                }
+                // pod_config.json is validated, never partly ignored: a misspelled or foreign key
+                // refuses the open, with the keys, until the file is fixed.
+                var unknown = RigOpenConfig.UnknownPodConfigKeys(ReadPodConfig(), rigKeys);
+                if (unknown.Length > 0)
+                {
+                    var problem = new JObject
+                    {
+                        ["code"] = "pod_config_unknown_keys",
+                        ["keys"] = new JArray(unknown),
+                        ["detail"] = $"{PodConfigFileName} has keys neither the app nor the rig accepts: {string.Join(", ", unknown)}",
+                    };
+                    startupErrors["pod_config"] = problem;
+                    openErrorJson = problem.ToString(Formatting.None);
+                    var signature = string.Join(",", unknown);
+                    if (podConfigProblem != signature)
+                    {
+                        podConfigProblem = signature;
+                        QueueCue(RigCues.Cue.Refused);
+                        Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {problem["detail"]}");
+                    }
+                    return;
+                }
+                startupErrors.Remove("pod_config");
+                podConfigProblem = null;
                 string config;
                 try
                 {
@@ -734,7 +811,7 @@ namespace RealityLog.Rig
             // is missing); omitted when this APK carries none.
             var meshes = embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed" ? embodimentDir : null;
             JToken? rig = File.Exists(configPath) ? JObject.Parse(File.ReadAllText(configPath)) : null;
-            return RigOpenConfig.Build(ReadPodConfig(), stagingPath, credentialsPath, podConfigPath,
+            return RigOpenConfig.Build(ReadPodConfig(), rigKeys ?? new HashSet<string>(), stagingPath, credentialsPath, podConfigPath,
                 meshes, tailscaleIp, rig, localOnly).ToString(Formatting.None);
         }
 
