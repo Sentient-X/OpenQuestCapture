@@ -77,6 +77,12 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_enroll")]
         private static extern int NativeEnroll(byte[] joinCode, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
+        [DllImport(Library, EntryPoint = "sx_rig_enroll_site")]
+        private static extern int NativeEnrollSite(byte[] requestJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
+
+        [DllImport(Library, EntryPoint = "sx_rig_api_token")]
+        private static extern int NativeApiToken(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
+
         [DllImport(Library, EntryPoint = "sx_rig_sign_in")]
         private static extern int NativeSignIn(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
@@ -122,6 +128,10 @@ namespace RealityLog.Rig
         private static int NativeOpen(byte[] configJson) => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeEnroll(byte[] joinCode, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeEnrollSite(byte[] requestJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
+            throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeApiToken(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
+            throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeSignIn(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeSignOut() => throw new DllNotFoundException(NotOnThisPlatform);
@@ -165,6 +175,28 @@ namespace RealityLog.Rig
                 (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeEnroll(code, outJson, cap, out needed),
                 EnrollBufferBytes);
         }
+
+        /// <summary>
+        /// <c>sx_rig_enroll_site</c>: enroll at a scanned site.
+        /// <c>{"site": {"factory_url", "auth_url"}, "join_code": "sxj_...", "rig_type_id"?}</c> →
+        /// <c>{"pod_id", "pod", "steps": [{"step", "state", "detail"}]}</c>. A failed join or
+        /// commission throws (SX_RIG_E_DEVICE; the error's refusal
+        /// <c>{"kind": "enrollment_failed", "steps"}</c>). Network-bound: never on Unity's main
+        /// thread. A buffer retry repeats nothing the rig did not already keep.
+        /// </summary>
+        public static string EnrollSite(string requestJson)
+        {
+            var request = Utf8(requestJson);
+            return CallJson("sx_rig_enroll_site",
+                (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeEnrollSite(request, outJson, cap, out needed),
+                EnrollBufferBytes);
+        }
+
+        /// <summary>
+        /// <c>sx_rig_api_token</c>: <c>{"token": "<64 hex>"}</c>, derived from the machine
+        /// credential; throws (SX_RIG_E_STATE) before enrollment. Never log it.
+        /// </summary>
+        public static string ApiToken() => CallJson("sx_rig_api_token", NativeApiToken);
 
         /// <summary>
         /// <c>sx_rig_sign_in</c>: start the collector's device sign-in. Returns

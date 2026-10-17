@@ -40,6 +40,18 @@ int32_t sx_rig_enroll(const char *join_code, char *out_json, size_t cap, size_t 
     return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: no factory_url to enroll with");
 }
 
+int32_t sx_rig_enroll_site(const char *request_json, char *out_json, size_t cap, size_t *needed) {
+    (void)out_json; (void)cap; (void)needed;
+    if (request_json == NULL || request_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "request is not a JSON object");
+    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
+    return fail(SX_RIG_E_DEVICE, "device", "stub libsx_rig: no Factory");
+}
+
+int32_t sx_rig_api_token(char *out_json, size_t cap, size_t *needed) {
+    (void)out_json; (void)cap; (void)needed;
+    return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: not enrolled");
+}
+
 int32_t sx_rig_sign_in(char *out_json, size_t cap, size_t *needed) {
     (void)out_json; (void)cap; (void)needed;
     if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
