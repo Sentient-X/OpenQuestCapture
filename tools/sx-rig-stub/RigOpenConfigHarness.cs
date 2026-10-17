@@ -34,7 +34,16 @@ static class RigOpenConfigHarness
         var local = RigOpenConfig.Build(pod, rigKeys, "/s", "/c", "/p/pod_config.json", "/m", "100.64.0.9", rig, localOnly: true);
         var keys = local.Properties().Select(p => p.Name).ToArray();
         Expect(keys.All(rigKeys.Contains), "every key sent is in the rig's list: " + string.Join(",", keys));
-        Expect(local["operator_id"] == null && local["local_only"] == null, "operator_id and local_only never reach sx_rig_open");
+        Expect(local["operator_id"] == null, "operator_id never reaches sx_rig_open");
+        // local_only reaches the rig only as the app's setting (the Build argument), never as
+        // pod_config.json's raw value, and only for a rig whose list has the key.
+        var podSaysOff = (JObject)pod.DeepClone();
+        podSaysOff["local_only"] = false;
+        var setting = RigOpenConfig.Build(podSaysOff, rigKeys, "/s", "/c", "/p", null, null, null, localOnly: true);
+        Expect(rigKeys.Contains("local_only")
+                ? setting["local_only"]?.Type == JTokenType.Boolean && (bool)setting["local_only"]!
+                : setting["local_only"] == null,
+            "local_only is the app's setting, not pod_config.json's value");
         Expect(local["factory_url"] == null && local["auth_url"] == null && local["rig_type_id"] == null, "Local only drops the site");
         Expect((string?)local["headset_serial"] == "3487C10H9W0C59" && (int)local["max_episode_seconds"]! == 300 && local["pod_name"] == null,
             "rig settings are kept, a null one is not passed");
