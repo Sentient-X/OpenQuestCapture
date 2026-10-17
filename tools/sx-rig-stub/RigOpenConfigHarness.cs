@@ -45,6 +45,13 @@ static class RigOpenConfigHarness
         Expect((string?)site["factory_url"] == "https://app.sentientx.io/d/factory/" && (string?)site["rig_type_id"] == "rig_yubi",
             "with Local only off the site is passed");
 
+        // quest_apk_build_id goes only to a rig whose list has it.
+        var withId = new System.Collections.Generic.HashSet<string>(rigKeys) { "quest_apk_build_id" };
+        var newer = RigOpenConfig.Build(pod, withId, "/s", "/c", "/p", null, null, null, true, "sha256:abc");
+        var older = RigOpenConfig.Build(pod, new System.Collections.Generic.HashSet<string>(rigKeys) { }, "/s", "/c", "/p", null, null, null, true, "sha256:abc");
+        Expect((string?)newer["quest_apk_build_id"] == "sha256:abc", "a rig that takes quest_apk_build_id gets the APK's identity");
+        Expect(rigKeys.Contains("quest_apk_build_id") || older["quest_apk_build_id"] == null, "a rig whose list lacks it never gets it");
+
         // A key the rig list lacks is never sent: Build throws instead.
         var narrow = new System.Collections.Generic.HashSet<string>(rigKeys);
         narrow.Remove("max_episode_seconds");

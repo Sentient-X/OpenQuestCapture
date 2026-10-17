@@ -36,6 +36,12 @@ namespace RealityLog.Rig
             { "staging_dir", "credentials_dir", "pod_config_path", "embodiment_assets_dir", "rig" };
 
         /// <summary>
+        /// Rig keys the app sets when the shipped rig list has them (a newer rig): the installed
+        /// APK's content identity, which the rig reports as its recorder build.
+        /// </summary>
+        public static readonly string[] OptionalAppSet = { "quest_apk_build_id" };
+
+        /// <summary>
         /// The rig's key set from <c>sx_rig_config_keys.json</c>: a JSON array of strings, or an
         /// object whose <c>keys</c> is one. Throws <see cref="InvalidOperationException"/> on any
         /// other shape, so a build never runs without the rig's own list.
@@ -100,7 +106,8 @@ namespace RealityLog.Rig
         /// rather than send it.
         /// </summary>
         public static JObject Build(JObject podConfig, ISet<string> rigKeys, string stagingDir, string credentialsDir,
-            string podConfigPath, string? embodimentAssetsDir, string? tailscaleIp, JToken? rig, bool localOnly)
+            string podConfigPath, string? embodimentAssetsDir, string? tailscaleIp, JToken? rig, bool localOnly,
+            string? questApkBuildId = null)
         {
             var config = new JObject
             {
@@ -123,6 +130,10 @@ namespace RealityLog.Rig
             if (rig != null)
             {
                 config["rig"] = rig.DeepClone();
+            }
+            if (!string.IsNullOrEmpty(questApkBuildId) && rigKeys.Contains("quest_apk_build_id"))
+            {
+                config["quest_apk_build_id"] = questApkBuildId;
             }
             var unknown = config.Properties().Select(p => p.Name).Where(k => !rigKeys.Contains(k)).ToArray();
             if (unknown.Length > 0)

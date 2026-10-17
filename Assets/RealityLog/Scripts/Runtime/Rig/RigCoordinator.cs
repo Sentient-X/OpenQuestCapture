@@ -737,7 +737,9 @@ namespace RealityLog.Rig
 
             awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
             expected = Expected;
-            if (Expected && !opened && !libraryMissing && EmbodimentSettled
+            // A rig that takes the APK's identity (quest_apk_build_id) opens once it is hashed.
+            var identityReady = rigKeys == null || !rigKeys.Contains("quest_apk_build_id") || apkBuildId.Length > 0 || activity == null;
+            if (Expected && !opened && !libraryMissing && EmbodimentSettled && identityReady
                 && Time.unscaledTime - lastOpenAttempt >= OpenRetrySeconds)
             {
                 TryOpen();
@@ -844,7 +846,7 @@ namespace RealityLog.Rig
             var meshes = embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed" ? embodimentDir : null;
             JToken? rig = File.Exists(configPath) ? JObject.Parse(File.ReadAllText(configPath)) : null;
             return RigOpenConfig.Build(ReadPodConfig(), rigKeys ?? new HashSet<string>(), stagingPath, credentialsPath, podConfigPath,
-                meshes, tailscaleIp, rig, localOnly).ToString(Formatting.None);
+                meshes, tailscaleIp, rig, localOnly, apkBuildId).ToString(Formatting.None);
         }
 
         private string ReadPodConfigSerial()
