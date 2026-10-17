@@ -130,6 +130,20 @@ namespace RealityLog
 
         private void Start()
         {
+            // Sessions a killed process left without stream_manifest.json are closed out as
+            // interrupted, so the rig's seal can judge them instead of waiting forever. Off the
+            // main thread (it counts CSV rows); no recording is running yet at launch.
+            var dataPath = Application.persistentDataPath;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var closed = SessionRecovery.CloseOut(dataPath, currentSessionDirectory,
+                    (session, ex) => Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: could not close out {session}: {ex.Message}"));
+                foreach (var session in closed)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: closed out interrupted session {session} (no stream manifest)");
+                }
+            });
+
             // Auto-discover body tracking loggers if not assigned in Inspector
             if (bodyTrackingLoggers == null || bodyTrackingLoggers.Length == 0)
             {

@@ -788,6 +788,7 @@ namespace RealityLog.Network
                     $"      \"seal\": {sealJson},\n" +
                     $"      \"rigRefusal\": {SessionJsonOrNull(rec.DirectoryName, "rig_refusal.json")},\n" +
                     $"      \"rigStop\": {SessionJsonOrNull(rec.DirectoryName, "rig_stop_receipt.json")},\n" +
+                    $"      \"interrupted\": {(SessionRecovery.IsInterrupted(Path.Combine(cachedDataPath, rec.DirectoryName)) ? "true" : "false")},\n" +
                     $"      \"episodeMcap\": {mcapJson}\n" +
                     "    }");
             }

@@ -86,6 +86,10 @@ namespace RealityLog.UI
                 // The rig's outcome for this recording, when the rig took part: sealed (and the
                 // sealed episode.mcap's size), pending, or refused with the reason.
                 var rigLine = RigOutcome(info);
+                if (SessionRecovery.IsInterrupted(info.FullPath))
+                {
+                    rigLine = rigLine.Length == 0 ? "interrupted" : "interrupted | " + rigLine;
+                }
                 sizeText.text = rigLine.Length == 0 ? info.FormattedSize : $"{info.FormattedSize} | {rigLine}";
             }
 

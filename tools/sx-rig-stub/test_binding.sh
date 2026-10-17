@@ -44,3 +44,9 @@ cp "$newtonsoft" "$out/"
     -out:"$out/open-config-harness.exe" "$here/RigOpenConfigHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigOpenConfig.cs"
 "$mono" "$out/open-config-harness.exe" "$repo/Assets/RealityLog/Resources/sx_rig_config_keys.json"
+
+# SessionRecovery: closing out sessions a killed process left without a manifest.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
+    -out:"$out/recovery-harness.exe" "$here/SessionRecoveryHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/SessionRecovery.cs"
+"$mono" "$out/recovery-harness.exe"
