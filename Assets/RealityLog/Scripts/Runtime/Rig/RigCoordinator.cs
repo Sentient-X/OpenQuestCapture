@@ -153,6 +153,13 @@ namespace RealityLog.Rig
         private volatile string? deviceReportError;
         // The last sx_rig_check report (or its error), for /api/status rig.lastCheck.
         private volatile string lastCheckJson = "null";
+        // The rig episode recording now (read by the status timer without episodeLock, which a
+        // start may hold for seconds) and the failure the status reported for it, once.
+        private volatile string? activeEpisodeId;
+        private string? failureHandledFor; // status timer thread only
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(string session, JObject failure)> failures = new();
+        // pod_config.json's local_only (default true), re-read with the identity poll.
+        private volatile bool localOnly = true;
         private volatile bool collectorSignedIn;
         private volatile bool signInCuePending;
         // Seal verdicts seen so far (native-status timer thread); a change to sealed or refused
@@ -163,7 +170,7 @@ namespace RealityLog.Rig
         private bool floorObserved; // native-status timer thread only
 
         private const string NotExpectedStatus =
-            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"headsetSerial\":null," +
+            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"localOnly\":true,\"headsetSerial\":null," +
             "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false," +
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
             "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
@@ -210,6 +217,7 @@ namespace RealityLog.Rig
             // The machine credential lives in app-private storage, never on shared storage.
             credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
+            localOnly = ReadLocalOnly(); // before the first open
 #if UNITY_ANDROID && !UNITY_EDITOR
             // Each Android piece starts on its own, and a failure is kept for /api/status: on the
             // 3S a bridge constructor failure (an androidx call the app's core lacked) once
@@ -284,6 +292,13 @@ namespace RealityLog.Rig
             {
                 RigCues.Play(cue, gameObject);
             }
+            while (failures.TryDequeue(out var failed))
+            {
+                // The operator hears it at once; the recording stops through its normal path.
+                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: rig episode '{failed.session}' failed: {failed.failure.ToString(Formatting.None)}");
+                EpisodeFailed?.Invoke(failed.session, failed.failure);
+            }
             if (Time.unscaledTime - lastPoll >= PollIntervalSeconds)
             {
                 Poll();
@@ -327,7 +342,7 @@ namespace RealityLog.Rig
                 OpenErrorJson = openErrorJson,
                 AwaitingPermission = awaitingPermission,
                 ApkBuildIdKnown = apkBuildId.Length > 0,
-                CollectorReady = !enrolled || CollectorSignedIn(SafeStatus()) != false,
+                CollectorReady = !enrolled || localOnly || CollectorSignedIn(SafeStatus()) != false,
             };
             return RigStartGate.Evaluate(facts, SxRig.RunCheck, report => lastCheckJson = report);
         }
@@ -404,6 +419,7 @@ namespace RealityLog.Rig
             episodeReceiptJson = null;
             episodeActive = true;
             armedSession = sessionName;
+            activeEpisodeId = sessionName;
             Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{sessionName}' armed and anchored: {started}");
             return (started, null);
         }
@@ -416,6 +432,63 @@ namespace RealityLog.Rig
         private static RigRefusal Refusal(SxRigException ex, string otherwise) =>
             RigStartGate.FromError(ex, otherwise);
 
+        /// <summary>
+        /// Raised on the main thread, once per episode, when the rig reports its running
+        /// episode failed (a stream dropped out, a gap broke the law): (session, failure
+        /// {cause, part, detail}). The HTTP controller stops the OQC recording on it; the
+        /// refused cue has already played.
+        /// </summary>
+        public event Action<string, JObject>? EpisodeFailed;
+
+        /// <summary>
+        /// pod_config.json's <c>local_only</c> (default true): the app never contacts the
+        /// Factory (no enrollment, sign-in, commands or uplink, whatever factory_url says) and
+        /// the rig opens in local mode. Any thread.
+        /// </summary>
+        public bool LocalOnly => localOnly;
+
+        /// <summary>
+        /// Main thread: sets local_only in pod_config.json and reopens the rig with the new
+        /// config when no episode is active. Returns why not, or null.
+        /// </summary>
+        public string? SetLocalOnly(bool value)
+        {
+            lock (episodeLock)
+            {
+                if (episodeActive || reservedSession != null) return "a rig episode is active";
+            }
+            try
+            {
+                var config = ReadPodConfig();
+                config["local_only"] = value;
+                File.WriteAllText(podConfigPath, config.ToString(Formatting.Indented));
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException
+                || ex is UnauthorizedAccessException)
+            {
+                return $"cannot write {PodConfigFileName}: {ex.Message}";
+            }
+            localOnly = value;
+            if (opened && BuildConfig() != openedConfigJson)
+            {
+                CloseRig(); // the next poll opens it with the new config
+            }
+            Poll();
+            return null;
+        }
+
+        private bool ReadLocalOnly()
+        {
+            try
+            {
+                return ReadPodConfig()["local_only"] is not JValue { Type: JTokenType.Boolean } flag || (bool)flag;
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+
         /// <summary>Queues a cue for the main thread (any thread).</summary>
         public void QueueCue(RigCues.Cue cue) => cues.Enqueue(cue);
 
@@ -427,6 +500,11 @@ namespace RealityLog.Rig
         /// </summary>
         public RigRefusal? PrepareEnrollment(string? baseUrl)
         {
+            if (localOnly)
+            {
+                return new RigRefusal("local_only",
+                    "this headset is set to Local only: it never contacts the Factory (turn it off in the recordings menu or POST /api/settings)");
+            }
             // The site is chosen at enrollment: base_url when given, else the one pod_config.json
             // names, else production. rig_type_id is provisioning's (pod_config.json), never a
             // default in code: the rig commissions as exactly that registered type.
@@ -557,6 +635,7 @@ namespace RealityLog.Rig
                 }
                 episodeActive = false;
                 armedSession = null;
+                activeEpisodeId = null;
                 return episodeReceiptJson;
             }
         }
@@ -650,7 +729,14 @@ namespace RealityLog.Rig
             config["credentials_dir"] = credentialsPath;
             // factory_url, auth_url and rig_type_id come only from pod_config.json (provisioning
             // and POST /api/enroll write them); without a site the rig records and seals but
-            // does not upload or join the Factory floor.
+            // does not upload or join the Factory floor. Local only (the default) removes the
+            // site, so the rig never contacts the Factory whatever the file names.
+            if (localOnly)
+            {
+                config.Remove("factory_url");
+                config.Remove("auth_url");
+            }
+            config.Remove("local_only");
             // Apps cannot read ro.serialno on the Quest 3S: provisioning writes headset_serial
             // into pod_config.json over adb, and the rig reads it through pod_config_path.
             config["pod_config_path"] = podConfigPath;
@@ -702,6 +788,7 @@ namespace RealityLog.Rig
             {
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
                 headsetSerial = ReadPodConfigSerial();
+                localOnly = ReadLocalOnly();
                 using (var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName))
                 {
                     embodimentStateJson = embodiment.CallStatic<string>("stateJson") ?? embodimentStateJson;
@@ -807,6 +894,7 @@ namespace RealityLog.Rig
             json.Append("{\"expected\":").Append(Expected ? "true" : "false")
                 .Append(",\"configured\":").Append(configPresent ? "true" : "false")
                 .Append(",\"enrolled\":").Append(enrolled ? "true" : "false")
+                .Append(",\"localOnly\":").Append(localOnly ? "true" : "false")
                 .Append(",\"headsetSerial\":").Append(JsonString(headsetSerial))
                 .Append(",\"tailscaleIp\":").Append(JsonString(tailscaleIp))
                 .Append(",\"apkBuildId\":").Append(JsonString(apkBuildId))
@@ -944,6 +1032,13 @@ namespace RealityLog.Rig
                     collectorSignedIn = signedIn;
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
+                    var episodeId = activeEpisodeId;
+                    if (episodeId != null && failureHandledFor != episodeId
+                        && RigStatusJson.EpisodeFailure(status, episodeId) is JObject failure)
+                    {
+                        failureHandledFor = episodeId;
+                        failures.Enqueue((episodeId, failure));
+                    }
                 }
             }
             catch (SxRigException ex)

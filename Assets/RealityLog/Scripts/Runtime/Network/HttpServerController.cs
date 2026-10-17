@@ -105,6 +105,13 @@ namespace RealityLog.Network
         {
             server?.ProcessMainThreadQueue();
 
+            // A rig episode that fails while recording stops the recording (once subscribed).
+            if (!rigFailureSubscribed && RigCoordinator.Instance is { } rigForEvents)
+            {
+                rigForEvents.EpisodeFailed += OnRigEpisodeFailed;
+                rigFailureSubscribed = true;
+            }
+
             // The left controller's menu button (three lines; in OpenXR the app's menu button,
             // never the system one, which is the right Oculus button) toggles recording.
             if (OVRInput.GetDown(OVRInput.Button.Start, OVRInput.Controller.LTouch))
@@ -173,6 +180,89 @@ namespace RealityLog.Network
         {
             // Keep server alive through pause/resume — it's low-overhead when idle.
             // HeadTrackingMonitor tracks the pause itself (app.paused in /api/status).
+        }
+
+        // ── A rig episode failing mid-recording ──
+
+        private bool rigFailureSubscribed;
+
+        /// <summary>
+        /// Main thread, once per failed rig episode (the refused cue has played): records the
+        /// failure beside the session as rig_refusal.json (GET /api/recordings shows it as
+        /// rigRefusal, the in-headset list as "refused: ...") and stops the recording through
+        /// the same path as POST /api/stop-recording, which writes the rig's stop receipt
+        /// (outcome failed, cause, failure_cause). The recording then reads idle, so the next
+        /// menu-button press starts a new episode.
+        /// </summary>
+        private void OnRigEpisodeFailed(string session, JObject failure)
+        {
+            var refusal = new JObject
+            {
+                ["code"] = "rig_episode_failed",
+                ["message"] = "the rig's episode failed while recording: " + RigStatusJson.FailureDetail(failure),
+                ["detail"] = failure,
+            };
+            WriteSessionJson(session, "rig_refusal.json", refusal.ToString(Formatting.None));
+            if (recordingManager == null || !recordingManager.IsRecording
+                || recordingManager.CurrentSessionDirectory != session)
+            {
+                return;
+            }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var response = HandleStopRecording(new HttpRequest { Method = "POST", Path = "/api/stop-recording", Body = "{}" });
+                    Debug.Log($"[{Constants.LOG_TAG}] rig-failure stop -> {response.StatusCode} {response.Body}");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] rig-failure stop failed: {ex}");
+                }
+            });
+        }
+
+        // ── POST /api/settings ──
+
+        /// <summary>
+        /// <c>{"local_only": bool}</c>: Local only (default true) keeps the headset off the
+        /// Factory and the rig in local mode. Answers the settings. 400 invalid_body, 409
+        /// recording, 503 when the main thread does not take it.
+        /// </summary>
+        private HttpResponse HandleSettings(HttpRequest request)
+        {
+            JObject? fields = null;
+            try
+            {
+                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "null" : request.Body) as JObject;
+            }
+            catch (JsonException)
+            {
+            }
+            if (fields?["local_only"] is not JValue { Type: JTokenType.Boolean } flag)
+            {
+                return TypedError(400, "invalid_body", "the body must be {\"local_only\": true|false}");
+            }
+            if (recordingManager is not null && recordingManager.State != RecordingState.Idle)
+            {
+                return TypedError(409, "recording", "stop the recording before changing settings");
+            }
+            var rig = RigCoordinator.Instance;
+            if (rig is null)
+            {
+                return TypedError(503, "settings_failed", "the rig coordinator is not running");
+            }
+            string? error = null;
+            var signal = server!.EnqueueOnMainThread(() => error = rig.SetLocalOnly((bool)flag));
+            if (!signal.Wait(5000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not apply the setting within 5 s");
+            }
+            if (error != null)
+            {
+                return TypedError(409, "settings_failed", error);
+            }
+            return HttpResponse.Ok("{\"local_only\":" + (rig.LocalOnly ? "true" : "false") + "}");
         }
 
         // ── Left menu button: start / stop recording ──
@@ -262,6 +352,7 @@ namespace RealityLog.Network
             server.Post("/api/sign-in", HandleSignIn);
             server.Post("/api/sign-out", HandleSignOut);
             server.Post("/api/command", HandleCommand);
+            server.Post("/api/settings", HandleSettings);
         }
 
         // ── GET /api/status ──
@@ -315,6 +406,7 @@ namespace RealityLog.Network
                 $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
                 $"  \"controllers\": {HeadTrackingMonitor.ControllersJson("  ")},\n" +
+                $"  \"local_only\": {(RigCoordinator.Instance is { } settingsRig ? (settingsRig.LocalOnly ? "true" : "false") : "true")},\n" +
                 $"  \"rig\": {RigCoordinator.StatusJsonOrDefault},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"uptimeMs\": {uptimeMs}\n" +
@@ -695,6 +787,7 @@ namespace RealityLog.Network
                     $"      \"metadata\": {metaJson},\n" +
                     $"      \"seal\": {sealJson},\n" +
                     $"      \"rigRefusal\": {SessionJsonOrNull(rec.DirectoryName, "rig_refusal.json")},\n" +
+                    $"      \"rigStop\": {SessionJsonOrNull(rec.DirectoryName, "rig_stop_receipt.json")},\n" +
                     $"      \"episodeMcap\": {mcapJson}\n" +
                     "    }");
             }
@@ -1536,6 +1629,11 @@ namespace RealityLog.Network
             {
                 return AppPausedResponse();
             }
+            if (rig is not null && rig.LocalOnly)
+            {
+                return TypedError(409, "local_only",
+                    "this headset is set to Local only and never contacts the Factory");
+            }
             if (rig is null || !rig.IsOpen)
             {
                 return TypedError(409, "not_enrolled",
@@ -1633,7 +1731,7 @@ namespace RealityLog.Network
             }
             if (prepareRefusal != null)
             {
-                return TypedError(prepareRefusal.Code == "pod_config_incomplete" ? 409 : 503,
+                return TypedError(prepareRefusal.Code is "pod_config_incomplete" or "local_only" ? 409 : 503,
                     "enroll_failed", prepareRefusal.Message, prepareRefusal.Code, prepareRefusal.DetailJson);
             }
             try

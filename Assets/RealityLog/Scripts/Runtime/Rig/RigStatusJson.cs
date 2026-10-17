@@ -32,6 +32,82 @@ namespace RealityLog.Rig
                 : "";
 
         /// <summary>
+        /// The failure of the rig's running episode <paramref name="episodeId"/> as the status
+        /// reports it (<c>episode.failure</c>: cause, part, detail), or null while it records
+        /// clean, when no episode runs, or when the status names another episode.
+        /// </summary>
+        public static JObject? EpisodeFailure(JObject? status, string? episodeId)
+        {
+            if (episodeId == null || status?["episode"] is not JObject episode) return null;
+            if (episode["episode_id"] is not JValue { Type: JTokenType.String } id || (string?)id != episodeId) return null;
+            return episode["failure"] as JObject;
+        }
+
+        /// <summary>True when a stop receipt's outcome is not complete (failed, an error).</summary>
+        public static bool StopFailed(string receiptJson)
+        {
+            try
+            {
+                return !(JToken.Parse(receiptJson) is JObject receipt
+                    && receipt["outcome"] is JValue { Type: JTokenType.String } outcome
+                    && (string?)outcome == "complete");
+            }
+            catch (JsonException)
+            {
+                return true;
+            }
+        }
+
+        /// <summary>The failure's detail sentence (or its cause, or a fallback).</summary>
+        public static string FailureDetail(JObject failure) =>
+            failure["detail"] is JValue { Type: JTokenType.String } detail ? (string?)detail ?? ""
+            : failure["cause"] is JValue { Type: JTokenType.String } cause ? (string?)cause ?? ""
+            : "the rig's episode failed";
+
+        /// <summary>
+        /// One line for a recording's rig outcome in the in-headset list: a refusal or failure
+        /// the app recorded beside the session (rig_refusal.json) wins; else the seal verdict
+        /// (seal.json) — "sealed 45.2 MB", "pending: ...", "refused: ..."; "" without a rig.
+        /// </summary>
+        public static string SealSummary(string? sealJson, string? refusalJson, long? mcapBytes)
+        {
+            static string Clip(string text) => text.Length <= 60 ? text : text.Substring(0, 57) + "...";
+            if (refusalJson != null)
+            {
+                try
+                {
+                    if (JToken.Parse(refusalJson) is JObject refusal)
+                    {
+                        var message = refusal["message"] is JValue { Type: JTokenType.String } m ? (string?)m ?? "" : "";
+                        return "refused: " + Clip(message.Length > 0 ? message : (string?)refusal["code"] ?? "rig refused");
+                    }
+                }
+                catch (JsonException)
+                {
+                }
+                return "refused";
+            }
+            if (sealJson == null) return "";
+            try
+            {
+                if (JToken.Parse(sealJson) is not JObject seal) return "seal unreadable";
+                var state = SealState(seal);
+                var detail = seal["detail"] is JValue { Type: JTokenType.String } d ? (string?)d ?? "" : "";
+                var bytes = seal["size_bytes"] is JValue { Type: JTokenType.Integer } size ? (long)size : mcapBytes;
+                return state switch
+                {
+                    "sealed" => bytes is long b ? $"sealed {b / 1048576.0:F1} MB" : "sealed",
+                    "" => "seal unreadable",
+                    _ => detail.Length > 0 ? $"{state}: {Clip(detail)}" : state,
+                };
+            }
+            catch (JsonException)
+            {
+                return "seal unreadable";
+            }
+        }
+
+        /// <summary>
         /// A library error's <c>refusal</c>: its <c>kind</c> ("" when none) and, for
         /// check_failed, its <c>problems</c> joined.
         /// </summary>

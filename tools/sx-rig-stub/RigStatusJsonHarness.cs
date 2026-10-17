@@ -32,6 +32,28 @@ static class RigStatusJsonHarness
         Expect(!RigStatusJson.Check("not json").ready, "unreadable -> not ready");
         Expect(!RigStatusJson.Check("[]").ready, "not an object -> not ready");
 
+        // A rig episode failing mid-recording: the decision that stops OQC's session.
+        var failedStatus = JObject.Parse("{\"state\":\"recording\",\"episode\":{\"episode_id\":\"20261017_132350\",\"failure\":{\"cause\":\"hardware\",\"part\":\"left_camera\",\"detail\":\"left camera: selected camera exposure gap is 50.37 ms, need 0-50 ms\"},\"streams\":{}}}");
+        var f = RigStatusJson.EpisodeFailure(failedStatus, "20261017_132350");
+        Expect(f != null && RigStatusJson.FailureDetail(f!).Contains("50.37 ms"), "a failed running episode is reported with its detail");
+        Expect(RigStatusJson.EpisodeFailure(failedStatus, "20261017_120000") == null, "another episode's failure is not this one's");
+        Expect(RigStatusJson.EpisodeFailure(JObject.Parse("{\"episode\":{\"episode_id\":\"e\",\"failure\":null}}"), "e") == null, "a clean episode has no failure");
+        Expect(RigStatusJson.EpisodeFailure(JObject.Parse("{\"episode\":null}"), "e") == null, "no episode -> no failure");
+        Expect(RigStatusJson.EpisodeFailure(failedStatus, null) == null, "nothing recording -> no failure");
+        Expect(RigStatusJson.FailureDetail(JObject.Parse("{\"cause\":\"hardware\"}")) == "hardware", "detail falls back to the cause");
+
+        Expect(RigStatusJson.StopFailed("{\"outcome\":\"failed\",\"cause\":\"hardware\"}"), "failed receipt");
+        Expect(!RigStatusJson.StopFailed("{\"outcome\":\"complete\"}"), "complete receipt");
+        Expect(RigStatusJson.StopFailed("{\"error\":{\"code\":\"state\"}}"), "error receipt counts as failed");
+
+        // The in-headset list's rig line.
+        Expect(RigStatusJson.SealSummary("{\"state\":\"sealed\",\"size_bytes\":47395635}", null, null) == "sealed 45.2 MB", "sealed with size");
+        Expect(RigStatusJson.SealSummary("{\"state\":\"pending\",\"detail\":\"waiting for capture\"}", null, null) == "pending: waiting for capture", "pending with reason");
+        Expect(RigStatusJson.SealSummary("{\"state\":\"refused\",\"detail\":\"seal gate failed: pose coverage\"}", null, null).StartsWith("refused: seal gate"), "refused with reason");
+        Expect(RigStatusJson.SealSummary(null, "{\"code\":\"rig_episode_failed\",\"message\":\"the rig's episode failed while recording: gap\"}", null).StartsWith("refused: the rig"), "an app-recorded failure wins");
+        Expect(RigStatusJson.SealSummary(null, null, null) == "", "no rig -> no line");
+        Expect(RigStatusJson.SealSummary("garbage", null, null) == "seal unreadable", "unreadable seal");
+
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;
     }

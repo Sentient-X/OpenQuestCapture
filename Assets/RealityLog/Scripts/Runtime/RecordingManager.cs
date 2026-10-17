@@ -425,7 +425,9 @@ namespace RealityLog
                 // sidecars are, since their stop above is synchronous.
                 StopRig(savedDirectory);
                 EndPhase("rig");
-                if (LastRigStopReceiptJson != null && RigCoordinator.Instance is { } rigForCue)
+                // A failed rig episode already buzzed when it failed; a clean one chimes stop.
+                if (LastRigStopReceiptJson != null && RigCoordinator.Instance is { } rigForCue
+                    && !RigStatusJson.StopFailed(LastRigStopReceiptJson))
                 {
                     rigForCue.Cue(RigCues.Cue.Stop);
                 }
