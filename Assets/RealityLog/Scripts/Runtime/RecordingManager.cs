@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Events;
 using RealityLog.Camera;
@@ -130,20 +131,6 @@ namespace RealityLog
 
         private void Start()
         {
-            // Sessions a killed process left without stream_manifest.json are closed out as
-            // interrupted, so the rig's seal can judge them instead of waiting forever. Off the
-            // main thread (it counts CSV rows); no recording is running yet at launch.
-            var dataPath = Application.persistentDataPath;
-            System.Threading.Tasks.Task.Run(() =>
-            {
-                var closed = SessionRecovery.CloseOut(dataPath, currentSessionDirectory,
-                    (session, ex) => Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: could not close out {session}: {ex.Message}"));
-                foreach (var session in closed)
-                {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: closed out interrupted session {session} (no stream manifest)");
-                }
-            });
-
             // Auto-discover body tracking loggers if not assigned in Inspector
             if (bodyTrackingLoggers == null || bodyTrackingLoggers.Length == 0)
             {
@@ -166,6 +153,22 @@ namespace RealityLog
             {
                 infoCanvasAnimator = infoCanvas.GetComponent<Animator>();
             }
+
+            // After the body loggers are discovered: the close-out lists the stop's own streams.
+            // Sessions a killed process left without stream_manifest.json are closed out as
+            // interrupted, so the rig's seal can judge them instead of waiting forever. Off the
+            // main thread (it counts CSV rows); no recording is running yet at launch.
+            var dataPath = Application.persistentDataPath;
+            var streamFiles = CurrentStreams().Select(e => e.File).ToList(); // the stop's own list
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var closed = SessionRecovery.CloseOut(dataPath, currentSessionDirectory, streamFiles,
+                    (session, ex) => Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: could not close out {session}: {ex.Message}"));
+                foreach (var session in closed)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: closed out interrupted session {session} (no stream manifest)");
+                }
+            });
         }
 
         /// <summary>
@@ -875,43 +878,9 @@ namespace RealityLog
             LastStreamManifestJson = null;
             try
             {
-                var streams = new System.Text.StringBuilder("[");
-                var emptyStreams = new List<string>();
-
-                void AppendStream(string file, long rows, string stats)
-                {
-                    if (streams.Length > 1) streams.Append(',');
-                    streams.Append("{\"file\":\"").Append(EscapeJson(file))
-                        .Append("\",\"rows\":").Append(rows.ToString(System.Globalization.CultureInfo.InvariantCulture))
-                        .Append(",\"stats\":").Append(string.IsNullOrEmpty(stats) ? "{}" : stats)
-                        .Append('}');
-                    if (rows == 0) emptyStreams.Add(file);
-                }
-
-                if (poseLoggers != null)
-                {
-                    foreach (var logger in poseLoggers)
-                    {
-                        if (logger is not null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
-                    }
-                }
-                if (imuLoggers != null)
-                {
-                    foreach (var logger in imuLoggers)
-                    {
-                        if (logger is not null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
-                    }
-                }
-                if (bodyTrackingLoggers != null)
-                {
-                    foreach (var logger in bodyTrackingLoggers)
-                    {
-                        if (logger is not null) AppendStream(logger.FileName, logger.RowsWritten, logger.StatsJson());
-                    }
-                }
-                streams.Append(']');
-
-                var streamsJson = streams.ToString();
+                var entries = CurrentStreams();
+                var emptyStreams = entries.Where(e => e.Rows == 0).Select(e => e.File).ToList();
+                var streamsJson = StreamManifest.StreamsJson(entries);
                 LastStreamManifestJson = streamsJson;
 
                 if (emptyStreams.Count > 0)
@@ -931,7 +900,7 @@ namespace RealityLog
                 Directory.CreateDirectory(sessionDir);
                 File.WriteAllText(
                     Path.Join(sessionDir, StreamManifestFileName),
-                    "{\"schema\":1,\"streams\":" + streamsJson + "}"
+                    StreamManifest.Document(streamsJson)
                 );
             }
             catch (Exception ex)
@@ -940,6 +909,23 @@ namespace RealityLog
                     $"[{Constants.LOG_TAG}] Failed to write {StreamManifestFileName}: {ex.Message}"
                 );
             }
+        }
+
+        /// <summary>
+        /// Every CSV stream a stop lists, in the manifest's order: pose loggers, IMU loggers,
+        /// body loggers. Loggers are tested with <c>is null</c>, not Unity's <c>== null</c> (see
+        /// <see cref="WriteStreamManifest"/>). The launch close-out lists the same files.
+        /// </summary>
+        private List<StreamEntry> CurrentStreams()
+        {
+            var entries = new List<StreamEntry>();
+            foreach (var logger in poseLoggers ?? Array.Empty<PoseLogger>())
+                if (logger is not null) entries.Add(new StreamEntry(logger.FileName, logger.RowsWritten, logger.StatsJson()));
+            foreach (var logger in imuLoggers ?? Array.Empty<IMULogger>())
+                if (logger is not null) entries.Add(new StreamEntry(logger.FileName, logger.RowsWritten, logger.StatsJson()));
+            foreach (var logger in bodyTrackingLoggers ?? Array.Empty<BodyTrackingLogger>())
+                if (logger is not null) entries.Add(new StreamEntry(logger.FileName, logger.RowsWritten, logger.StatsJson()));
+            return entries;
         }
 
         private static string EscapeJson(string value)

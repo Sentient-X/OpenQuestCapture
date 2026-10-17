@@ -48,5 +48,5 @@ cp "$newtonsoft" "$out/"
 # SessionRecovery: closing out sessions a killed process left without a manifest.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/recovery-harness.exe" "$here/SessionRecoveryHarness.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/SessionRecovery.cs"
+    "$repo/Assets/RealityLog/Scripts/Runtime/SessionRecovery.cs" "$repo/Assets/RealityLog/Scripts/Runtime/StreamManifest.cs"
 "$mono" "$out/recovery-harness.exe"

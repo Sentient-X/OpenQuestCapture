@@ -20,16 +20,18 @@ namespace RealityLog
     /// </summary>
     public static class SessionRecovery
     {
-        public const string ManifestFileName = "stream_manifest.json";
-        private const string CameraTimestampsSuffix = "_camera_timestamps.csv";
+        public const string ManifestFileName = StreamManifest.FileName;
         private static readonly Regex SessionName = new(@"^\d{8}_\d{6}$", RegexOptions.Compiled);
 
         /// <summary>
         /// Writes a recovered manifest into every session under <paramref name="dataPath"/> that
-        /// has none, except <paramref name="activeSession"/>. Returns the sessions it closed out.
+        /// has none, except <paramref name="activeSession"/>. <paramref name="streamFiles"/> are
+        /// the streams a stop lists, in its order (RecordingManager's loggers), so the recovered
+        /// manifest names exactly what the stop's would. Returns the sessions it closed out.
         /// Never throws for one bad session; the rest are still closed out.
         /// </summary>
-        public static List<string> CloseOut(string dataPath, string? activeSession, Action<string, Exception>? onError = null)
+        public static List<string> CloseOut(string dataPath, string? activeSession, IReadOnlyList<string> streamFiles,
+            Action<string, Exception>? onError = null)
         {
             var closed = new List<string>();
             if (!Directory.Exists(dataPath)) return closed;
@@ -40,7 +42,7 @@ namespace RealityLog
                 if (File.Exists(Path.Combine(directory, ManifestFileName))) continue;
                 try
                 {
-                    WriteAtomically(Path.Combine(directory, ManifestFileName), BuildManifest(directory));
+                    WriteAtomically(Path.Combine(directory, ManifestFileName), BuildManifest(directory, streamFiles));
                     closed.Add(name);
                 }
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
@@ -52,31 +54,20 @@ namespace RealityLog
         }
 
         /// <summary>
-        /// The recovered manifest: the same <c>{"schema": 1, "streams": [...]}</c> a stop writes,
-        /// one stream per CSV (rows = complete lines after the header; a torn last line is not
-        /// counted), the head cameras' encoded frames from their timestamp sidecars, and
-        /// <c>"interrupted": true</c>.
+        /// The recovered manifest, by the stop's own writer (<see cref="StreamManifest"/>): the
+        /// same streams a stop lists, each with its complete rows counted from the file (a torn
+        /// last line is not counted; a stream whose file is missing has 0 rows) and empty
+        /// stats, plus only <c>interrupted</c> and <c>recovered_at_utc</c>.
         /// </summary>
-        public static string BuildManifest(string sessionDirectory)
+        public static string BuildManifest(string sessionDirectory, IReadOnlyList<string> streamFiles)
         {
-            var streams = new List<string>();
-            var cameras = new List<string>();
-            foreach (var file in Directory.GetFiles(sessionDirectory, "*.csv").OrderBy(f => f, StringComparer.Ordinal))
+            var entries = streamFiles.Select(file =>
             {
-                var name = Path.GetFileName(file);
-                var rows = CompleteRows(file);
-                if (name.EndsWith(CameraTimestampsSuffix, StringComparison.Ordinal))
-                {
-                    cameras.Add("{\"file\":\"" + Escape(name) + "\",\"frames\":" + rows.ToString(CultureInfo.InvariantCulture) + "}");
-                }
-                else
-                {
-                    streams.Add("{\"file\":\"" + Escape(name) + "\",\"rows\":" + rows.ToString(CultureInfo.InvariantCulture) + ",\"stats\":{}}");
-                }
-            }
-            return "{\"schema\":1,\"interrupted\":true,\"recovered_at_utc\":\"" +
-                DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture) +
-                "\",\"streams\":[" + string.Join(",", streams) + "],\"cameras\":[" + string.Join(",", cameras) + "]}";
+                var path = Path.Combine(sessionDirectory, file);
+                return new StreamEntry(file, File.Exists(path) ? CompleteRows(path) : 0, "{}");
+            });
+            return StreamManifest.Document(StreamManifest.StreamsJson(entries),
+                DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
         }
 
         /// <summary>True when the session's manifest says it was closed out after a kill.</summary>
@@ -125,6 +116,5 @@ namespace RealityLog
             File.Move(temporary, path);
         }
 
-        private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 }
