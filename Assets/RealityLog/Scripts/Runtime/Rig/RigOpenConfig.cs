@@ -39,7 +39,7 @@ namespace RealityLog.Rig
         /// Rig keys the app sets when the shipped rig list has them (a newer rig): the installed
         /// APK's content identity, which the rig reports as its recorder build.
         /// </summary>
-        public static readonly string[] OptionalAppSet = { "quest_apk_build_id" };
+        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "local_only" };
 
         /// <summary>
         /// The rig's key set from <c>sx_rig_config_keys.json</c>: a JSON array of strings, or an
@@ -134,6 +134,13 @@ namespace RealityLog.Rig
             if (!string.IsNullOrEmpty(questApkBuildId) && rigKeys.Contains("quest_apk_build_id"))
             {
                 config["quest_apk_build_id"] = questApkBuildId;
+            }
+            // A rig that takes local_only never contacts the Factory while it is true, even with
+            // an enrolled credential and its kept site.json (dropping factory_url alone does not
+            // stop that). credentials_dir is still passed, so the kept rig.json is used.
+            if (rigKeys.Contains("local_only"))
+            {
+                config["local_only"] = localOnly;
             }
             var unknown = config.Properties().Select(p => p.Name).Where(k => !rigKeys.Contains(k)).ToArray();
             if (unknown.Length > 0)

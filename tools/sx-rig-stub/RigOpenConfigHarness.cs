@@ -52,6 +52,15 @@ static class RigOpenConfigHarness
         Expect((string?)newer["quest_apk_build_id"] == "sha256:abc", "a rig that takes quest_apk_build_id gets the APK's identity");
         Expect(rigKeys.Contains("quest_apk_build_id") || older["quest_apk_build_id"] == null, "a rig whose list lacks it never gets it");
 
+        // local_only goes to a rig whose list has it, as the setting says; never from pod_config.
+        var withLocal = new System.Collections.Generic.HashSet<string>(rigKeys) { "local_only" };
+        var on = RigOpenConfig.Build(pod, withLocal, "/s", "/c", "/p", null, null, null, true);
+        var off = RigOpenConfig.Build(pod, withLocal, "/s", "/c", "/p", null, null, null, false);
+        Expect(on["local_only"]?.Type == JTokenType.Boolean && (bool)on["local_only"]! && !(bool)off["local_only"]!
+            && (string?)on["credentials_dir"] == "/c", "a rig that takes local_only gets the setting, with credentials_dir kept");
+        Expect(rigKeys.Contains("local_only") || RigOpenConfig.Build(pod, rigKeys, "/s", "/c", "/p", null, null, null, true)["local_only"] == null,
+            "a rig whose list lacks local_only never gets it");
+
         // A key the rig list lacks is never sent: Build throws instead.
         var narrow = new System.Collections.Generic.HashSet<string>(rigKeys);
         narrow.Remove("max_episode_seconds");
