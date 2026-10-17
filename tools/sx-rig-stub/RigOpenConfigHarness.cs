@@ -21,16 +21,16 @@ static class RigOpenConfigHarness
         var stale = RigOpenConfig.PolicyKeysUnknownToRig(rigKeys);
         Expect(stale.Length == 0, "every key the app's policy sends is in the rig's list" + (stale.Length > 0 ? ": " + string.Join(",", stale) : ""));
 
-        var pod = JObject.Parse("{\"headset_serial\":\"3487C10H9W0C59\",\"operator_id\":\"bench-operator\",\"local_only\":true," +
+        var pod = JObject.Parse("{\"headset_serial\":\"3487C10H9W0C59\",\"operator_id\":\"operator-01\",\"local_only\":true," +
             "\"factory_url\":\"https://app.sentientx.io/d/factory/\",\"auth_url\":\"https://app.sentientx.io/d/auth/\"," +
             "\"rig_type_id\":\"rig_yubi\",\"max_episode_seconds\":300,\"pod_name\":null}");
         Expect(RigOpenConfig.UnknownPodConfigKeys(pod, rigKeys).Length == 0, "a valid pod_config.json has no unknown keys");
-        var typo = JObject.Parse("{\"operator_id\":\"x\",\"max_episode_secs\":300,\"staging_dir\":\"/elsewhere\",\"provisioned_by\":\"bench\"}");
+        var typo = JObject.Parse("{\"operator_id\":\"x\",\"max_episode_secs\":300,\"staging_dir\":\"/elsewhere\",\"provisioned_by\":\"factory\"}");
         var unknown = RigOpenConfig.UnknownPodConfigKeys(typo, rigKeys);
         Expect(unknown.Contains("max_episode_secs") && unknown.Contains("staging_dir") && unknown.Contains("provisioned_by") && !unknown.Contains("operator_id"),
             "a misspelled key, an app-set key and a foreign key are reported: " + string.Join(",", unknown));
 
-        var rig = JObject.Parse("{\"profile\":\"bench\",\"binding\":\"identity\",\"rig_id\":\"bench-quest3s\"}");
+        var rig = JObject.Parse("{\"rig_id\":\"yubi-06\"}");
         var local = RigOpenConfig.Build(pod, rigKeys, "/s", "/c", "/p/pod_config.json", "/m", "100.64.0.9", rig, localOnly: true);
         var keys = local.Properties().Select(p => p.Name).ToArray();
         Expect(keys.All(rigKeys.Contains), "every key sent is in the rig's list: " + string.Join(",", keys));
@@ -38,7 +38,7 @@ static class RigOpenConfigHarness
         Expect(local["factory_url"] == null && local["auth_url"] == null && local["rig_type_id"] == null, "Local only drops the site");
         Expect((string?)local["headset_serial"] == "3487C10H9W0C59" && (int)local["max_episode_seconds"]! == 300 && local["pod_name"] == null,
             "rig settings are kept, a null one is not passed");
-        Expect((string?)local["rig"]!["rig_id"] == "bench-quest3s" && (string?)local["embodiment_assets_dir"] == "/m"
+        Expect((string?)local["rig"]!["rig_id"] == "yubi-06" && (string?)local["embodiment_assets_dir"] == "/m"
             && (string?)local["pod_config_path"] == "/p/pod_config.json" && (string?)local["tailscale_ip"] == "100.64.0.9",
             "rig, meshes, pod_config_path and the tailnet address are passed");
         var site = RigOpenConfig.Build(pod, rigKeys, "/s", "/c", "/p", null, null, null, localOnly: false);

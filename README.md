@@ -190,8 +190,8 @@ any rig USB device is on the bus; with neither, nothing below happens and record
 * `POST /api/stop-recording` returns the rig's stop receipt as `"rig"` (and writes it to
   `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
 * **Local mode (no Factory).** With no `factory_url` in `pod_config.json` the headset records on
-  its own: put the rig in `rig_config.json` (roles, identities, calibration, and the seal profile
-  the rig defines; passed through as the open config's `rig`), and `operator_id` in
+  its own: put the YUBI rig in `rig_config.json` (its roles, identities and calibration, in the
+  shape the rig defines; passed through as the open config's `rig`), and `operator_id` in
   `pod_config.json` if start bodies will not carry one. Nothing asks for enrollment or sign-in.
   `POST /api/start-recording` and `/api/stop-recording` record episode after episode; each stop
   seals that episode on the headset (`rig_staging/<session>/episode.mcap` + `seal.json`).
@@ -211,55 +211,6 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   refusal with the session as `file`. A storage refusal is `507` with the rig's numbers under
   `rig.refusal` (`free_bytes`, `required_bytes`, `episode_bytes`, `backlog_bytes`,
   `backlog_episodes`, `max_episode_seconds`); every refusal plays the refused cue.
-* **Bench test rig (local mode).** Two Sonix test cameras (05a3:9230) and two ESP32-C6
-  encoders through a powered hub, no Factory. A bench rig binds by identity and **requires all
-  four calibration files** (`left.json`, `right.json` with `camera_identity` `usb_port`;
-  `left.mount.json`, `right.mount.json` with `device_id` = that side's encoder
-  `usb-serial:<MAC>`); without them the rig refuses to open (`calibration_missing`). The URDF
-  is the packaged embodiment's (`yubi_description/urdf/yubi_hands.urdf`, shipped in the APK).
-  The test cameras have no readable flash UID, so they are identified by their physical USB
-  port path, which stays the same across replugs into the same hub port.
-
-  1. Read the port paths first. Push `pod_config.json` with no `rig_config.json`; the rig opens
-     with the devices plugged in and reports each one:
-
-     ```bash
-     files=/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
-     serial=$(adb shell getprop ro.serialno | tr -d '\r')
-     # No factory_url: records and seals locally. operator_id names the collector.
-     printf '{"headset_serial":"%s","operator_id":"<operator>"}\n' "$serial" > pod_config.json
-     adb push pod_config.json "$files/pod_config.json"
-     adb shell rm -f "$files/rig_config.json"
-     # restart the app, then:
-     curl -s http://<headset>:8080/api/status | jq '.rig.native.devices[] | {port, identity}'
-     ```
-
-  2. Generate the calibration for those ports and MACs and build `rig_config.json`:
-     `{"profile":"bench","binding":"identity","rig_id":"bench-<name>","roles":{"left_camera":
-     "usb-port:<path>","right_camera":"usb-port:<path>","left_encoder":"usb-serial:<MAC>",
-     "right_encoder":"usb-serial:<MAC>"},"calibration":{"left.json":"…","right.json":"…",
-     "left.mount.json":"…","right.mount.json":"…"}}`. `tools/rig_config.bench.json` is this
-     bench's (`bench-quest3s`: cameras on hub ports 1-1.1 / 1-1.2), generated with its measured
-     calibration.
-
-  3. Push it and restart the app:
-     `adb push tools/rig_config.bench.json "$files/rig_config.json"`. `/api/status` →
-     `rig.open` true, four devices attached; bench episodes seal under the bench profile.
-* **Local only (default on).** `pod_config.json` `local_only` (default `true`): the headset never
-  contacts the Factory (no enrollment, sign-in, commands or uplink, even with a `factory_url`)
-  and the rig records and seals in local mode. Toggle it in the in-headset recordings menu (the
-  "Local only" row at the top of the list) or with `POST /api/settings {"local_only": bool}`
-  (409 while recording); `/api/status` shows `local_only`. The cloud relay (FieldData Pro) is a
-  separate channel and is not affected. With Local only on, `/api/enroll`, `/api/sign-in`,
-  `/api/sign-out` and `/api/command` answer `409 local_only`.
-* **Recordings list in the headset** shows each recording's rig outcome next to its size:
-  `sealed 45.2 MB`, `pending: <why>`, or `refused: <reason>`.
-* **A rig episode failing mid-recording** (a camera gap over the law, a device dropping out) is
-  caught by the status poll within about a second: the refused buzz plays, the recording stops
-  through the normal stop path (the rig's stop receipt, `rig_stop_receipt.json`, says
-  `outcome: failed` with `cause`/`failure_cause`), and `rig_refusal.json` records
-  `rig_episode_failed` with the rig's detail. `GET /api/recordings` lists both (`rigRefusal`,
-  `rigStop`). The next menu-button press starts a new episode.
 * **Controls.** The operator wears the headset on the forehead and never sees the display. The
   **left controller's menu button** (three lines) starts a recording and, pressed again, stops it
   (the same path as `POST /api/start-recording` / `/api/stop-recording`, with the operator from
