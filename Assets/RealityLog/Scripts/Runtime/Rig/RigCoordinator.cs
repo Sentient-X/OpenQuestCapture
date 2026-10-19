@@ -388,7 +388,14 @@ namespace RealityLog.Rig
                 ApkBuildIdKnown = apkBuildId.Length > 0,
                 CollectorReady = !enrolled || localOnly || CollectorSignedIn(SafeStatus()) != false,
             };
-            return RigStartGate.Evaluate(facts, SxRig.RunCheck, report => lastCheckJson = report);
+            var decision = RigStartGate.Evaluate(facts, SxRig.RunCheck, report => lastCheckJson = report);
+            // The API is closed to anyone without the pod token once enrolled, so a refused start
+            // says why in the log as well (the check's problems name devices, never a secret).
+            if (decision is { } refused)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: start refused: {refused.Code}: {refused.Message}");
+            }
+            return decision;
         }
 
         /// <summary>Cancels a reservation whose OQC start did not happen.</summary>
@@ -490,6 +497,9 @@ namespace RealityLog.Rig
         /// the rig opens in local mode. Any thread.
         /// </summary>
         public bool LocalOnly => localOnly;
+
+        /// <summary>True when this headset holds a machine credential: it is enrolled as a pod.</summary>
+        public bool Enrolled => enrolled;
 
         /// <summary>
         /// Main thread: sets local_only in pod_config.json and reopens the rig with the new

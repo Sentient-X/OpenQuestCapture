@@ -32,7 +32,18 @@ namespace RealityLog.Rig
         public string FactoryUrl { get; private set; } = PodSetupJson.DefaultFactoryUrl;
         public string AuthUrl { get; private set; } = PodSetupJson.DefaultAuthUrl;
         public string JoinCode { get; private set; } = "";
-        public string Status { get; private set; } = "Not set up: scan the console's QR code, or type the join code.";
+        /// <summary>
+        /// What the panel says: the last step taken here, else whether this headset is
+        /// enrolled already (it holds a machine credential from an earlier launch).
+        /// </summary>
+        public string Status
+        {
+            get => status ?? (RigCoordinator.Instance is { Enrolled: true } rig
+                ? "Enrolled as a pod. Local only is " + (rig.LocalOnly ? "on" : "off") + ". Scan a new code only to enroll again."
+                : "Not set up: scan the console's QR code, or type the join code.");
+            private set => status = value;
+        }
+        private string? status;
         public bool Busy => scanning || enrolling;
         public bool Scanning => scanning;
 
