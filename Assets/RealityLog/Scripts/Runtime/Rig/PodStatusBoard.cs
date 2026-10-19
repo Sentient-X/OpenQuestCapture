@@ -255,7 +255,7 @@ namespace RealityLog.Rig
             if (Bool(status, "enrolled") != true) return "Task: none (not enrolled)";
             if (Bool(status, "localOnly") ?? true) return "Task: none (Local only records without one)";
             if (status?["floor"] is not JObject floor) return "Task: unknown until the Factory answers";
-            if (floor["collection"] is not JObject collection) return "Task: no collection open; the first start opens the assigned task's";
+            if (floor["collection"] is not JObject collection) return "Task: no collection open yet; a start opens the assigned one";
             var state = Str(collection["status"]).Replace('_', ' ');
             var episodes = collection["episodes"] is JArray list ? list.Count : 0;
             return "Task: collection " + (state.Length > 0 ? state : "open") + ", " + episodes

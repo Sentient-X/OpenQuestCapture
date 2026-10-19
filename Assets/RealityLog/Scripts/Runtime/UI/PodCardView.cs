@@ -219,8 +219,9 @@ namespace RealityLog.UI
             Set(scanText, setup is { Scanning: true } ? "Cancel scan" : "Scan QR");
             scanImage.color = enrolled ? SecondaryColor : PrimaryColor;
             Set(localText, localOnly ? "Local only: On" : "Local only: Off");
-            localImage.color = localOnly ? SecondaryColor : FieldColor;
-            localText.color = localOnly ? Color.white : DimTextColor;
+            // A live toggle in either state, styled like the other secondary pills.
+            localImage.color = SecondaryColor;
+            localText.color = Color.white;
 
             Set(manualText, expanded ? "Hide setup" : "Set up manually");
             Show(manual, expanded && setup != null);
