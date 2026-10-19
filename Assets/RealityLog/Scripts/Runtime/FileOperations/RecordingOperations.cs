@@ -28,11 +28,15 @@ namespace RealityLog.FileOperations
         {
             try
             {
-                string fullPath = Path.Join(Application.persistentDataPath, directoryName);
-                
-                if (!Directory.Exists(fullPath))
+                // The one delete rule (RecordingDeletePolicy): a session dir only, never
+                // rig_staging, nothing whose rig episode is unsettled, and a sealed one only
+                // with a confirmation the menu does not give (use the HTTP API's confirm).
+                var (verdict, message, fullPath) =
+                    RecordingDeletePolicy.Check(Application.persistentDataPath, directoryName, confirm: null);
+                if (verdict != DeleteVerdict.Allowed || fullPath == null)
                 {
-                    OnOperationComplete?.Invoke("Delete", false, $"Directory not found: {directoryName}");
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingOperations: refused to delete {directoryName}: {verdict}: {message}");
+                    OnOperationComplete?.Invoke("Delete", false, message);
                     return;
                 }
 

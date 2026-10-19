@@ -6,10 +6,13 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using RealityLog.Common;
 using RealityLog.Core;
 using RealityLog.FileOperations;
+using RealityLog.Rig;
 using RealityLog.UI;
 
 namespace RealityLog.Network
@@ -102,6 +105,20 @@ namespace RealityLog.Network
         {
             server?.ProcessMainThreadQueue();
 
+            // A rig episode that fails while recording stops the recording (once subscribed).
+            if (!rigFailureSubscribed && RigCoordinator.Instance is { } rigForEvents)
+            {
+                rigForEvents.EpisodeFailed += OnRigEpisodeFailed;
+                rigFailureSubscribed = true;
+            }
+
+            // The left controller's menu button (three lines; in OpenXR the app's menu button,
+            // never the system one, which is the right Oculus button) toggles recording.
+            if (OVRInput.GetDown(OVRInput.Button.Start, OVRInput.Controller.LTouch))
+            {
+                OnMenuButton();
+            }
+
             // Refresh cached values on main thread (safe for JNI)
             cachedIsRecording = recordingManager != null && recordingManager.IsRecording;
             cachedDuration = recordingManager != null ? recordingManager.RecordingDuration : 0f;
@@ -165,14 +182,175 @@ namespace RealityLog.Network
             // HeadTrackingMonitor tracks the pause itself (app.paused in /api/status).
         }
 
+        // ── A rig episode failing mid-recording ──
+
+        private bool rigFailureSubscribed;
+
+        /// <summary>
+        /// Main thread, once per failed rig episode (the refused cue has played): records the
+        /// failure beside the session as rig_refusal.json (GET /api/recordings shows it as
+        /// rigRefusal, the in-headset list as "refused: ...") and stops the recording through
+        /// the same path as POST /api/stop-recording, which writes the rig's stop receipt
+        /// (outcome failed, cause, failure_cause). The recording then reads idle, so the next
+        /// menu-button press starts a new episode.
+        /// </summary>
+        private void OnRigEpisodeFailed(string session, JObject failure)
+        {
+            var refusal = new JObject
+            {
+                ["code"] = "rig_episode_failed",
+                ["message"] = "the rig's episode failed while recording: " + RigStatusJson.FailureDetail(failure),
+                ["detail"] = failure,
+            };
+            WriteSessionJson(session, "rig_refusal.json", refusal.ToString(Formatting.None));
+            if (recordingManager == null || !recordingManager.IsRecording
+                || recordingManager.CurrentSessionDirectory != session)
+            {
+                return;
+            }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var response = HandleStopRecording(new HttpRequest { Method = "POST", Path = "/api/stop-recording", Body = "{}" });
+                    Debug.Log($"[{Constants.LOG_TAG}] rig-failure stop -> {response.StatusCode} {response.Body}");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] rig-failure stop failed: {ex}");
+                }
+            });
+        }
+
+        // ── POST /api/settings ──
+
+        /// <summary>
+        /// <c>{"local_only": bool}</c>: Local only (default true) keeps the headset off the
+        /// Factory and the rig in local mode. Answers the settings. 400 invalid_body, 409
+        /// recording, 503 when the main thread does not take it.
+        /// </summary>
+        private HttpResponse HandleSettings(HttpRequest request)
+        {
+            JObject? fields = null;
+            try
+            {
+                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "null" : request.Body) as JObject;
+            }
+            catch (JsonException)
+            {
+            }
+            if (fields?["local_only"] is not JValue { Type: JTokenType.Boolean } flag)
+            {
+                return TypedError(400, "invalid_body", "the body must be {\"local_only\": true|false}");
+            }
+            if (recordingManager is not null && recordingManager.State != RecordingState.Idle)
+            {
+                return TypedError(409, "recording", "stop the recording before changing settings");
+            }
+            var rig = RigCoordinator.Instance;
+            if (rig is null)
+            {
+                return TypedError(503, "settings_failed", "the rig coordinator is not running");
+            }
+            string? error = null;
+            var signal = server!.EnqueueOnMainThread(() => error = rig.SetLocalOnly((bool)flag));
+            if (!signal.Wait(5000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not apply the setting within 5 s");
+            }
+            if (error != null)
+            {
+                return TypedError(409, "settings_failed", error);
+            }
+            return HttpResponse.Ok("{\"local_only\":" + (rig.LocalOnly ? "true" : "false") + "}");
+        }
+
+        // ── Left menu button: start / stop recording ──
+
+        // 1 while a menu-button start or stop runs; presses meanwhile are ignored (a start arms
+        // the rig for ~3.5 s).
+        private int menuBusy;
+
+        /// <summary>
+        /// Starts or stops a recording exactly as POST /api/start-recording (rig check, OQC
+        /// session first, sx_rig_start_armed) or /api/stop-recording does, with an empty body,
+        /// so operator_id comes from pod_config.json. Runs on a worker thread, since a start
+        /// waits on the main thread and on the rig. The operator never sees the display:
+        /// every outcome is a sound (start rises, stop falls, refused buzzes).
+        /// </summary>
+        private void OnMenuButton()
+        {
+            if (server == null || recordingManager == null)
+            {
+                return;
+            }
+            var state = recordingManager.State;
+            if (state == RecordingState.Stopping || Interlocked.CompareExchange(ref menuBusy, 1, 0) != 0)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] menu-button ignored: a start or stop is in progress");
+                return;
+            }
+            var start = state == RecordingState.Idle;
+            var rigExpected = RigCoordinator.Instance is { } r && r.IsExpected;
+            Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")}");
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var request = new HttpRequest
+                    {
+                        Method = "POST",
+                        Path = start ? "/api/start-recording" : "/api/stop-recording",
+                        Body = "{}",
+                    };
+                    var response = start ? RecordStart(HandleStartRecording(request)) : HandleStopRecording(request);
+                    var ok = response.StatusCode is >= 200 and < 300;
+                    Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} -> {response.StatusCode} {response.Body}");
+                    // The rig path cues its own start, stop and refusals (rig_not_ready); every
+                    // other outcome is cued here.
+                    var cue = (ok, start) switch
+                    {
+                        (true, true) when !rigExpected => RigCues.Cue.Start,
+                        (true, false) when !rigExpected => RigCues.Cue.Stop,
+                        (false, _) when !(response.Body ?? "").Contains("\"rig_not_ready\"") => RigCues.Cue.Refused,
+                        _ => (RigCues.Cue?)null,
+                    };
+                    if (cue is RigCues.Cue play && RigCoordinator.Instance is { } rig)
+                    {
+                        rig.QueueCue(play);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} failed: {ex}");
+                    RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+                }
+                finally
+                {
+                    Volatile.Write(ref menuBusy, 0);
+                }
+            });
+        }
+
         // ── Route registration ──
 
         private void RegisterRoutes()
         {
             if (server == null) return;
 
+            // An enrolled headset that is not Local only requires the rig's bearer token on every
+            // request; Local only (or not enrolled yet) keeps the open LAN API.
+            server.Guard = request =>
+            {
+                var rig = RigCoordinator.Instance;
+                if (rig is null) return null;
+                request.Headers.TryGetValue("Authorization", out var authorization);
+                return RigApiGuard.Authorized(authorization, rig.ApiToken, rig.LocalOnly)
+                    ? null
+                    : TypedError(401, "unauthorized", "this headset is enrolled: send Authorization: Bearer <api token>");
+            };
             server.Get("/api/status", HandleStatus);
-            server.Post("/api/start-recording", HandleStartRecording);
+            server.Post("/api/start-recording", request => RecordStart(HandleStartRecording(request)));
             server.Post("/api/stop-recording", HandleStopRecording);
             server.Get("/api/recordings", HandleListRecordings);
             server.WildcardGet("/api/recordings/", HandleStreamRecording);
@@ -181,6 +359,11 @@ namespace RealityLog.Network
             server.Post("/api/keep-awake", HandleKeepAwake);
             server.Get("/api/diagnostics", HandleDiagnostics);
             server.Post("/api/timesync/ping", HandleTimesyncPing);
+            server.Post("/api/enroll", HandleEnroll);
+            server.Post("/api/sign-in", HandleSignIn);
+            server.Post("/api/sign-out", HandleSignOut);
+            server.Post("/api/command", HandleCommand);
+            server.Post("/api/settings", HandleSettings);
         }
 
         // ── GET /api/status ──
@@ -234,6 +417,8 @@ namespace RealityLog.Network
                 $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
                 $"  \"controllers\": {HeadTrackingMonitor.ControllersJson("  ")},\n" +
+                $"  \"local_only\": {(RigCoordinator.Instance is { } settingsRig ? (settingsRig.LocalOnly ? "true" : "false") : "true")},\n" +
+                $"  \"rig\": {RigCoordinator.StatusJsonOrDefault},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"uptimeMs\": {uptimeMs}\n" +
                 "}";
@@ -243,6 +428,16 @@ namespace RealityLog.Network
 
         // ── POST /api/start-recording ──
 
+        /// <summary>
+        /// Notes a start's answer for the recordings menu's Pod card (the last refusal,
+        /// cleared by a start that succeeds); the answer itself is unchanged.
+        /// </summary>
+        private static HttpResponse RecordStart(HttpResponse response)
+        {
+            PodStartLog.Shared.Record(response.StatusCode, response.Body, DateTime.Now);
+            return response;
+        }
+
         private HttpResponse HandleStartRecording(HttpRequest request)
         {
             if (HeadTrackingMonitor.AppPaused)
@@ -250,11 +445,57 @@ namespace RealityLog.Network
                 return AppPausedResponse();
             }
 
+            // The wrist rig, when expected, on this HTTP worker thread (its calls take seconds and
+            // must not block Unity's main thread): (1) sx_rig_check and reserve the session name;
+            // (2) OQC's session starts on the main thread under that name; (3) sx_rig_start_armed
+            // arms every stream and anchors the episode once all deliver, inside OQC's recording,
+            // which keeps running until the rig stops after it. A refused arming stops OQC's
+            // session again and answers the typed refusal.
+            var rig = RigCoordinator.Instance;
+            string? reservedSession = null;
+            string operatorForRig = "";
+            string? taskForRig = null;
+            string? modeForRig = null;
+            if (rig is not null && rig.IsExpected)
+            {
+                if (recordingManager is not null && recordingManager.State != RecordingState.Idle)
+                {
+                    return AlreadyRecordingResponse();
+                }
+                // The rig's seal names the operator; a headset pod's start must carry one.
+                if (StartBodyOperatorId(request.Body, rig.DefaultOperatorId, out var bodyError) is not string operatorId)
+                {
+                    return bodyError!;
+                }
+                if (!StartBodyCollection(request.Body, out var taskAssignmentId, out var mode, out var collectionError))
+                {
+                    return collectionError!;
+                }
+                // The rig takes part (decided once, here): the check runs and must pass.
+                var session = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                if (rig.CheckAndReserve(session) is RigRefusal checkRefusal)
+                {
+                    return RigRefusalResponse(rig, checkRefusal);
+                }
+                reservedSession = session;
+                operatorForRig = operatorId;
+                taskForRig = taskAssignmentId;
+                modeForRig = mode;
+            }
+            void DisarmUnlessStarted()
+            {
+                if (reservedSession != null && rig is not null)
+                {
+                    rig.Unreserve(reservedSession);
+                }
+            }
+
             bool alreadyRecording = false;
             bool success = false;
             bool storageFull = false;
             long freeBytes = 0;
             string? errorMessage = null;
+            RigRefusal? rigRefusal = null;
             // 0 = pending, 1 = the main thread took the start, 2 = this thread gave up on it.
             int claim = 0;
 
@@ -302,6 +543,11 @@ namespace RealityLog.Network
 
                     success = true;
                 }
+                catch (RigRefusedException ex)
+                {
+                    rigRefusal = ex.Refusal;
+                    errorMessage = ex.Message;
+                }
                 catch (Exception ex)
                 {
                     errorMessage = ex.Message;
@@ -312,6 +558,7 @@ namespace RealityLog.Network
             {
                 if (Interlocked.CompareExchange(ref claim, 2, 0) == 0)
                 {
+                    DisarmUnlessStarted();
                     return MainThreadTimeoutResponse("Main thread did not run the start within 5 s; recording was not started");
                 }
                 // The start began just as the wait ran out; give it time to finish.
@@ -321,6 +568,11 @@ namespace RealityLog.Network
                 }
             }
 
+            if (!success)
+            {
+                DisarmUnlessStarted();
+            }
+
             if (storageFull)
             {
                 return HttpResponse.StorageFull(freeBytes, minFreeStorageBytes);
@@ -328,12 +580,12 @@ namespace RealityLog.Network
 
             if (alreadyRecording)
             {
-                return HttpResponse.Json(409,
-                    "{\n" +
-                    $"  \"error\": \"already_recording\",\n" +
-                    $"  \"message\": \"Recording is already in progress\",\n" +
-                    $"  \"currentFile\": \"{EscapeJson(currentRecordingFile ?? "unknown")}\"\n" +
-                    "}");
+                return AlreadyRecordingResponse();
+            }
+
+            if (rigRefusal != null)
+            {
+                return RigNotReadyResponse(rigRefusal);
             }
 
             if (!success)
@@ -341,10 +593,49 @@ namespace RealityLog.Network
                 return HttpResponse.InternalError(errorMessage ?? "Failed to start recording");
             }
 
+            // (3) OQC records; the rig arms and anchors the episode inside that recording.
+            string rigStartJson = "null";
+            if (reservedSession != null && rig is not null)
+            {
+                var (started, armRefusal) = rig.StartArmed(reservedSession, operatorForRig, taskForRig, modeForRig);
+                if (armRefusal != null)
+                {
+                    // No episode without the rig: stop OQC's session again (its files stay, with
+                    // the refusal beside them) and answer the refusal.
+                    var stopped = server!.EnqueueOnMainThread(() =>
+                    {
+                        try
+                        {
+                            if (recordingManager != null && recordingManager.IsRecording
+                                && recordingManager.CurrentSessionDirectory == reservedSession)
+                            {
+                                recordingManager.StopRecording();
+                                currentRecordingFile = null;
+                                currentRecordingStartedAt = null;
+                                currentRecordingStartMs = 0;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: stop after a refused arming: {ex}");
+                        }
+                    });
+                    stopped.Wait(5000);
+                    WriteSessionJson(reservedSession, "rig_refusal.json", armRefusal.ToJson());
+                    return RigRefusalResponse(rig, armRefusal, reservedSession);
+                }
+                rigStartJson = started ?? "null";
+                WriteSessionJson(reservedSession, "rig_start.json", rigStartJson);
+                rig.QueueCue(RigCues.Cue.Start); // the operator cannot see the display
+            }
+
             var json = "{\n" +
                 $"  \"status\": \"recording\",\n" +
                 $"  \"file\": \"{EscapeJson(currentRecordingFile ?? "")}\",\n" +
-                $"  \"startedAt\": \"{EscapeJson(currentRecordingStartedAt ?? "")}\"\n" +
+                $"  \"startedAt\": \"{EscapeJson(currentRecordingStartedAt ?? "")}\",\n" +
+                // The rig's anchors are the episode's start: episode_id, monotonic_anchor_ns,
+                // utc_anchor_ns, arm_utc_anchor, arming_ms.
+                $"  \"rig\": {rigStartJson}\n" +
                 "}";
 
             return HttpResponse.Ok(json);
@@ -367,6 +658,7 @@ namespace RealityLog.Network
             string? startedAt = null;
             long stopDurationMs = -1;
             string? streamsJson = null;
+            string? rigReceiptJson = null;
 
             // Show the stop in /api/status (recording.state) before the main thread reaches it.
             var manager = recordingManager;
@@ -398,6 +690,7 @@ namespace RealityLog.Network
                     recordingManager.StopRecording();
                     stopDurationMs = recordingManager.LastStopDurationMs;
                     streamsJson = recordingManager.LastStreamManifestJson;
+                    rigReceiptJson = recordingManager.LastRigStopReceiptJson;
 
                     // Clear recording state
                     currentRecordingFile = null;
@@ -472,7 +765,8 @@ namespace RealityLog.Network
                 $"  \"startedAt\": \"{EscapeJson(startedAt ?? "")}\",\n" +
                 $"  \"stoppedAt\": \"{EscapeJson(stoppedAt)}\",\n" +
                 $"  \"stopDurationMs\": {stopDurationMs},\n" +
-                $"  \"streams\": {streamsJson ?? "null"}\n" +
+                $"  \"streams\": {streamsJson ?? "null"},\n" +
+                $"  \"rig\": {rigReceiptJson ?? "null"}\n" +
                 "}";
 
             return HttpResponse.Ok(json);
@@ -504,13 +798,19 @@ namespace RealityLog.Network
                     if (sidecarMeta != null) metaJson = sidecarMeta;
                 }
 
+                var (sealJson, mcapJson) = RigEpisodeArtifacts(rec.DirectoryName);
                 items.Add(
                     "    {\n" +
                     $"      \"file\": \"{EscapeJson(rec.DirectoryName)}\",\n" +
                     $"      \"durationMs\": {(int)(rec.DurationSeconds * 1000)},\n" +
                     $"      \"fileSizeBytes\": {rec.SizeBytes},\n" +
                     $"      \"createdAt\": \"{rec.CreationTime:O}\",\n" +
-                    $"      \"metadata\": {metaJson}\n" +
+                    $"      \"metadata\": {metaJson},\n" +
+                    $"      \"seal\": {sealJson},\n" +
+                    $"      \"rigRefusal\": {SessionJsonOrNull(rec.DirectoryName, "rig_refusal.json")},\n" +
+                    $"      \"rigStop\": {SessionJsonOrNull(rec.DirectoryName, "rig_stop_receipt.json")},\n" +
+                    $"      \"interrupted\": {(SessionRecovery.IsInterrupted(Path.Combine(cachedDataPath, rec.DirectoryName)) ? "true" : "false")},\n" +
+                    $"      \"episodeMcap\": {mcapJson}\n" +
                     "    }");
             }
 
@@ -524,11 +824,66 @@ namespace RealityLog.Network
             return HttpResponse.Ok(json);
         }
 
-        // ── GET /api/recordings/:filename[?camera=left|right] ──
+        /// <summary>
+        /// The rig's verdict for a session (its seal.json: state sealed | refused | pending,
+        /// detail, sha256, size_bytes, frames, build) and its sealed episode.mcap
+        /// (<c>{"path", "sizeBytes", "download"}</c>), each "null" when absent (a recording
+        /// without the rig, or a seal still to come).
+        /// </summary>
+        private (string seal, string mcap) RigEpisodeArtifacts(string session)
+        {
+            var directory = RigCoordinator.EpisodeDirectory(cachedDataPath, session);
+            var seal = "null";
+            var mcap = "null";
+            try
+            {
+                var sealPath = Path.Combine(directory, "seal.json");
+                if (File.Exists(sealPath))
+                {
+                    seal = JToken.Parse(File.ReadAllText(sealPath)).ToString(Formatting.None);
+                }
+                var mcapPath = Path.Combine(directory, "episode.mcap");
+                if (File.Exists(mcapPath))
+                {
+                    mcap = new JObject
+                    {
+                        ["path"] = mcapPath,
+                        ["sizeBytes"] = new FileInfo(mcapPath).Length,
+                        ["download"] = $"/api/recordings/{session}?artifact=mcap",
+                    }.ToString(Formatting.None);
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                seal = new JObject { ["state"] = "unreadable", ["detail"] = ex.Message }.ToString(Formatting.None);
+            }
+            return (seal, mcap);
+        }
+
+        // ── GET /api/recordings/:filename[?camera=left|right | ?artifact=mcap] ──
 
         private HttpResponse HandleStreamRecording(HttpRequest request)
         {
             var filename = request.PathParam;
+
+            // The rig's sealed episode.mcap, through the same ranged file response.
+            if (request.QueryParams.TryGetValue("artifact", out var artifact) && !string.IsNullOrEmpty(artifact))
+            {
+                if (artifact != "mcap")
+                {
+                    return HttpResponse.BadRequest($"Unknown artifact '{artifact}' — expected 'mcap'");
+                }
+                if (!RecordingDirPattern.IsMatch(filename))
+                {
+                    return HttpResponse.BadRequest($"Invalid recording name: {filename}");
+                }
+                var mcapPath = Path.Combine(RigCoordinator.EpisodeDirectory(cachedDataPath, filename), "episode.mcap");
+                if (!File.Exists(mcapPath))
+                {
+                    return HttpResponse.NotFound($"No sealed episode.mcap for {filename}");
+                }
+                return HttpResponse.File(mcapPath, "application/octet-stream");
+            }
 
             // Default to the left stream so existing clients keep getting the same file.
             var camera = "left";
@@ -584,12 +939,24 @@ namespace RealityLog.Network
                 return HttpResponse.Conflict("recording_in_progress", "Cannot delete file that is currently being recorded");
             }
 
-            // Application.persistentDataPath is a Unity API; this runs on the HTTP thread.
-            var dirPath = Path.Combine(cachedDataPath, filename);
-            if (!Directory.Exists(dirPath))
+            // The one delete rule (RecordingDeletePolicy): only a session directory (never
+            // rig_staging, the config or the credentials), not while its rig episode is
+            // unsettled, and a sealed one only with ?confirm=<episode_id>.
+            request.QueryParams.TryGetValue("confirm", out var confirm);
+            var (verdict, refusal, allowedPath) = RecordingDeletePolicy.Check(cachedDataPath, filename, confirm);
+            switch (verdict)
             {
-                return HttpResponse.NotFound("Recording not found");
+                case DeleteVerdict.InvalidName:
+                    return TypedError(400, "invalid_name", refusal);
+                case DeleteVerdict.NotFound:
+                    return HttpResponse.NotFound(refusal);
+                case DeleteVerdict.RigUnsettled:
+                    return TypedError(409, "rig_episode_unsettled", refusal);
+                case DeleteVerdict.NeedsConfirm:
+                    var body = new JObject { ["error"] = "confirm_required", ["message"] = refusal, ["episode_id"] = filename };
+                    return HttpResponse.Json(409, body.ToString(Formatting.None));
             }
+            var dirPath = allowedPath!;
 
             long freedBytes = 0;
             try
@@ -1107,6 +1474,402 @@ namespace RealityLog.Network
         // it is refused at once instead of timing out.
         private static HttpResponse AppPausedResponse() => ServiceUnavailable("app_paused",
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
+
+        /// <summary>
+        /// operator_id of a start body (a non-empty string), else pod_config.json's, or null
+        /// with the typed 400 to answer: invalid_body for a body that is not a JSON object,
+        /// operator_id_required.
+        /// </summary>
+        private static string? StartBodyOperatorId(string body, string? defaultOperatorId, out HttpResponse? error)
+        {
+            error = null;
+            JObject? fields = null;
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                try
+                {
+                    fields = JToken.Parse(body) as JObject;
+                }
+                catch (JsonException)
+                {
+                }
+                if (fields == null)
+                {
+                    error = TypedError(400, "invalid_body", "the start-recording body is not a JSON object");
+                    return null;
+                }
+            }
+            if (fields?["operator_id"] is JValue { Type: JTokenType.String } value
+                && ((string?)value)?.Trim() is { Length: > 0 } operatorId)
+            {
+                return operatorId;
+            }
+            // A local headset may name its operator once, in pod_config.json.
+            if (defaultOperatorId != null)
+            {
+                return defaultOperatorId;
+            }
+            error = TypedError(400, "operator_id_required",
+                "the wrist rig is configured, enrolled or plugged in, so the start body must carry operator_id (a non-empty string) for the episode's seal");
+            return null;
+        }
+
+        /// <summary>
+        /// The optional collection fields of a start body: task_assignment_id (a non-empty
+        /// string) and mode ("directed" | "undirected"). False with a typed 400 when either is
+        /// present and malformed. The body is already known to be a JSON object or empty.
+        /// </summary>
+        private static bool StartBodyCollection(string body, out string? taskAssignmentId,
+            out string? mode, out HttpResponse? error)
+        {
+            taskAssignmentId = null;
+            mode = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(body) || JToken.Parse(body) is not JObject fields)
+            {
+                return true;
+            }
+            if (fields["task_assignment_id"] is JToken task && task.Type != JTokenType.Null)
+            {
+                if (task.Type != JTokenType.String || ((string?)task)?.Trim() is not { Length: > 0 } id)
+                {
+                    error = TypedError(400, "invalid_body", "task_assignment_id must be a non-empty string");
+                    return false;
+                }
+                taskAssignmentId = id;
+            }
+            if (fields["mode"] is JToken modeToken && modeToken.Type != JTokenType.Null)
+            {
+                var value = modeToken.Type == JTokenType.String ? (string?)modeToken : null;
+                if (value != "directed" && value != "undirected")
+                {
+                    error = TypedError(400, "invalid_body", "mode must be \"directed\" or \"undirected\"");
+                    return false;
+                }
+                mode = value;
+            }
+            return true;
+        }
+
+        // ── POST /api/sign-in, /api/sign-out, /api/command ──
+
+        private static readonly HashSet<string> CollectorCommands = new()
+        {
+            "review_success", "review_failure", "end_collection", "finalize", "close_failed_collection",
+        };
+
+        /// <summary>
+        /// Starts the collector's sign-in on an enrolled headset and answers
+        /// <c>{"status":"pending","user_code","verification_uri_complete","expires_in"}</c>. The
+        /// operator cannot see the headset, so the caller shows the code; the headset chimes when
+        /// the approval lands and /api/status rig.floor.operator.signed_in turns true.
+        /// </summary>
+        private HttpResponse HandleSignIn(HttpRequest request)
+        {
+            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
+            try
+            {
+                var shown = JObject.Parse(rig!.SignIn());
+                shown["status"] = "pending";
+                return HttpResponse.Ok(shown.ToString(Formatting.None));
+            }
+            catch (SxRigException ex)
+            {
+                return RigCallError("sign_in_failed", ex);
+            }
+            catch (JsonException ex)
+            {
+                return TypedError(500, "sign_in_failed", ex.Message);
+            }
+        }
+
+        private HttpResponse HandleSignOut(HttpRequest request)
+        {
+            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
+            var manager = recordingManager;
+            if (manager is not null && manager.State != RecordingState.Idle)
+            {
+                return TypedError(409, "recording", "stop the recording before signing out");
+            }
+            try
+            {
+                rig!.SignOut();
+                return HttpResponse.Ok("{\"status\":\"signed_out\"}");
+            }
+            catch (SxRigException ex)
+            {
+                return RigCallError("sign_out_failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// A collector command on the open collection, passed to sx_rig_command as given after
+        /// its name is checked: <c>{"command": "review_success" | "review_failure",
+        /// "episode_id", "answers": [...], "failure_cause"?}</c> or <c>{"command": "end_collection"
+        /// | "finalize" | "close_failed_collection"}</c>. Answers the rig's
+        /// <c>{"answer", "floor"}</c>. A review before the Factory observed the attempt is
+        /// 409 command_refused (reason state); retry it.
+        /// </summary>
+        private HttpResponse HandleCommand(HttpRequest request)
+        {
+            JObject? fields = null;
+            try
+            {
+                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "null" : request.Body) as JObject;
+            }
+            catch (JsonException)
+            {
+            }
+            if (fields == null)
+            {
+                return TypedError(400, "invalid_body", "the command body is not a JSON object");
+            }
+            if (fields["command"] is not JValue { Type: JTokenType.String } name
+                || !CollectorCommands.Contains((string)name!))
+            {
+                return TypedError(400, "unknown_command",
+                    "command must be one of " + string.Join(", ", CollectorCommands));
+            }
+            // command_id is the command's idempotency key: the caller's, when it sends one (a
+            // retry of the same command), else a fresh one; the library's buffer retry resends
+            // these same bytes.
+            if (fields["command_id"] is JToken id && id.Type != JTokenType.Null)
+            {
+                if (id.Type != JTokenType.String || !Guid.TryParse((string?)id, out _))
+                {
+                    return TypedError(400, "invalid_body", "command_id must be a UUID");
+                }
+            }
+            else
+            {
+                fields["command_id"] = Guid.NewGuid().ToString();
+            }
+            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
+            try
+            {
+                return HttpResponse.Ok(rig!.Command(fields.ToString(Formatting.None)));
+            }
+            catch (SxRigException ex)
+            {
+                return RigCallError("command_refused", ex);
+            }
+        }
+
+        /// <summary>The rig, open, for a floor call; else the typed refusal to answer.</summary>
+        private static HttpResponse? RigForFloor(out RigCoordinator? rig)
+        {
+            rig = RigCoordinator.Instance;
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+            if (rig is not null && rig.LocalOnly)
+            {
+                return TypedError(409, "local_only",
+                    "this headset is set to Local only and never contacts the Factory");
+            }
+            if (rig is null || !rig.IsOpen)
+            {
+                return TypedError(409, "not_enrolled",
+                    "the headset is not enrolled as a pod (POST /api/enroll), or its rig is not open");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A failed libsx_rig floor call: 400 for a malformed argument, 409 for a call not
+        /// valid now (not enrolled, no collection, attempt not yet observed), 503 otherwise.
+        /// <c>reason</c> is the library's error code.
+        /// </summary>
+        private static HttpResponse RigCallError(string error, SxRigException ex)
+        {
+            string reason = "unknown";
+            try
+            {
+                reason = (string?)JObject.Parse(ex.ErrorJson)["code"] ?? reason;
+            }
+            catch (JsonException)
+            {
+            }
+            var status = ex.Error switch
+            {
+                SxRigError.Argument => 400,
+                SxRigError.State => 409,
+                _ => 503,
+            };
+            return TypedError(status, error, ex.Message, reason, ex.ErrorJson);
+        }
+
+        // ── POST /api/enroll ──
+
+        /// <summary>
+        /// Body <c>{"join_code": "sxj_...", "factory_url"?, "auth_url"?}</c> (the console's QR
+        /// carries all three; the URLs default to production). Enrolls this headset as a Factory
+        /// pod of kind headset through sx_rig_enroll_site (up to 60 s per request, on this worker
+        /// thread) and answers <c>{"status": "enrolled", "enrollment": {"pod_id", "pod",
+        /// "steps"}}</c>; Local only turns off. Errors are <c>{"error", "reason"?, "message",
+        /// "rig"?}</c>: 400 invalid_body / join_code_required / enroll_failed (argument), 409
+        /// recording, 503 app_paused / enroll_failed (the steps in message, the error with its
+        /// refusal {kind: enrollment_failed, steps} in rig).
+        /// </summary>
+        private HttpResponse HandleEnroll(HttpRequest request)
+        {
+            if (HeadTrackingMonitor.AppPaused)
+            {
+                return AppPausedResponse();
+            }
+            JObject? fields = null;
+            try
+            {
+                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "{}" : request.Body) as JObject;
+            }
+            catch (JsonException)
+            {
+            }
+            if (fields == null)
+            {
+                return TypedError(400, "invalid_body", "the enroll body is not a JSON object");
+            }
+            if (fields["join_code"] is not JValue { Type: JTokenType.String } codeValue
+                || ((string?)codeValue)?.Trim() is not { Length: > 0 } joinCode)
+            {
+                return TypedError(400, "join_code_required", "the body must carry join_code (an sxj_... string)");
+            }
+            // The site: factory_url and auth_url (the console's QR carries both), production
+            // when absent.
+            string Url(string key, string fallback) =>
+                fields[key] is JValue { Type: JTokenType.String } v ? (string?)v ?? fallback : fallback;
+            var (factoryUrl, factoryError) = PodSetupJson.NormalizeUrl(Url("factory_url", PodSetupJson.DefaultFactoryUrl), "factory_url");
+            var (authUrl, authError) = PodSetupJson.NormalizeUrl(Url("auth_url", PodSetupJson.DefaultAuthUrl), "auth_url");
+            if (factoryError != null || authError != null)
+            {
+                return TypedError(400, "invalid_body", factoryError ?? authError!);
+            }
+            var manager = recordingManager;
+            if (manager is not null && manager.State != RecordingState.Idle)
+            {
+                return TypedError(409, "recording", "stop the recording before enrolling");
+            }
+            var rig = RigCoordinator.Instance;
+            if (rig is null)
+            {
+                return TypedError(503, "enroll_failed", "the rig coordinator is not running", "rig_unavailable");
+            }
+
+            RigRefusal? prepareRefusal = null;
+            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.BeginEnrollment());
+            if (!signal.Wait(5000))
+            {
+                return MainThreadTimeoutResponse("Main thread did not prepare the enrollment within 5 s; nothing was enrolled");
+            }
+            if (prepareRefusal != null)
+            {
+                return TypedError(503,
+                    "enroll_failed", prepareRefusal.Message, prepareRefusal.Code, prepareRefusal.DetailJson);
+            }
+            try
+            {
+                var enrollment = rig.Enroll(factoryUrl!, authUrl!, joinCode);
+                server!.EnqueueOnMainThread(() => rig.FinishEnrollment(true));
+                Debug.Log($"[{Constants.LOG_TAG}] HttpServerController: enrolled as a headset pod");
+                return HttpResponse.Ok("{\"status\":\"enrolled\",\"enrollment\":" + enrollment + "}");
+            }
+            catch (SxRigException ex)
+            {
+                string reason = "unknown";
+                try
+                {
+                    reason = (string?)JObject.Parse(ex.ErrorJson)["code"] ?? reason;
+                }
+                catch (JsonException)
+                {
+                }
+                Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: {ex.Message}");
+                // The error's refusal carries the steps (enrollment_failed); they are in rig.
+                return TypedError(ex.Error == SxRigError.Argument ? 400 : 503,
+                    "enroll_failed", PodSetupJson.Describe(PodSetupJson.Steps(ex.ErrorJson)) is { Length: > 0 } steps ? steps : ex.Message,
+                    reason, ex.ErrorJson);
+            }
+        }
+
+        private static HttpResponse TypedError(int status, string error, string message,
+            string? reason = null, string? rigJson = null)
+        {
+            var body = new JObject { ["error"] = error, ["message"] = message };
+            if (reason != null) body["reason"] = reason;
+            if (rigJson != null) body["rig"] = JToken.Parse(rigJson);
+            return HttpResponse.Json(status, body.ToString(Formatting.None));
+        }
+
+        /// <summary>
+        /// A rig refusal as its typed response, with a refused cue for the operator: 507 for
+        /// rig_storage_low (as the app's own storage refusal; the rig's numbers are under
+        /// rig.refusal), 409 for collector_signed_out, 503 otherwise.
+        /// </summary>
+        private static HttpResponse RigRefusalResponse(RigCoordinator rig, RigRefusal refusal, string? session = null)
+        {
+            rig.QueueCue(RigCues.Cue.Refused);
+            var status = refusal.Code switch
+            {
+                "rig_storage_low" => 507,
+                "collector_signed_out" => 409,
+                // The rig's devices are not as the check requires (rig = its report); fix them
+                // and retry. 409 like the other refusals of a state the operator must change.
+                "rig_check_failed" => 409,
+                _ => 503,
+            };
+            return RigNotReadyResponse(refusal, status, session);
+        }
+
+        /// <summary>A JSON file the app wrote into a session (compact), or "null".</summary>
+        private string SessionJsonOrNull(string session, string fileName)
+        {
+            try
+            {
+                var path = Path.Combine(cachedDataPath, session, fileName);
+                return File.Exists(path) ? JToken.Parse(File.ReadAllText(path)).ToString(Formatting.None) : "null";
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                return "null";
+            }
+        }
+
+        private void WriteSessionJson(string session, string fileName, string json)
+        {
+            try
+            {
+                var directory = Path.Combine(cachedDataPath, session);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, fileName), json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: write {fileName}: {ex.Message}");
+            }
+        }
+
+        private HttpResponse AlreadyRecordingResponse() =>
+            HttpResponse.Json(409,
+                "{\n" +
+                $"  \"error\": \"already_recording\",\n" +
+                $"  \"message\": \"Recording is already in progress\",\n" +
+                $"  \"currentFile\": \"{EscapeJson(currentRecordingFile ?? "unknown")}\"\n" +
+                "}");
+
+        // The rig (wrist cameras, gripper encoders) is configured or plugged in and not ready.
+        // 503 like the other refusals of a not-ready headset; `error` is "rig_not_ready",
+        // `reason` the closed RigRefusal code, `rig` the library's own error JSON.
+        private static HttpResponse RigNotReadyResponse(RigRefusal refusal, int status = 503, string? session = null)
+        {
+            // file: the OQC session a refused arming left behind (stopped), when there is one.
+            var file = session == null ? "" : $",\"file\":\"{EscapeJson(session)}\"";
+            var response = HttpResponse.Json(status,
+                $"{{\"error\":\"rig_not_ready\",\"reason\":\"{EscapeJson(refusal.Code)}\"," +
+                $"\"message\":\"{EscapeJson(refusal.Message)}\",\"rig\":{refusal.DetailJson}{file}}}");
+            if (status == 503) response.StatusText = "Service Unavailable";
+            return response;
+        }
 
         private static HttpResponse MainThreadTimeoutResponse(string message) =>
             ServiceUnavailable("main_thread_timeout", message);

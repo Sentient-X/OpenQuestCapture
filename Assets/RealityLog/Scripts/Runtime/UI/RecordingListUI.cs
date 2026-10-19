@@ -6,6 +6,7 @@ using UnityEngine.UI;
 using TMPro;
 using RealityLog.Common;
 using RealityLog.FileOperations;
+using RealityLog.Rig;
 
 namespace RealityLog.UI
 {
@@ -159,11 +160,33 @@ namespace RealityLog.UI
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Created {createdCount} list items");
 
+            ShowPodCard();
+
             // Delete All button disabled for now
             // if (recordings.Count > 0 && listContainer != null)
             // {
             //     CreateDeleteAllButton(recordings.Count);
             // }
+        }
+
+        private PodCardView? podCard;
+
+        /// <summary>
+        /// The Pod card first in the list (PodCardView): status, sign-in, Scan QR, Local only and
+        /// the manual setup. Built once, so a list refresh keeps its expanded state, and styled
+        /// with the recording list item's rounded sprite and font.
+        /// </summary>
+        private void ShowPodCard()
+        {
+            if (listContainer == null) return;
+            if (podCard == null)
+            {
+                if (RigCoordinator.Instance is null && PodSetupController.Instance is null) return;
+                var sprite = recordingItemPrefab != null && recordingItemPrefab.TryGetComponent<Image>(out var image) ? image.sprite : null;
+                var font = recordingItemPrefab != null ? recordingItemPrefab.GetComponentInChildren<TextMeshProUGUI>(true)?.font : null;
+                podCard = PodCardView.Create(listContainer, sprite, font, error => OnOperationComplete("Local only", false, error));
+            }
+            podCard.transform.SetAsFirstSibling();
         }
 
         private void CreateDeleteAllButton(int count)
