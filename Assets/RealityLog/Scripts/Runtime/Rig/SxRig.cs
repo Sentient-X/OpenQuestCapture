@@ -178,7 +178,7 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// <c>sx_rig_enroll_site</c>: enroll at a scanned site.
-        /// <c>{"site": {"factory_url", "auth_url"}, "join_code": "sxj_...", "rig_type_id"?}</c> →
+        /// <c>{"factory_url", "auth_url", "join_code": "sxj_...", "rig_type_id"?}</c> →
         /// <c>{"pod_id", "pod", "steps": [{"step", "state", "detail"}]}</c>. A failed join or
         /// commission throws (SX_RIG_E_DEVICE; the error's refusal
         /// <c>{"kind": "enrollment_failed", "steps"}</c>). Network-bound: never on Unity's main

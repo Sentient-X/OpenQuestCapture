@@ -89,12 +89,17 @@ namespace RealityLog.Rig
             return text.StartsWith("sxj_", StringComparison.Ordinal) && text.Length >= 8 ? null : "a join code starts with sxj_";
         }
 
-        /// <summary>The sx_rig_enroll_site request.</summary>
+        /// <summary>
+        /// The sx_rig_enroll_site request: the Console's QR shape itself,
+        /// <c>{"factory_url", "auth_url", "join_code"}</c>, and the rig type only when the pod
+        /// config names one (else the rig names the YUBI rig, or replays the Factory's).
+        /// </summary>
         public static string Request(string factoryUrl, string authUrl, string joinCode, string? rigTypeId)
         {
             var request = new JObject
             {
-                ["site"] = new JObject { ["factory_url"] = factoryUrl, ["auth_url"] = authUrl },
+                ["factory_url"] = factoryUrl,
+                ["auth_url"] = authUrl,
                 ["join_code"] = joinCode,
             };
             if (!string.IsNullOrEmpty(rigTypeId)) request["rig_type_id"] = rigTypeId;

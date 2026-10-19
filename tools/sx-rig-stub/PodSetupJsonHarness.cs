@@ -23,8 +23,9 @@ static class PodSetupJsonHarness
         Expect(PodSetupJson.NormalizeUrl(PodSetupJson.DefaultFactoryUrl, "f").url == PodSetupJson.DefaultFactoryUrl, "the production default is normal already");
 
         var request = JObject.Parse(PodSetupJson.Request("https://a/f/", "https://a/u/", "sxj_abcdefgh", "rig_yubi"));
-        Expect((string?)request["site"]!["factory_url"] == "https://a/f/" && (string?)request["site"]!["auth_url"] == "https://a/u/"
-            && (string?)request["join_code"] == "sxj_abcdefgh" && (string?)request["rig_type_id"] == "rig_yubi", "the enroll_site request");
+        Expect((string?)request["factory_url"] == "https://a/f/" && (string?)request["auth_url"] == "https://a/u/"
+            && (string?)request["join_code"] == "sxj_abcdefgh" && (string?)request["rig_type_id"] == "rig_yubi"
+            && request["site"] == null && request.Count == 4, "the enroll_site request is the QR's flat shape");
         Expect(JObject.Parse(PodSetupJson.Request("https://a/f/", "https://a/u/", "sxj_abcdefgh", null))["rig_type_id"] == null, "rig_type_id is optional");
 
         var answer = "{\"pod_id\":\"pod_1\",\"pod\":{},\"steps\":[{\"step\":\"join\",\"state\":\"succeeded\",\"detail\":\"\"},{\"step\":\"commission\",\"state\":\"succeeded\",\"detail\":\"\"},{\"step\":\"rig\",\"state\":\"unavailable\",\"detail\":\"attach both cameras and both encoders\"},{\"step\":\"builds\",\"state\":\"unavailable\",\"detail\":\"the Factory does not serve the list yet\"}]}";

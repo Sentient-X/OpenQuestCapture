@@ -505,7 +505,7 @@ namespace RealityLog.Rig
             {
                 var config = ReadPodConfig();
                 config["local_only"] = value;
-                File.WriteAllText(podConfigPath, config.ToString(Formatting.Indented));
+                WritePodConfig(config);
             }
             catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException
                 || ex is UnauthorizedAccessException)
@@ -857,6 +857,29 @@ namespace RealityLog.Rig
             if (!File.Exists(podConfigPath)) return new JObject();
             var token = JToken.Parse(File.ReadAllText(podConfigPath));
             return token as JObject ?? throw new InvalidDataException($"{PodConfigFileName} is not a JSON object");
+        }
+
+        /// <summary>
+        /// Writes pod_config.json as a new file of the app's own, swapped in by rename: a
+        /// pod_config.json provisioned over adb belongs to the shell user, which the app may
+        /// read but not write in place, and a rename needs only the app's own directory.
+        /// </summary>
+        private void WritePodConfig(JObject config)
+        {
+            var staged = podConfigPath + ".tmp";
+            File.WriteAllText(staged, config.ToString(Formatting.Indented));
+            try
+            {
+                if (File.Exists(podConfigPath)) File.Replace(staged, podConfigPath, null);
+                else File.Move(staged, podConfigPath);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
+                || ex is PlatformNotSupportedException)
+            {
+                // A runtime without rename-over: the old file goes, then the new one takes its name.
+                File.Delete(podConfigPath);
+                File.Move(staged, podConfigPath);
+            }
         }
 
         /// <summary>Serial, tailnet address and APK build id from PodIdentity (main thread).</summary>
