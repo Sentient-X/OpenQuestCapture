@@ -876,9 +876,22 @@ namespace RealityLog.Rig
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
                 || ex is PlatformNotSupportedException)
             {
-                // A runtime without rename-over: the old file goes, then the new one takes its name.
-                File.Delete(podConfigPath);
-                File.Move(staged, podConfigPath);
+                // A runtime without rename-over: the old file steps aside, the new one takes its
+                // name, and only then does the old one go; a failed move puts the old one back,
+                // so pod_config.json (the headset serial with it) is never lost.
+                var aside = podConfigPath + ".old";
+                if (File.Exists(aside)) File.Delete(aside);
+                File.Move(podConfigPath, aside);
+                try
+                {
+                    File.Move(staged, podConfigPath);
+                }
+                catch
+                {
+                    File.Move(aside, podConfigPath);
+                    throw;
+                }
+                File.Delete(aside);
             }
         }
 

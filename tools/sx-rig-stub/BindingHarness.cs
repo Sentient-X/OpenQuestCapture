@@ -20,7 +20,7 @@ static class Harness {
         catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_enroll", "enroll bad code -> Argument " + e.ErrorJson); }
         try { SxRig.Enroll("sxj_aaaa"); Expect(false, "enroll without site throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State, "enroll without site -> State " + e.ErrorJson); }
-        try { SxRig.EnrollSite("{\"site\":{},\"join_code\":\"sxj_aaaa\"}"); Expect(false, "enroll_site throws"); }
+        try { SxRig.EnrollSite("{\"factory_url\":\"https://a/f/\",\"auth_url\":\"https://a/u/\",\"join_code\":\"sxj_aaaa\"}"); Expect(false, "enroll_site throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device && e.Function == "sx_rig_enroll_site", "enroll_site -> Device"); }
         try { SxRig.ApiToken(); Expect(false, "api_token throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_api_token", "api_token before enrollment -> State"); }
