@@ -186,6 +186,7 @@ namespace RealityLog.UI
             if (setup is null || listContainer == null) return;
 
             // Created in reverse: each SetAsFirstSibling puts the row on top.
+            var signIn = CreateRow("PodSetupSignIn", new Color(0.15f, 0.45f, 0.3f, 0.85f), setup.SignIn, out var signInText);
             var enroll = CreateRow("PodSetupEnroll", new Color(0.15f, 0.3f, 0.55f, 0.85f), setup.Enroll, out var enrollText);
             var code = CreateRow("PodSetupJoinCode", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditJoinCode, out var codeText);
             var auth = CreateRow("PodSetupAuthUrl", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditAuthUrl, out var authText);
@@ -196,10 +197,10 @@ namespace RealityLog.UI
             statusText.enableAutoSizing = true;
             statusText.fontSizeMin = 10;
             statusText.fontSizeMax = 14;
-            podSetupRows.AddRange(new[] { enroll, code, auth, site, scan, status });
+            podSetupRows.AddRange(new[] { signIn, enroll, code, auth, site, scan, status });
 
             var view = status.AddComponent<PodSetupRowsView>();
-            view.Bind(setup, statusText, scanText, siteText, authText, codeText, enrollText);
+            view.Bind(setup, statusText, scanText, siteText, authText, codeText, enrollText, signInText);
         }
 
         private GameObject CreateRow(string name, Color color, System.Action? onClick, out TextMeshProUGUI text)

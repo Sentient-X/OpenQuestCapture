@@ -501,6 +501,9 @@ namespace RealityLog.Rig
         /// <summary>True when this headset holds a machine credential: it is enrolled as a pod.</summary>
         public bool Enrolled => enrolled;
 
+        /// <summary>True while the rig's floor says a collector is signed in on this headset.</summary>
+        public bool CollectorSignedInNow => collectorSignedIn;
+
         /// <summary>
         /// Main thread: sets local_only in pod_config.json and reopens the rig with the new
         /// config when no episode is active. Returns why not, or null.

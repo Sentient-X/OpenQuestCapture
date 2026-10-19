@@ -44,11 +44,14 @@ namespace RealityLog.Rig
             private set => status = value;
         }
         private string? status;
-        public bool Busy => scanning || enrolling;
+        public bool Busy => scanning || enrolling || signingIn;
+        /// <summary>True while a collector sign-in code is being asked for.</summary>
+        public bool SigningIn => signingIn;
         public bool Scanning => scanning;
 
         private bool scanning;
         private bool enrolling;
+        private bool signingIn;
         private float scanStarted;
         private VideoRecorderSurfaceProvider? scanCamera;
         private TouchScreenKeyboard? keyboard;
@@ -111,6 +114,56 @@ namespace RealityLog.Rig
             if (PodSetupJson.CheckJoinCode(text) is string error) Fail(error);
             else { JoinCode = text.Trim(); Status = "Join code entered."; }
         });
+
+        /// <summary>
+        /// Signs a collector in on this enrolled headset, as a laptop pod's kiosk does: the rig
+        /// asks the Factory for a code, the panel shows it with the address to approve it at,
+        /// and the headset chimes when the approval lands (a start needs a signed-in collector).
+        /// </summary>
+        public void SignIn()
+        {
+            if (Busy) return;
+            var rig = RigCoordinator.Instance;
+            if (rig is not { Enrolled: true }) { Fail("Enroll this headset as a pod before signing in."); return; }
+            if (rig.LocalOnly) { Fail("Turn Local only off to sign in: a local headset needs no collector."); return; }
+            if (FindFirstObjectByType<RecordingManager>() is { IsRecording: true })
+            {
+                Fail("Stop the recording before signing in.");
+                return;
+            }
+            signingIn = true;
+            Status = "Asking the Factory for a sign-in code...";
+            Task.Run(() =>
+            {
+                try
+                {
+                    var shown = Newtonsoft.Json.Linq.JObject.Parse(rig.SignIn());
+                    var code = (string?)shown["user_code"] ?? "";
+                    var address = (string?)shown["verification_uri_complete"] ?? (string?)shown["verification_uri"] ?? "";
+                    mainThread.Enqueue(() =>
+                    {
+                        signingIn = false;
+                        Status = $"Sign in: open {address} and approve code {code}. The headset chimes once you are signed in.";
+                    });
+                }
+                catch (SxRigException ex)
+                {
+                    mainThread.Enqueue(() =>
+                    {
+                        signingIn = false;
+                        Fail("Sign-in failed: " + RigStatusJson.ErrorDetail(ex.ErrorJson, ex.Message));
+                    });
+                }
+                catch (Newtonsoft.Json.JsonException ex)
+                {
+                    mainThread.Enqueue(() =>
+                    {
+                        signingIn = false;
+                        Fail("Sign-in failed: " + ex.Message);
+                    });
+                }
+            });
+        }
 
         /// <summary>Enrolls with the URLs and join code entered (or scanned).</summary>
         public void Enroll()
