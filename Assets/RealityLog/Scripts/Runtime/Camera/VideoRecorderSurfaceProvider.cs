@@ -21,6 +21,7 @@ namespace RealityLog.Camera
         private const string GET_SELECTED_FRAME_COUNT_METHOD_NAME = "getSelectedFrameCount";
         private const string GET_CAPTURE_REPORT_JSON_METHOD_NAME = "getCaptureReportJson";
         private const string GET_STREAM_GEOMETRY_JSON_METHOD_NAME = "getStreamGeometryJson";
+        private const string GET_PREVIEW_METHOD_NAME = "getPreviewPacket";
         private const string CLOSE_METHOD_NAME = "close";
         // 1.4.1: exposure_time_ns / capture_frame_number may be -1 (unknown) per row,
         // metadata carries capture_report counters and capture_error; the recorder
@@ -85,6 +86,17 @@ namespace RealityLog.Camera
         // refuses to start a session while it is set, and any session that is
         // prepared regardless writes it as capture_error.
         private string? startRefusal;
+
+        // Immutable packet: big-endian sensor nanoseconds followed by JPEG bytes.
+        // JNI only copies the latest result; it never waits for rendering or encoding.
+        public byte[]? GetPreviewPacket()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            return currentInstance?.Call<byte[]>(GET_PREVIEW_METHOD_NAME);
+#else
+            return null;
+#endif
+        }
 
         public long VideoStartUnixTimeMs { get; private set; }
 
