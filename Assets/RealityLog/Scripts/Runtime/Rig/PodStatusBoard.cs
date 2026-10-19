@@ -8,7 +8,20 @@ using Newtonsoft.Json.Linq;
 
 namespace RealityLog.Rig
 {
-    /// <summary>The six lines of the recordings menu's Pod status block.</summary>
+    /// <summary>The Pod card's status chip: what its colour means.</summary>
+    public enum PodReadiness
+    {
+        /// <summary>Enrolled, a collector signed in, and the rig (when one is expected) checked ready.</summary>
+        Ready,
+        /// <summary>Not set up, signed out, or the rig not checked ready yet.</summary>
+        NotReady,
+        /// <summary>The last start was refused, or the rig failed to open or load.</summary>
+        Refused,
+        /// <summary>Local only: the headset never contacts the Factory.</summary>
+        LocalOnly,
+    }
+
+    /// <summary>The recordings menu's Pod card: its six lines, its chip and a pending sign-in code.</summary>
     public readonly struct PodStatusLines
     {
         public string Pod { get; }
@@ -17,8 +30,20 @@ namespace RealityLog.Rig
         public string Rig { get; }
         public string LastRefusal { get; }
         public string LastEpisode { get; }
+        /// <summary>The pod's id, or "" when not enrolled.</summary>
+        public string PodName { get; }
+        public PodReadiness Readiness { get; }
+        /// <summary>The chip's word for <see cref="Readiness"/>.</summary>
+        public string ReadinessText { get; }
+        /// <summary>True when there is a refusal to show (LastRefusal is not "none").</summary>
+        public bool HasRefusal { get; }
+        /// <summary>The collector's sign-in code, only while the sign-in is pending; else "".</summary>
+        public string SignInCode { get; }
+        /// <summary>Where to approve <see cref="SignInCode"/>; "" when unknown or not pending.</summary>
+        public string SignInAddress { get; }
 
-        public PodStatusLines(string pod, string collector, string task, string rig, string lastRefusal, string lastEpisode)
+        public PodStatusLines(string pod, string collector, string task, string rig, string lastRefusal, string lastEpisode,
+            string podName, PodReadiness readiness, string readinessText, bool hasRefusal, string signInCode, string signInAddress)
         {
             Pod = pod;
             Collector = collector;
@@ -26,6 +51,12 @@ namespace RealityLog.Rig
             Rig = rig;
             LastRefusal = lastRefusal;
             LastEpisode = lastEpisode;
+            PodName = podName;
+            Readiness = readiness;
+            ReadinessText = readinessText;
+            HasRefusal = hasRefusal;
+            SignInCode = signInCode;
+            SignInAddress = signInAddress;
         }
     }
 
@@ -81,7 +112,7 @@ namespace RealityLog.Rig
     }
 
     /// <summary>
-    /// What the recordings menu's Pod status block says, from RigCoordinator's /api/status rig
+    /// What the recordings menu's Pod card says, from RigCoordinator's /api/status rig
     /// object (pod id, floor, seals, uplink, lastCheck, lastRefusal, native) and the last start's
     /// refusal. Pure: no UnityEngine, so it is tested on the host (tools/sx-rig-stub/test_binding.sh).
     /// Every reader tolerates a missing key, a null and an unexpected type.
@@ -102,13 +133,78 @@ namespace RealityLog.Rig
             catch (JsonException)
             {
             }
+            var refusal = RefusalLine(status, lastStart, lastStartSucceeded);
+            var hasRefusal = refusal != NoRefusal;
+            var (readiness, readinessText) = Readiness(status, hasRefusal);
+            var (code, address) = PendingSignIn(status, askingForCode);
+            var enrolled = Bool(status, "enrolled") == true;
             return new PodStatusLines(
                 PodLine(status),
                 CollectorLine(status, askingForCode),
                 TaskLine(status),
                 RigLine(status),
-                RefusalLine(status, lastStart, lastStartSucceeded),
-                EpisodeLine(status));
+                refusal,
+                EpisodeLine(status),
+                enrolled ? Str(status?["podId"]) : "",
+                readiness, readinessText, hasRefusal, code, address);
+        }
+
+        private const string NoRefusal = "Last refusal: none";
+
+        /// <summary>
+        /// The chip: Local only first; then not set up; a rig that failed to load or open is an
+        /// error; a signed-in collector with the rig checked ready (or no rig expected) is ready;
+        /// else a standing refusal shows as refused, and anything else is not ready.
+        /// </summary>
+        public static (PodReadiness readiness, string text) Readiness(JObject? status, bool hasRefusal)
+        {
+            if (Bool(status, "localOnly") ?? true) return (PodReadiness.LocalOnly, "Local only");
+            if (Bool(status, "enrolled") != true) return (PodReadiness.NotReady, "Not set up");
+            var rigExpected = Bool(status, "expected") == true;
+            if (rigExpected && (Str(status!["library"]) == "missing" || (Bool(status, "open") != true && status["openError"] is JObject)))
+            {
+                return (PodReadiness.Refused, "Rig error");
+            }
+            var signedIn = status!["floor"] is JObject floor && floor["operator"] is JObject collector
+                && collector["signed_in"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
+            var rigReady = !rigExpected
+                || (Bool(status, "open") == true && status["lastCheck"] is JObject check && RigStatusJson.Check(check.ToString(Formatting.None)).ready);
+            if (signedIn && rigReady) return (PodReadiness.Ready, "Ready");
+            return hasRefusal ? (PodReadiness.Refused, "Refused") : (PodReadiness.NotReady, "Not ready");
+        }
+
+        /// <summary>The collector's sign-in code and address, only when the Collector line shows them; else ("", "").</summary>
+        public static (string code, string address) PendingSignIn(JObject? status, bool askingForCode)
+        {
+            if (askingForCode || Bool(status, "enrolled") != true || (Bool(status, "localOnly") ?? true)) return ("", "");
+            if (status?["floor"] is not JObject floor || floor["operator"] is not JObject collector) return ("", "");
+            if (collector["signed_in"] is JValue { Type: JTokenType.Boolean } signedIn && (bool)signedIn) return ("", "");
+            var code = Str(collector["user_code"]);
+            return code.Length == 0 ? ("", "") : (code, Str(collector["verification_uri_complete"]));
+        }
+
+        /// <summary>
+        /// A line split for the card's label and value columns: "Rig: ready" -> ("Rig", "ready");
+        /// a time in the label moves to the value ("Last refusal (14:03:07): x" -> ("Last refusal",
+        /// "14:03:07 · x")), as does an episode's name ("Last episode e1: sealed" -> ("Last episode", "e1 · sealed")).
+        /// </summary>
+        public static (string label, string value) Field(string line)
+        {
+            var colon = line.IndexOf(": ", StringComparison.Ordinal);
+            if (colon < 0) return ("", line);
+            var label = line.Substring(0, colon);
+            var value = line.Substring(colon + 2);
+            var open = label.IndexOf(" (", StringComparison.Ordinal);
+            if (open > 0 && label.EndsWith(")", StringComparison.Ordinal))
+            {
+                return (label.Substring(0, open), label.Substring(open + 2, label.Length - open - 3) + " · " + value);
+            }
+            const string episode = "Last episode ";
+            if (label.StartsWith(episode, StringComparison.Ordinal))
+            {
+                return ("Last episode", label.Substring(episode.Length) + " · " + value);
+            }
+            return (label, value);
         }
 
         public static string PodLine(JObject? status)
@@ -196,7 +292,7 @@ namespace RealityLog.Rig
             {
                 refusal = new StartRefusal(Str(rig["code"]), Str(rig["message"]), null);
             }
-            if (refusal == null) return "Last refusal: none";
+            if (refusal == null) return NoRefusal;
             var at = refusal.At is DateTime time ? " (" + time.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + ")" : "";
             return "Last refusal" + at + ": " + Clip(Explain(refusal.Code, refusal.Message), 110);
         }
@@ -279,11 +375,15 @@ namespace RealityLog.Rig
         /// </summary>
         public static string SetupStatus(string? lastMessage, double messageAgeSeconds, bool busy, bool enrolled, bool localOnly)
         {
-            if (lastMessage != null && (busy || messageAgeSeconds < SetupMessageSeconds)) return lastMessage;
+            if (SetupMessage(lastMessage, messageAgeSeconds, busy) is { } message) return message;
             return enrolled
                 ? "Enrolled as a pod. Local only is " + (localOnly ? "on" : "off") + ". Scan a new code only to enroll again."
                 : "Not set up: scan the console's QR code, or type the join code.";
         }
+
+        /// <summary>A step's message while the step runs or for <see cref="SetupMessageSeconds"/> after it; else null.</summary>
+        public static string? SetupMessage(string? lastMessage, double messageAgeSeconds, bool busy) =>
+            lastMessage != null && (busy || messageAgeSeconds < SetupMessageSeconds) ? lastMessage : null;
 
         /// <summary>An HTTP error body's code (reason, else error) and message.</summary>
         public static (string code, string message) ParseError(string? body, int statusCode)

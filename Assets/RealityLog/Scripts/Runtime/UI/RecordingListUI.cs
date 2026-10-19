@@ -160,9 +160,7 @@ namespace RealityLog.UI
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Created {createdCount} list items");
 
-            CreatePodSetupRows();
-            CreateLocalOnlyToggle();
-            CreatePodStatusRows();
+            ShowPodCard();
 
             // Delete All button disabled for now
             // if (recordings.Count > 0 && listContainer != null)
@@ -171,147 +169,24 @@ namespace RealityLog.UI
             // }
         }
 
-        private GameObject? localOnlyToggleObj;
-        private readonly List<GameObject> podSetupRows = new();
+        private PodCardView? podCard;
 
         /// <summary>
-        /// Pod setup at the top of the list: a status line, Scan QR (or Cancel), Factory URL,
-        /// Auth URL and Join code (the Quest keyboard) and Enroll (PodSetupController). The texts refresh while the
-        /// menu is open.
+        /// The Pod card first in the list (PodCardView): status, sign-in, Scan QR, Local only and
+        /// the manual setup. Built once, so a list refresh keeps its expanded state, and styled
+        /// with the recording list item's rounded sprite and font.
         /// </summary>
-        private void CreatePodSetupRows()
+        private void ShowPodCard()
         {
-            foreach (var row in podSetupRows) if (row != null) Destroy(row);
-            podSetupRows.Clear();
-            var setup = PodSetupController.Instance;
-            if (setup is null || listContainer == null) return;
-
-            // Created in reverse: each SetAsFirstSibling puts the row on top.
-            var signIn = CreateRow("PodSetupSignIn", new Color(0.15f, 0.45f, 0.3f, 0.85f), setup.SignIn, out var signInText);
-            var enroll = CreateRow("PodSetupEnroll", new Color(0.15f, 0.3f, 0.55f, 0.85f), setup.Enroll, out var enrollText);
-            var code = CreateRow("PodSetupJoinCode", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditJoinCode, out var codeText);
-            var auth = CreateRow("PodSetupAuthUrl", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditAuthUrl, out var authText);
-            var site = CreateRow("PodSetupFactoryUrl", new Color(0.3f, 0.3f, 0.3f, 0.85f), setup.EditFactoryUrl, out var siteText);
-            var scan = CreateRow("PodSetupScan", new Color(0.15f, 0.3f, 0.55f, 0.85f),
-                () => { if (setup.Scanning) setup.CancelScan(); else setup.StartScan(); }, out var scanText);
-            var status = CreateRow("PodSetupStatus", new Color(0.1f, 0.1f, 0.1f, 0.85f), null, out var statusText);
-            statusText.enableAutoSizing = true;
-            statusText.fontSizeMin = 10;
-            statusText.fontSizeMax = 14;
-            podSetupRows.AddRange(new[] { signIn, enroll, code, auth, site, scan, status });
-
-            var view = status.AddComponent<PodSetupRowsView>();
-            view.Bind(setup, statusText, scanText, siteText, authText, codeText, enrollText, signInText);
-        }
-
-        private readonly List<GameObject> podStatusRows = new();
-
-        /// <summary>
-        /// The Pod status block at the very top: pod, collector (a sign-in code only while it is
-        /// pending), task, rig, last refusal and last episode, kept fresh by PodStatusRowsView.
-        /// </summary>
-        private void CreatePodStatusRows()
-        {
-            foreach (var row in podStatusRows) if (row != null) Destroy(row);
-            podStatusRows.Clear();
-            if (RigCoordinator.Instance is null || listContainer == null) return;
-
-            // Created in reverse: each SetAsFirstSibling puts the row on top.
-            var names = new[] { "PodStatusEpisode", "PodStatusRefusal", "PodStatusRig", "PodStatusTask", "PodStatusCollector", "PodStatusPod" };
-            var texts = new TextMeshProUGUI[names.Length];
-            for (var i = 0; i < names.Length; i++)
+            if (listContainer == null) return;
+            if (podCard == null)
             {
-                var row = CreateRow(names[i], new Color(0.1f, 0.1f, 0.1f, 0.85f), null, out var text);
-                text.enableAutoSizing = true;
-                text.fontSizeMin = 10;
-                text.fontSizeMax = 14;
-                text.alignment = TextAlignmentOptions.MidlineLeft;
-                texts[names.Length - 1 - i] = text;
-                podStatusRows.Add(row);
+                if (RigCoordinator.Instance is null && PodSetupController.Instance is null) return;
+                var sprite = recordingItemPrefab != null && recordingItemPrefab.TryGetComponent<Image>(out var image) ? image.sprite : null;
+                var font = recordingItemPrefab != null ? recordingItemPrefab.GetComponentInChildren<TextMeshProUGUI>(true)?.font : null;
+                podCard = PodCardView.Create(listContainer, sprite, font, error => OnOperationComplete("Local only", false, error));
             }
-            var view = podStatusRows[0].AddComponent<PodStatusRowsView>();
-            view.Bind(texts);
-        }
-
-        private GameObject CreateRow(string name, Color color, System.Action? onClick, out TextMeshProUGUI text)
-        {
-            var row = new GameObject(name, typeof(RectTransform));
-            row.transform.SetParent(listContainer, false);
-            row.transform.SetAsFirstSibling();
-            var layout = row.AddComponent<LayoutElement>();
-            layout.preferredHeight = 40;
-            layout.flexibleWidth = 1;
-            var background = row.AddComponent<Image>();
-            background.color = color;
-            if (onClick != null)
-            {
-                var button = row.AddComponent<Button>();
-                button.onClick.AddListener(() => onClick());
-            }
-            var textObj = new GameObject("Text", typeof(RectTransform));
-            textObj.transform.SetParent(row.transform, false);
-            var textRt = textObj.GetComponent<RectTransform>();
-            textRt.anchorMin = Vector2.zero;
-            textRt.anchorMax = Vector2.one;
-            textRt.sizeDelta = new Vector2(-12, 0);
-            text = textObj.AddComponent<TextMeshProUGUI>();
-            text.fontSize = 15;
-            text.alignment = TextAlignmentOptions.Center;
-            text.color = Color.white;
-            return row;
-        }
-
-        /// <summary>
-        /// "Local only: ON|OFF" at the top of the list: on (the default), the headset never
-        /// contacts the Factory and the rig records and seals locally; persisted in
-        /// pod_config.json (local_only), the same setting as POST /api/settings.
-        /// </summary>
-        private void CreateLocalOnlyToggle()
-        {
-            if (localOnlyToggleObj != null)
-            {
-                Destroy(localOnlyToggleObj);
-                localOnlyToggleObj = null;
-            }
-            var rig = RigCoordinator.Instance;
-            if (rig is null || listContainer == null) return;
-
-            localOnlyToggleObj = new GameObject("LocalOnlyToggle", typeof(RectTransform));
-            localOnlyToggleObj.transform.SetParent(listContainer, false);
-            localOnlyToggleObj.transform.SetAsFirstSibling();
-            var layout = localOnlyToggleObj.AddComponent<LayoutElement>();
-            layout.preferredHeight = 40;
-            layout.flexibleWidth = 1;
-            var background = localOnlyToggleObj.AddComponent<Image>();
-            var button = localOnlyToggleObj.AddComponent<Button>();
-
-            var textObj = new GameObject("Text", typeof(RectTransform));
-            textObj.transform.SetParent(localOnlyToggleObj.transform, false);
-            var textRt = textObj.GetComponent<RectTransform>();
-            textRt.anchorMin = Vector2.zero;
-            textRt.anchorMax = Vector2.one;
-            textRt.sizeDelta = Vector2.zero;
-            var text = textObj.AddComponent<TextMeshProUGUI>();
-            text.fontSize = 16;
-            text.alignment = TextAlignmentOptions.Center;
-            text.color = Color.white;
-
-            void Show()
-            {
-                var on = rig.LocalOnly;
-                text.text = on ? "Local only: ON  (never contacts the Factory)" : "Local only: OFF  (Factory allowed)";
-                background.color = on ? new Color(0.15f, 0.45f, 0.2f, 0.85f) : new Color(0.35f, 0.35f, 0.35f, 0.85f);
-            }
-            Show();
-            button.onClick.AddListener(() =>
-            {
-                var error = rig.SetLocalOnly(!rig.LocalOnly);
-                if (error != null)
-                {
-                    OnOperationComplete("Local only", false, error);
-                }
-                Show();
-            });
+            podCard.transform.SetAsFirstSibling();
         }
 
         private void CreateDeleteAllButton(int count)

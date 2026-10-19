@@ -429,7 +429,7 @@ namespace RealityLog.Network
         // ── POST /api/start-recording ──
 
         /// <summary>
-        /// Notes a start's answer for the recordings menu's Pod status block (the last refusal,
+        /// Notes a start's answer for the recordings menu's Pod card (the last refusal,
         /// cleared by a start that succeeds); the answer itself is unchanged.
         /// </summary>
         private static HttpResponse RecordStart(HttpResponse response)

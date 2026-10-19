@@ -35,7 +35,7 @@ namespace RealityLog.Rig
         /// <summary>
         /// What the panel says: a step's message while it runs and for a minute after, then
         /// the current state (enrolled or not). A collector's sign-in code is never kept here:
-        /// the Pod status block shows it from the rig's floor only while it is pending.
+        /// the Pod card shows it from the rig's floor only while it is pending.
         /// </summary>
         public string Status
         {
@@ -50,6 +50,10 @@ namespace RealityLog.Rig
                 endsOnSignIn = false;
             }
         }
+        /// <summary>A step's message while it runs and for a minute after; null once only the steady state is left.</summary>
+        public string? StepMessage => PodStatusBoard.SetupMessage(
+            endsOnSignIn && RigCoordinator.Instance is { CollectorSignedInNow: true } ? null : status,
+            Time.unscaledTime - statusSetAt, Busy);
         private string? status;
         private float statusSetAt;
         private bool endsOnSignIn; // the message is about a pending sign-in: gone once signed in
@@ -147,12 +151,12 @@ namespace RealityLog.Rig
                 try
                 {
                     // The code and its address come back in the rig's floor status, which the
-                    // Pod status block shows only while the sign-in is pending.
+                    // Pod card shows only while the sign-in is pending.
                     Newtonsoft.Json.Linq.JObject.Parse(rig.SignIn());
                     mainThread.Enqueue(() =>
                     {
                         signingIn = false;
-                        Status = "Sign-in code ready: approve it as the Collector line says. The headset chimes once you are signed in.";
+                        Status = "Sign-in code ready: approve it at the address shown. The headset chimes once you are signed in.";
                         endsOnSignIn = true;
                     });
                 }

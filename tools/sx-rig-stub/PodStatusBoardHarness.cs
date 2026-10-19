@@ -84,6 +84,24 @@ static class PodStatusBoardHarness
         Expect(uploadFailed.LastEpisode == "Last episode e: pending: waiting for the clock · upload failed: lease expired", "pending seal and failed upload: " + uploadFailed.LastEpisode);
         Expect(Lines(Base + ",\"seals\":{},\"uplink\":null").LastEpisode == "Last episode: none sealed yet", "no episodes");
 
+        // The card: its chip, the pending code and the label/value split.
+        Expect(empty.Readiness == PodReadiness.LocalOnly && empty.ReadinessText == "Local only" && empty.PodName == "", "unreadable status -> Local only chip, no pod name");
+        Expect(PodStatusBoard.Lines("{\"enrolled\":false,\"localOnly\":false}", null, false, false).Readiness == PodReadiness.NotReady, "not enrolled -> not ready");
+        var ready = Lines(Base + ",\"floor\":{\"operator\":{\"signed_in\":true}},\"lastCheck\":{\"ready\":true,\"problems\":[]}");
+        Expect(ready.Readiness == PodReadiness.Ready && ready.PodName == "pod_q1", "signed in with the rig checked ready -> Ready");
+        Expect(Lines("\"expected\":false,\"enrolled\":true,\"localOnly\":false,\"floor\":{\"operator\":{\"signed_in\":true}}").Readiness == PodReadiness.Ready, "no rig expected: a signed-in collector is enough");
+        Expect(Lines(Base + ",\"floor\":{\"operator\":{\"signed_in\":true}},\"lastCheck\":null").Readiness == PodReadiness.NotReady, "an unchecked rig is not ready");
+        Expect(Lines(Base + ",\"lastRefusal\":{\"code\":\"collector_signed_out\",\"message\":\"x\"}").Readiness == PodReadiness.Refused, "a standing refusal -> Refused");
+        Expect(Lines("\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"missing\"").ReadinessText == "Rig error", "a missing rig library -> Rig error");
+        Expect(pending.SignInCode == "WXYZ-1234" && pending.SignInAddress == "https://auth/device?code=WXYZ-1234", "pending sign-in carries the code and address");
+        Expect(signedIn.SignInCode == "" && expired.SignInCode == "", "no code once signed in or expired");
+        Expect(Lines(Base + ",\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}}", asking: true).SignInCode == "", "no code while asking for a new one");
+        Expect(PodStatusBoard.Field("Rig: not ready: left_camera: gone · 3 devices") == ("Rig", "not ready: left_camera: gone · 3 devices"), "field split at the first colon");
+        Expect(PodStatusBoard.Field("Last refusal (14:03:07): No task") == ("Last refusal", "14:03:07 · No task"), "field split moves the time to the value");
+        Expect(PodStatusBoard.Field(sealedEp.LastEpisode) == ("Last episode", "20261019_130000 · sealed 45.2 MB · upload: ok"), "field split moves the episode name to the value");
+        Expect(PodStatusBoard.Field("Last episode: none sealed yet") == ("Last episode", "none sealed yet"), "no episode yet");
+        Expect(PodStatusBoard.SetupMessage("Enrolling...", 600, true) == "Enrolling..." && PodStatusBoard.SetupMessage("Scan cancelled.", 61, false) == null, "a step message lasts while busy or a minute");
+
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;
     }
