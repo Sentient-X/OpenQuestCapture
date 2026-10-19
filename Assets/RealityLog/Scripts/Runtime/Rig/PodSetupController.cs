@@ -33,17 +33,26 @@ namespace RealityLog.Rig
         public string AuthUrl { get; private set; } = PodSetupJson.DefaultAuthUrl;
         public string JoinCode { get; private set; } = "";
         /// <summary>
-        /// What the panel says: the last step taken here, else whether this headset is
-        /// enrolled already (it holds a machine credential from an earlier launch).
+        /// What the panel says: a step's message while it runs and for a minute after, then
+        /// the current state (enrolled or not). A collector's sign-in code is never kept here:
+        /// the Pod status block shows it from the rig's floor only while it is pending.
         /// </summary>
         public string Status
         {
-            get => status ?? (RigCoordinator.Instance is { Enrolled: true } rig
-                ? "Enrolled as a pod. Local only is " + (rig.LocalOnly ? "on" : "off") + ". Scan a new code only to enroll again."
-                : "Not set up: scan the console's QR code, or type the join code.");
-            private set => status = value;
+            get => PodStatusBoard.SetupStatus(
+                endsOnSignIn && RigCoordinator.Instance is { CollectorSignedInNow: true } ? null : status,
+                Time.unscaledTime - statusSetAt, Busy,
+                RigCoordinator.Instance is { Enrolled: true }, RigCoordinator.Instance?.LocalOnly ?? true);
+            private set
+            {
+                status = value;
+                statusSetAt = Time.unscaledTime;
+                endsOnSignIn = false;
+            }
         }
         private string? status;
+        private float statusSetAt;
+        private bool endsOnSignIn; // the message is about a pending sign-in: gone once signed in
         public bool Busy => scanning || enrolling || signingIn;
         /// <summary>True while a collector sign-in code is being asked for.</summary>
         public bool SigningIn => signingIn;
@@ -137,13 +146,14 @@ namespace RealityLog.Rig
             {
                 try
                 {
-                    var shown = Newtonsoft.Json.Linq.JObject.Parse(rig.SignIn());
-                    var code = (string?)shown["user_code"] ?? "";
-                    var address = (string?)shown["verification_uri_complete"] ?? (string?)shown["verification_uri"] ?? "";
+                    // The code and its address come back in the rig's floor status, which the
+                    // Pod status block shows only while the sign-in is pending.
+                    Newtonsoft.Json.Linq.JObject.Parse(rig.SignIn());
                     mainThread.Enqueue(() =>
                     {
                         signingIn = false;
-                        Status = $"Sign in: open {address} and approve code {code}. The headset chimes once you are signed in.";
+                        Status = "Sign-in code ready: approve it as the Collector line says. The headset chimes once you are signed in.";
+                        endsOnSignIn = true;
                     });
                 }
                 catch (SxRigException ex)

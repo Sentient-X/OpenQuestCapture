@@ -303,7 +303,7 @@ namespace RealityLog.Network
                         Path = start ? "/api/start-recording" : "/api/stop-recording",
                         Body = "{}",
                     };
-                    var response = start ? HandleStartRecording(request) : HandleStopRecording(request);
+                    var response = start ? RecordStart(HandleStartRecording(request)) : HandleStopRecording(request);
                     var ok = response.StatusCode is >= 200 and < 300;
                     Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} -> {response.StatusCode} {response.Body}");
                     // The rig path cues its own start, stop and refusals (rig_not_ready); every
@@ -350,7 +350,7 @@ namespace RealityLog.Network
                     : TypedError(401, "unauthorized", "this headset is enrolled: send Authorization: Bearer <api token>");
             };
             server.Get("/api/status", HandleStatus);
-            server.Post("/api/start-recording", HandleStartRecording);
+            server.Post("/api/start-recording", request => RecordStart(HandleStartRecording(request)));
             server.Post("/api/stop-recording", HandleStopRecording);
             server.Get("/api/recordings", HandleListRecordings);
             server.WildcardGet("/api/recordings/", HandleStreamRecording);
@@ -427,6 +427,16 @@ namespace RealityLog.Network
         }
 
         // ── POST /api/start-recording ──
+
+        /// <summary>
+        /// Notes a start's answer for the recordings menu's Pod status block (the last refusal,
+        /// cleared by a start that succeeds); the answer itself is unchanged.
+        /// </summary>
+        private static HttpResponse RecordStart(HttpResponse response)
+        {
+            PodStartLog.Shared.Record(response.StatusCode, response.Body, DateTime.Now);
+            return response;
+        }
 
         private HttpResponse HandleStartRecording(HttpRequest request)
         {

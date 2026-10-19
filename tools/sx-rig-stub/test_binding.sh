@@ -62,3 +62,9 @@ cp "$newtonsoft" "$out/"
     -out:"$out/pod-setup-harness.exe" "$here/PodSetupJsonHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodSetupJson.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigApiGuard.cs"
 "$mono" "$out/pod-setup-harness.exe"
+
+# PodStatusBoard: the recordings menu's Pod status block and the last start's refusal.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+"$mono" "$out/pod-status-harness.exe"

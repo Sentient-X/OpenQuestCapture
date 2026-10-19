@@ -162,6 +162,7 @@ namespace RealityLog.UI
 
             CreatePodSetupRows();
             CreateLocalOnlyToggle();
+            CreatePodStatusRows();
 
             // Delete All button disabled for now
             // if (recordings.Count > 0 && listContainer != null)
@@ -201,6 +202,35 @@ namespace RealityLog.UI
 
             var view = status.AddComponent<PodSetupRowsView>();
             view.Bind(setup, statusText, scanText, siteText, authText, codeText, enrollText, signInText);
+        }
+
+        private readonly List<GameObject> podStatusRows = new();
+
+        /// <summary>
+        /// The Pod status block at the very top: pod, collector (a sign-in code only while it is
+        /// pending), task, rig, last refusal and last episode, kept fresh by PodStatusRowsView.
+        /// </summary>
+        private void CreatePodStatusRows()
+        {
+            foreach (var row in podStatusRows) if (row != null) Destroy(row);
+            podStatusRows.Clear();
+            if (RigCoordinator.Instance is null || listContainer == null) return;
+
+            // Created in reverse: each SetAsFirstSibling puts the row on top.
+            var names = new[] { "PodStatusEpisode", "PodStatusRefusal", "PodStatusRig", "PodStatusTask", "PodStatusCollector", "PodStatusPod" };
+            var texts = new TextMeshProUGUI[names.Length];
+            for (var i = 0; i < names.Length; i++)
+            {
+                var row = CreateRow(names[i], new Color(0.1f, 0.1f, 0.1f, 0.85f), null, out var text);
+                text.enableAutoSizing = true;
+                text.fontSizeMin = 10;
+                text.fontSizeMax = 14;
+                text.alignment = TextAlignmentOptions.MidlineLeft;
+                texts[names.Length - 1 - i] = text;
+                podStatusRows.Add(row);
+            }
+            var view = podStatusRows[0].AddComponent<PodStatusRowsView>();
+            view.Bind(texts);
         }
 
         private GameObject CreateRow(string name, Color color, System.Action? onClick, out TextMeshProUGUI text)
