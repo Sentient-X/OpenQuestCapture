@@ -98,9 +98,72 @@ namespace RealityLog.Network
             Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Auto-applied on startup");
         }
 
+        private readonly Queue<long> previewClockOffsets = new();
+        private long? PreviewClockOffset()
+        {
+            // Sensor exposures use the OVR clock. Bridge it to the same CLOCK_MONOTONIC
+            // as /api/timesync/ping; never add the pod offset to raw sensor time.
+            long before = MonotonicClock.Nanos();
+            double sensorSeconds = OVRPlugin.GetTimeInSeconds();
+            long after = MonotonicClock.Nanos();
+            if (after - before > 2_000_000 || sensorSeconds <= 0 ||
+                double.IsNaN(sensorSeconds) || double.IsInfinity(sensorSeconds)) return null;
+            previewClockOffsets.Enqueue(before + (after - before) / 2 - (long)Math.Round(sensorSeconds * 1e9));
+            while (previewClockOffsets.Count > 8) previewClockOffsets.Dequeue();
+            if (previewClockOffsets.Count < 4) return null;
+            var offsets = previewClockOffsets.ToArray();
+            Array.Sort(offsets);
+            long median = offsets[offsets.Length / 2];
+            foreach (long value in offsets)
+                if (Math.Abs(value - median) > 2_000_000) return null;
+            return median;
+        }
+
+        private volatile byte[]? previewPacket;
+        private long previewRequestedTicks;
+        private float lastPreviewPoll;
+        private RealityLog.Camera.VideoRecorderSurfaceProvider? previewProvider;
+
+        private HttpResponse HandlePreview(HttpRequest request)
+        {
+            System.Threading.Interlocked.Exchange(ref previewRequestedTicks, DateTime.UtcNow.Ticks);
+            var packet = previewPacket;
+            if (packet == null || packet.Length < 10)
+                return ServiceUnavailable("preview_unavailable", "No headset camera preview yet");
+            long stamp = 0;
+            for (int i = 0; i < 8; i++) stamp = (stamp << 8) | packet[i];
+            var jpeg = new byte[packet.Length - 8];
+            Buffer.BlockCopy(packet, 8, jpeg, 0, jpeg.Length);
+            return new HttpResponse { ContentType = "image/jpeg", BodyBytes = jpeg, CaptureTimeNs = stamp };
+        }
+
         private void Update()
         {
             server?.ProcessMainThreadQueue();
+            if (Time.realtimeSinceStartup - lastPreviewPoll >= 0.5f &&
+                DateTime.UtcNow.Ticks - System.Threading.Interlocked.Read(ref previewRequestedTicks) < TimeSpan.TicksPerSecond * 3)
+            {
+                lastPreviewPoll = Time.realtimeSinceStartup;
+                try
+                {
+                    if (previewProvider == null)
+                        foreach (var provider in FindObjectsByType<RealityLog.Camera.VideoRecorderSurfaceProvider>(FindObjectsSortMode.None))
+                            if (provider.OutputVideoFileName == "left_camera.mp4") previewProvider = provider;
+                    var sensorPacket = previewProvider?.GetPreviewPacket();
+                    var offset = PreviewClockOffset();
+                    previewPacket = null;
+                    if (sensorPacket != null && sensorPacket.Length > 8 && offset.HasValue)
+                    {
+                        long sensorStamp = 0;
+                        for (int i = 0; i < 8; i++) sensorStamp = (sensorStamp << 8) | sensorPacket[i];
+                        long mapped = checked(sensorStamp + offset.Value);
+                        var mappedPacket = (byte[])sensorPacket.Clone();
+                        for (int i = 7; i >= 0; i--) { mappedPacket[i] = (byte)mapped; mapped >>= 8; }
+                        previewPacket = mappedPacket;
+                    }
+                }
+                catch (Exception) { previewPacket = null; }
+            }
 
             // Refresh cached values on main thread (safe for JNI)
             cachedIsRecording = recordingManager != null && recordingManager.IsRecording;
@@ -177,6 +240,7 @@ namespace RealityLog.Network
             server.Get("/api/recordings", HandleListRecordings);
             server.WildcardGet("/api/recordings/", HandleStreamRecording);
             server.WildcardDelete("/api/recordings/", HandleDeleteRecording);
+            server.Get("/api/preview.jpg", HandlePreview);
             server.Post("/api/mark-episode", HandleMarkEpisode);
             server.Post("/api/keep-awake", HandleKeepAwake);
             server.Get("/api/diagnostics", HandleDiagnostics);

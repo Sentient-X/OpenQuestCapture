@@ -329,12 +329,14 @@ namespace RealityLog.Network
 
         private static void WriteResponse(NetworkStream stream, HttpResponse response)
         {
-            var bodyBytes = Encoding.UTF8.GetBytes(response.Body ?? "");
+            var bodyBytes = response.BodyBytes ?? Encoding.UTF8.GetBytes(response.Body ?? "");
             var sb = new StringBuilder();
             sb.Append($"HTTP/1.1 {response.StatusCode} {response.StatusText}\r\n");
             sb.Append($"Content-Type: {response.ContentType}\r\n");
             sb.Append($"Content-Length: {bodyBytes.Length}\r\n");
             sb.Append("Access-Control-Allow-Origin: *\r\n");
+            if (response.CaptureTimeNs.HasValue)
+                sb.Append($"X-Capture-Time-Ns: {response.CaptureTimeNs.Value}\r\nCache-Control: no-store\r\n");
             sb.Append("Connection: close\r\n");
             sb.Append("\r\n");
 
@@ -389,6 +391,8 @@ namespace RealityLog.Network
             sb.Append($"Content-Length: {contentLength}\r\n");
             sb.Append("Accept-Ranges: bytes\r\n");
             sb.Append("Access-Control-Allow-Origin: *\r\n");
+            if (response.CaptureTimeNs.HasValue)
+                sb.Append($"X-Capture-Time-Ns: {response.CaptureTimeNs.Value}\r\nCache-Control: no-store\r\n");
             sb.Append("Connection: close\r\n");
             sb.Append("\r\n");
 
@@ -432,6 +436,8 @@ namespace RealityLog.Network
         public string StatusText { get; set; } = "OK";
         public string ContentType { get; set; } = "application/json";
         public string? Body { get; set; }
+        public byte[]? BodyBytes { get; set; }
+        public long? CaptureTimeNs { get; set; }
         public string? FileStreamPath { get; set; }
 
         public static HttpResponse Json(int statusCode, string json) => new()
