@@ -133,8 +133,6 @@ namespace RealityLog.Rig
         private volatile string? openErrorJson;
         private volatile string[] awaitingPermission = Array.Empty<string>();
         private string dataPath = "";
-        // Reviews each sealed episode as a success: no one reviews on a headset.
-        private AutoReview? autoReview;
         private string appVersion = "";
         private float lastOpenAttempt = float.NegativeInfinity;
         private float lastPoll = float.NegativeInfinity;
@@ -217,7 +215,6 @@ namespace RealityLog.Rig
             }
             Instance = this;
             dataPath = Application.persistentDataPath;
-            autoReview = new AutoReview(dataPath);
             appVersion = Application.version;
             configPath = Path.Combine(Application.persistentDataPath, ConfigFileName);
             podConfigPath = Path.Combine(Application.persistentDataPath, PodConfigFileName);
@@ -1170,11 +1167,6 @@ namespace RealityLog.Rig
                     collectorSignedIn = signedIn;
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
-                    if (autoReview is { } review && enrolled && !localOnly)
-                    {
-                        // Off the status poll: a review waits on the network.
-                        System.Threading.Tasks.Task.Run(() => review.Pass(status, onFactory: true));
-                    }
                     var episodeId = activeEpisodeId;
                     if (episodeId != null && failureHandledFor != episodeId
                         && RigStatusJson.EpisodeFailure(status, episodeId) is JObject failure)
