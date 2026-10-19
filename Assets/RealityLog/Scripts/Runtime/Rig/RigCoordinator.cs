@@ -351,7 +351,7 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// Steps 1–2 of a rig start, for a caller that decided the rig takes part (any thread,
-        /// never Unity's main thread: <c>sx_rig_check</c> is bounded 5 s): runs the device check
+        /// never Unity's main thread: <c>sx_rig_check</c> is bounded 10 s on a Factory): runs the device check
         /// every time (<see cref="RigStartGate"/>) and, only when it passed, reserves
         /// <paramref name="sessionName"/> (the rig's episode_id) for the OQC start that follows,
         /// which <see cref="RecordingManager"/> reads as <see cref="ReservedSession"/>; a stop
@@ -1015,8 +1015,12 @@ namespace RealityLog.Rig
             }
 
             var nativeJson = opened ? nativeStatusJson : "null";
+            // A start's check holds episodeLock while it asks the Factory for the rig (up to
+            // 10 s); the main thread never waits on it, it keeps the status it has this poll.
+            if (!System.Threading.Monitor.TryEnter(episodeLock)) return;
             bool episodeIsActive;
-            lock (episodeLock) { episodeIsActive = episodeActive; }
+            try { episodeIsActive = episodeActive; }
+            finally { System.Threading.Monitor.Exit(episodeLock); }
 
             var json = new StringBuilder(512);
             json.Append("{\"expected\":").Append(Expected ? "true" : "false")
