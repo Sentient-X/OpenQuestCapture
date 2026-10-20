@@ -71,6 +71,9 @@ namespace RealityLog.Network
 
         private void Awake()
         {
+            Instance = this;
+            // The Pod card's and the phone's Start and Stop run the menu button's path.
+            PodControls.StartOrStop = StartOrStop;
             appStartTime = Time.realtimeSinceStartup;
             cachedAppVersion = Application.version;
 
@@ -159,6 +162,11 @@ namespace RealityLog.Network
 
         private void OnDestroy()
         {
+            if (ReferenceEquals(Instance, this))
+            {
+                Instance = null;
+                PodControls.StartOrStop = null;
+            }
             server?.Stop();
 
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -271,44 +279,61 @@ namespace RealityLog.Network
         // the rig for ~3.5 s).
         private int menuBusy;
 
+        /// <summary>The scene's controller, for the Pod card's and the phone's Start and Stop.</summary>
+        public static HttpServerController? Instance { get; private set; }
+
+        private void OnMenuButton() => StartOrStop(null, null);
+
         /// <summary>
         /// Starts or stops a recording exactly as POST /api/start-recording (rig check, OQC
         /// session first, sx_rig_start_armed) or /api/stop-recording does, with an empty body,
         /// so operator_id comes from pod_config.json. Runs on a worker thread, since a start
-        /// waits on the main thread and on the rig. The operator never sees the display:
+        /// waits on the main thread and on the rig. The operator may not see the display:
         /// every outcome is a sound (start rises, stop falls, refused buzzes).
+        /// The left menu button toggles (<paramref name="start"/> null); the Pod card and the
+        /// phone ask for one (a start while recording, or a stop while idle, is refused).
+        /// <paramref name="done"/> hears how it ended, on the worker thread. Returns why it
+        /// did not begin, or null.
         /// </summary>
-        private void OnMenuButton()
+        public string? StartOrStop(bool? start, Action<bool, string>? done)
         {
             if (server == null || recordingManager == null)
             {
-                return;
+                return "the recorder is not running";
             }
             var state = recordingManager.State;
             if (state == RecordingState.Stopping || Interlocked.CompareExchange(ref menuBusy, 1, 0) != 0)
             {
                 Debug.Log($"[{Constants.LOG_TAG}] menu-button ignored: a start or stop is in progress");
-                return;
+                return "a start or stop is in progress";
             }
-            var start = state == RecordingState.Idle;
+            var starting = state == RecordingState.Idle;
+            if (start is bool wanted && wanted != starting)
+            {
+                Volatile.Write(ref menuBusy, 0);
+                return wanted ? "an episode is already recording" : "no episode is recording";
+            }
             var rigExpected = RigCoordinator.Instance is { } r && r.IsExpected;
-            Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")}");
+            Debug.Log($"[{Constants.LOG_TAG}] menu-button {(starting ? "start" : "stop")}{(start == null ? "" : " (asked)")}");
             System.Threading.Tasks.Task.Run(() =>
             {
+                var ok = false;
+                var words = "";
                 try
                 {
                     var request = new HttpRequest
                     {
                         Method = "POST",
-                        Path = start ? "/api/start-recording" : "/api/stop-recording",
+                        Path = starting ? "/api/start-recording" : "/api/stop-recording",
                         Body = "{}",
                     };
-                    var response = start ? RecordStart(HandleStartRecording(request)) : HandleStopRecording(request);
-                    var ok = response.StatusCode is >= 200 and < 300;
-                    Debug.Log($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} -> {response.StatusCode} {response.Body}");
+                    var response = starting ? RecordStart(HandleStartRecording(request)) : HandleStopRecording(request);
+                    ok = response.StatusCode is >= 200 and < 300;
+                    words = PodControlWords.HttpWords(response.StatusCode, response.Body, starting);
+                    Debug.Log($"[{Constants.LOG_TAG}] menu-button {(starting ? "start" : "stop")} -> {response.StatusCode} {response.Body}");
                     // The rig path cues its own start, stop and refusals (rig_not_ready); every
                     // other outcome is cued here.
-                    var cue = (ok, start) switch
+                    var cue = (ok, starting) switch
                     {
                         (true, true) when !rigExpected => RigCues.Cue.Start,
                         (true, false) when !rigExpected => RigCues.Cue.Stop,
@@ -322,14 +347,17 @@ namespace RealityLog.Network
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError($"[{Constants.LOG_TAG}] menu-button {(start ? "start" : "stop")} failed: {ex}");
+                    Debug.LogError($"[{Constants.LOG_TAG}] menu-button {(starting ? "start" : "stop")} failed: {ex}");
                     RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+                    words = ex.Message;
                 }
                 finally
                 {
                     Volatile.Write(ref menuBusy, 0);
                 }
+                done?.Invoke(ok, words);
             });
+            return null;
         }
 
         // ── Route registration ──

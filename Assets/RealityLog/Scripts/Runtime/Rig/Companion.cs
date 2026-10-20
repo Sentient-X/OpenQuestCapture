@@ -20,6 +20,113 @@ namespace RealityLog.Rig
         void Collection(string task, long credited, long requested, long awaitingReview, string expects, bool factoryLinkOk, long? heardSecondsAgo);
         /// <summary><paramref name="stage"/> is companion.proto's HeadsetEpisodeStage number, 1 (RECORDED) to 7 (FAILED).</summary>
         void Episode(string id, int stage, string reason, string fix);
+        /// <summary>Each controller's charge, 0..100; null when it cannot be read.</summary>
+        void Controllers(int? leftPct, int? rightPct);
+    }
+
+    /// <summary>The Touch controllers' charge, read on the main thread (OVRInput); null where unknown.</summary>
+    public readonly struct ControllerCharge
+    {
+        public static readonly ControllerCharge Unknown = default;
+
+        public int? Left { get; }
+        public int? Right { get; }
+
+        public ControllerCharge(int? left, int? right)
+        {
+            Left = left;
+            Right = right;
+        }
+
+        /// <summary>
+        /// One controller's reading: OVRInput answers 0 for a controller that is off, not
+        /// connected or does not report, so 0 is unknown rather than empty.
+        /// </summary>
+        public static int? Reading(bool connected, int percent) =>
+            connected && percent > 0 ? Math.Min(percent, 100) : (int?)null;
+    }
+
+    /// <summary>The operator's controls, on the Pod card and from the paired phone (companion.proto CompanionCommand).</summary>
+    public enum PodControl
+    {
+        Check,
+        Start,
+        Stop,
+        EndCollection,
+    }
+
+    /// <summary>How one control ended, in the card's words; the phone gets the same.</summary>
+    public readonly struct PodControlResult
+    {
+        public PodControl Control { get; }
+        public bool Ok { get; }
+        public string Message { get; }
+
+        public PodControlResult(PodControl control, bool ok, string message)
+        {
+            Control = control;
+            Ok = ok;
+            Message = message;
+        }
+    }
+
+    /// <summary>The controls' words and wire names. Pure: tested on the host.</summary>
+    public static class PodControlWords
+    {
+        /// <summary>companion.proto's CompanionCommand name without its prefix.</summary>
+        public static string WireName(PodControl control) => control switch
+        {
+            PodControl.Check => "CHECK",
+            PodControl.Start => "START",
+            PodControl.Stop => "STOP",
+            _ => "END_COLLECTION",
+        };
+
+        public static string Label(PodControl control) => control switch
+        {
+            PodControl.Check => "Check",
+            PodControl.Start => "Start",
+            PodControl.Stop => "Stop",
+            _ => "End collection",
+        };
+
+        /// <summary>The pill's word while the control runs.</summary>
+        public static string Running(PodControl control) => control switch
+        {
+            PodControl.Check => "Checking...",
+            PodControl.Start => "Starting...",
+            PodControl.Stop => "Stopping...",
+            _ => "Ending...",
+        };
+
+        /// <summary>"End collection now? 3 of 10 recorded": what both screens ask before ending.</summary>
+        public static string EndQuestion(long credited, long requested) =>
+            requested > 0 ? "End collection now? " + credited + " of " + requested + " recorded" : "End collection now?";
+
+        /// <summary>The result line under the controls: "Check: Ready to record".</summary>
+        public static string Line(PodControlResult result) =>
+            Label(result.Control) + ": " + (result.Message.Length > 0 ? result.Message : result.Ok ? "done" : "refused");
+
+        /// <summary>The words of an HTTP start or stop answer: its message, else its error code, else the status.</summary>
+        public static string HttpWords(int statusCode, string? body, bool start)
+        {
+            if (statusCode is >= 200 and < 300) return start ? "Recording" : "Stopped; the episode seals next";
+            try
+            {
+                if (body != null && JToken.Parse(body) is JObject json)
+                {
+                    if (json["message"] is JValue { Type: JTokenType.String } message && ((string?)message)?.Length > 0) return (string)message!;
+                    if (json["error"] is JValue { Type: JTokenType.String } error && ((string?)error)?.Length > 0) return (string)error!;
+                }
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+            }
+            return (start ? "the start" : "the stop") + " was refused (" + statusCode + ")";
+        }
+
+        /// <summary>A controller's charge on the strip: "64%", or "-" when unknown.</summary>
+        public static string Percent(int? pct) => pct is int p ? p + "%" : "-";
     }
 
     /// <summary>
@@ -38,10 +145,11 @@ namespace RealityLog.Rig
         /// <summary>companion.proto's HeadsetDeviceState name without its prefix ("READY", "LIVE", ...).</summary>
         public static string StateName(PodDeviceState state) => state.ToString().ToUpperInvariant();
 
-        public static void Write(PodScreen screen, JObject? status, string podName, IHeadsetStatusWriter writer)
+        public static void Write(PodScreen screen, JObject? status, string podName, ControllerCharge controllers, IHeadsetStatusWriter writer)
         {
             var podId = Bool(status, "enrolled") == true ? Str(status?["podId"]) : "";
             writer.Header(screen.Recording, Battery(status), podId, podName, Collector(status));
+            writer.Controllers(controllers.Left, controllers.Right);
             // Ready and Recording stop nothing: the phone shows the headset as ready from that.
             if (screen.Blocker.Tone != PodTone.Good) writer.Blocker(screen.Blocker.Headline, screen.Blocker.Action);
             foreach (var device in screen.Devices)
@@ -111,6 +219,10 @@ namespace RealityLog.Rig
 
         public void Episode(string id, int stage, string reason, string fix) =>
             text.Append("E|").Append(id).Append('|').Append(stage).Append('|').Append(reason).Append('|').Append(fix).Append('\n');
+
+        public void Controllers(int? leftPct, int? rightPct) =>
+            text.Append("K|").Append(leftPct?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('|')
+                .Append(rightPct?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('\n');
     }
 
     /// <summary>What the sign-in hand-off sends the phone next.</summary>

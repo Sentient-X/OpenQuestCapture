@@ -63,7 +63,7 @@ namespace RealityLog.Rig
         /// <paramref name="tracker"/>, the phone's asks to the handlers. A phone that no longer
         /// holds this pairing is forgotten here too.
         /// </summary>
-        public void Drain(CompanionLinkTracker tracker, Action signInAsk, Action signOutAsk)
+        public void Drain(CompanionLinkTracker tracker, Action signInAsk, Action signOutAsk, Action<PodControl> controlAsk)
         {
             while (events.TryDequeue(out var e))
             {
@@ -89,6 +89,9 @@ namespace RealityLog.Rig
                         break;
                     case "sign_out":
                         signOutAsk();
+                        break;
+                    case "control":
+                        controlAsk((PodControl)Enum.Parse(typeof(PodControl), e.a));
                         break;
                 }
             }
@@ -122,6 +125,10 @@ namespace RealityLog.Rig
 
         /// <summary>One of <paramref name="collector"/> (signed in) or <paramref name="error"/> is non-empty.</summary>
         public bool SendSignInResult(string collector, string error) => headset.Call<bool>("sendSignInResult", collector, error);
+
+        /// <summary>How one of the operator's controls ended, pressed on the phone or on the Pod card. False when no session is open.</summary>
+        public bool SendCommandResult(PodControlResult result) =>
+            headset.Call<bool>("sendCommandResult", PodControlWords.WireName(result.Control), result.Ok, result.Message);
 
         /// <summary>
         /// Sends one HeadsetStatus, written by <see cref="HeadsetStatusMap"/>; the library repeats
@@ -166,6 +173,10 @@ namespace RealityLog.Rig
             public void onPaired(string phoneName, string operatorDisplayName) => events.Enqueue(("paired", phoneName ?? "", operatorDisplayName ?? ""));
             public void onSignInAsk() => events.Enqueue(("sign_in", "", ""));
             public void onSignOutAsk() => events.Enqueue(("sign_out", "", ""));
+            public void onCheckAsk() => events.Enqueue(("control", nameof(PodControl.Check), ""));
+            public void onStartAsk() => events.Enqueue(("control", nameof(PodControl.Start), ""));
+            public void onStopAsk() => events.Enqueue(("control", nameof(PodControl.Stop), ""));
+            public void onEndCollectionAsk() => events.Enqueue(("control", nameof(PodControl.EndCollection), ""));
             public void onError(string failure, string detail) => events.Enqueue(("error", failure ?? "", detail ?? ""));
         }
 
@@ -198,6 +209,8 @@ namespace RealityLog.Rig
 
             public void Episode(string id, int stage, string reason, string fix) =>
                 Call("addEpisode", id, HeadsetStatusMap.StageNames[stage], reason, fix);
+
+            public void Controllers(int? leftPct, int? rightPct) => Call("setControllerBattery", leftPct ?? -1, rightPct ?? -1);
 
             private static int Clamp(long value) => (int)Math.Max(0, Math.Min(value, int.MaxValue));
         }

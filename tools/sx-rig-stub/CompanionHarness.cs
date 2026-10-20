@@ -37,22 +37,24 @@ static class CompanionHarness
         public void Collection(string task, long credited, long requested, long awaitingReview, string expects, bool factoryLinkOk, long? heardSecondsAgo) =>
             Coll = (task, credited, requested, awaitingReview, expects, factoryLinkOk, heardSecondsAgo);
         public void Episode(string id, int stage, string reason, string fix) => Episodes.Add((id, stage, reason, fix));
+        public (int? left, int? right) Pads;
+        public void Controllers(int? leftPct, int? rightPct) => Pads = (leftPct, rightPct);
     }
 
-    static Recorder Map(string body, StreamLiveness? live = null, DateTime? at = null)
+    static Recorder Map(string body, StreamLiveness? live = null, DateTime? at = null, ControllerCharge pads = default)
     {
         var json = "{" + body + "}";
         var screen = PodScreenBoard.Build(json, null, false, live ?? new StreamLiveness(), at ?? T0);
         var recorder = new Recorder();
-        HeadsetStatusMap.Write(screen, JObject.Parse(json), "Bench pod 1", recorder);
+        HeadsetStatusMap.Write(screen, JObject.Parse(json), "Bench pod 1", pads, recorder);
         return recorder;
     }
 
-    static string Fingerprint(string body, DateTime at)
+    static string Fingerprint(string body, DateTime at, ControllerCharge pads = default)
     {
         var json = "{" + body + "}";
         var fingerprint = new HeadsetStatusFingerprint();
-        HeadsetStatusMap.Write(PodScreenBoard.Build(json, null, false, new StreamLiveness(), at), JObject.Parse(json), "p", fingerprint);
+        HeadsetStatusMap.Write(PodScreenBoard.Build(json, null, false, new StreamLiveness(), at), JObject.Parse(json), "p", pads, fingerprint);
         return fingerprint.Text;
     }
 
@@ -63,6 +65,7 @@ static class CompanionHarness
         Offers();
         Card();
         Tracker();
+        Controls();
         Console.WriteLine(failures == 0 ? "companion harness: all passed" : "companion harness: " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }
@@ -250,5 +253,30 @@ static class CompanionHarness
         var odd = new CompanionLinkTracker();
         odd.OnState("teleporting", false);
         Expect(odd.Phase == CompanionPhase.Failed, "an unknown state word never reads as connected");
+    }
+
+    static void Controls()
+    {
+        // Controller charge: OVRInput's 0 and a disconnected controller are unknown; the phone gets both sides.
+        Expect(ControllerCharge.Reading(true, 64) == 64 && ControllerCharge.Reading(true, 0) == null
+            && ControllerCharge.Reading(false, 80) == null && ControllerCharge.Reading(true, 140) == 100, "controller readings: 64, 0 unknown, off unknown, clamped");
+        var mapped = Map(Pod + "," + SignedIn, pads: new ControllerCharge(72, null));
+        Expect(mapped.Pads == (72, null), "controllers mapped: " + mapped.Pads);
+        Expect(Map(Pod).Pads == (null, null), "unread controllers stay absent");
+        Expect(Fingerprint(Pod, T0, new ControllerCharge(72, 40)) != Fingerprint(Pod, T0, new ControllerCharge(71, 40)), "a controller's charge changing is a change");
+
+        // Words: wire names are companion.proto's, the question carries the numbers, a result line names its control.
+        Expect(PodControlWords.WireName(PodControl.Check) == "CHECK" && PodControlWords.WireName(PodControl.EndCollection) == "END_COLLECTION"
+            && PodControlWords.WireName(PodControl.Start) == "START" && PodControlWords.WireName(PodControl.Stop) == "STOP", "wire names");
+        Expect(PodControlWords.EndQuestion(3, 10) == "End collection now? 3 of 10 recorded", "end question with numbers");
+        Expect(PodControlWords.EndQuestion(0, 0) == "End collection now?", "end question without a target");
+        Expect(PodControlWords.Line(new PodControlResult(PodControl.Check, true, "Ready to record")) == "Check: Ready to record", "result line");
+        Expect(PodControlWords.Line(new PodControlResult(PodControl.Stop, false, "")) == "Stop: refused", "an empty refusal still says refused");
+        Expect(PodControlWords.HttpWords(200, "{}", true) == "Recording", "a start that worked");
+        Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"message\":\"the device check did not pass: right camera missing\"}", true)
+            == "the device check did not pass: right camera missing", "a refused start in the rig's words");
+        Expect(PodControlWords.HttpWords(409, "{\"error\":\"not_recording\"}", false) == "not_recording", "a refusal with no message names its error");
+        Expect(PodControlWords.HttpWords(500, "not json", false) == "the stop was refused (500)", "an unreadable refusal names the status");
+        Expect(PodControlWords.Percent(null) == "-" && PodControlWords.Percent(7) == "7%", "percent words");
     }
 }

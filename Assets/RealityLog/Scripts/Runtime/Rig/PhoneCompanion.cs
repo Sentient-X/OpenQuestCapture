@@ -73,6 +73,7 @@ namespace RealityLog.Rig
             link = CompanionLink.Open();
             if (link == null) return;
             if (PodSetupController.Instance is { } setup) setup.SignInFailed += OnSignInFailed;
+            if (PodControls.Instance is { } controls) controls.Finished += OnControlFinished;
             tracker.Reset(link.Paired);
             // Reconnect to the paired phone on launch, once Bluetooth is allowed.
             if (link.Paired) WithPermissions(() => Safe(link.Connect));
@@ -82,6 +83,7 @@ namespace RealityLog.Rig
         {
             StopScan();
             if (PodSetupController.Instance is { } setup) setup.SignInFailed -= OnSignInFailed;
+            if (PodControls.Instance is { } controls) controls.Finished -= OnControlFinished;
             link?.Dispose();
             link = null;
         }
@@ -224,7 +226,7 @@ namespace RealityLog.Rig
         private void ReadLink()
         {
             var before = tracker.Phase;
-            Safe(() => link!.Drain(tracker, SignInAsked, SignOutAsked));
+            Safe(() => link!.Drain(tracker, SignInAsked, SignOutAsked, ControlAsked));
             PhoneName = link!.PhoneName;
             OperatorName = link.OperatorName;
             // The link's own progress replaces a refusal this side held.
@@ -281,6 +283,27 @@ namespace RealityLog.Rig
 
         private void OnSignInFailed(string error) => signIn.SignInFailed(error);
 
+        /// <summary>The phone's Check, Start, Stop or (confirmed there) End collection: the Pod card's own control.</summary>
+        private void ControlAsked(PodControl control)
+        {
+            Debug.Log($"[{Constants.LOG_TAG}] PhoneCompanion: the phone asked {control}");
+            if (PodControls.Instance is { } controls)
+            {
+                controls.Run(control);
+                return;
+            }
+            Safe(() => link!.SendCommandResult(new PodControlResult(control, false, "the headset's controls are not running")), false);
+        }
+
+        /// <summary>Every control's result goes to the phone, whichever screen it was pressed on.</summary>
+        private void OnControlFinished(PodControlResult result)
+        {
+            if (link == null || tracker.Phase != CompanionPhase.Connected) return;
+            Safe(() => link.SendCommandResult(result), false);
+            lastStatusPrint = ""; // a check or a start changes the screen: push it now
+            lastStatusCheck = float.NegativeInfinity;
+        }
+
         private void HandOffSignIn()
         {
             var rig = RigCoordinator.Instance;
@@ -307,11 +330,12 @@ namespace RealityLog.Rig
             var screen = PodScreenBoard.Build(json, PodStartLog.Shared.Last, PodStartLog.Shared.Succeeded, liveness, DateTime.UtcNow);
             var print = new HeadsetStatusFingerprint();
             var podName = PodName();
-            HeadsetStatusMap.Write(screen, status, podName, print);
+            var controllers = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown;
+            HeadsetStatusMap.Write(screen, status, podName, controllers, print);
             if (print.Text == lastStatusPrint && now - lastStatusSent < StatusEverySeconds) return;
             // The library keeps the latest and repeats it every 5 s; this side resends at 5 s too so
             // the link's age is fresh. A send with no session open is still the one sent on reconnect.
-            Safe(() => link!.SendStatus(writer => HeadsetStatusMap.Write(screen, status, podName, writer)), false);
+            Safe(() => link!.SendStatus(writer => HeadsetStatusMap.Write(screen, status, podName, controllers, writer)), false);
             lastStatusPrint = print.Text;
             lastStatusSent = now;
         }

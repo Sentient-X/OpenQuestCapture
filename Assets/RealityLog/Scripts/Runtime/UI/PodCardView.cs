@@ -95,6 +95,19 @@ namespace RealityLog.UI
         private TextMeshProUGUI pairText = default!, forgetText = default!;
         private float forgetArmedUntil = float.NegativeInfinity;
         private const float ForgetConfirmSeconds = 4f;
+        // The operator's controls: the battery strip, Check · Start/Stop · End collection, and a
+        // panel for End collection's question or the last control's answer.
+        private TextMeshProUGUI headsetBattery = default!, leftBattery = default!, rightBattery = default!;
+        private TextMeshProUGUI checkText = default!, toggleText = default!, endText = default!;
+        private Image checkImage = default!, toggleImage = default!, endImage = default!;
+        private GameObject controlPanelObj = default!;
+        private Image controlPanel = default!;
+        private TextMeshProUGUI controlHeadline = default!, controlAction = default!;
+        private float endArmedUntil = float.NegativeInfinity;
+        private const float EndConfirmSeconds = 8f;
+        private const float ResultShownSeconds = 60f;
+        private int? headsetPct;
+        private RecordingManager? recorder;
 
         private string? shownStatus;
         private StartRefusal? shownRefusal;
@@ -172,6 +185,36 @@ namespace RealityLog.UI
             code = Text("Code", codeRow.transform, 34, Color.white, flexible: true);
             code.fontStyle = FontStyles.Bold;
             address = Field(transform, "Approve at", out addressRow);
+
+            // Controls: the battery strip, then Check · Start/Stop · End collection, then a panel
+            // with End collection's question or the last control's answer.
+            var controlsSection = Section(transform, "Controls");
+            var battery = Row("Battery", controlsSection.transform, LineHeight, 12);
+            Label(battery, "Battery");
+            headsetBattery = Text("Headset", battery, 22, TextColor, flexible: true);
+            leftBattery = Text("Left", battery, 22, TextColor, flexible: true);
+            rightBattery = Text("Right", battery, 22, TextColor, flexible: true);
+            var controlRow = Row("ControlActions", controlsSection.transform, PillHeight, 12);
+            Pill(controlRow, "Check", SecondaryColor, () => PodControls.Instance?.Run(PodControl.Check), out checkText, out checkImage);
+            Pill(controlRow, "StartStop", PrimaryColor, StartOrStop, out toggleText, out toggleImage);
+            Pill(controlRow, "EndCollection", SecondaryColor, EndCollection, out endText, out endImage);
+            controlPanelObj = new GameObject("ControlPanel", typeof(RectTransform));
+            controlPanelObj.transform.SetParent(controlsSection.transform, false);
+            controlPanel = controlPanelObj.AddComponent<Image>();
+            Rounded(controlPanel, FieldColor);
+            var controlPanelLayout = controlPanelObj.AddComponent<VerticalLayoutGroup>();
+            controlPanelLayout.padding = new RectOffset(18, 18, 10, 12);
+            controlPanelLayout.spacing = 2;
+            controlPanelLayout.childControlWidth = true;
+            controlPanelLayout.childControlHeight = true;
+            controlPanelLayout.childForceExpandWidth = true;
+            controlPanelLayout.childForceExpandHeight = false;
+            controlHeadline = Text("Headline", controlPanelObj.transform, 22, TextColor, flexible: false);
+            controlHeadline.fontStyle = FontStyles.Bold;
+            Wrap(controlHeadline);
+            controlAction = Text("Action", controlPanelObj.transform, 20, TextColor, flexible: false);
+            Wrap(controlAction);
+            controlPanelObj.SetActive(false);
 
             // Devices: one row per role, a pill for its state and its fix beneath.
             devicesSection = Section(transform, "Devices");
@@ -282,6 +325,7 @@ namespace RealityLog.UI
                 shownSucceeded = succeeded;
                 shownAsking = asking;
                 lines = PodStatusBoard.Lines(status, lastStart, succeeded, asking);
+                headsetPct = HeadsetBattery(status);
                 screen = PodScreenBoard.Build(status, lastStart, succeeded, liveness, DateTime.UtcNow);
                 ShowStatus();
                 ShowScreen();
@@ -405,6 +449,7 @@ namespace RealityLog.UI
             localImage.color = SecondaryColor;
             localText.color = Color.white;
 
+            ShowControlsSection(enrolled, localOnly);
             ShowPhone();
 
             Set(manualText, expanded ? "Hide setup" : "Set up manually");
@@ -444,6 +489,114 @@ namespace RealityLog.UI
             pairImage.color = card.PairPrimary ? PrimaryColor : SecondaryColor;
             Show(forgetPill, card.ShowForget);
             Set(forgetText, Time.unscaledTime < forgetArmedUntil ? "Tap again to forget" : "Forget phone");
+        }
+
+        /// <summary>The battery strip, the three controls by state, and End collection's question or the last answer.</summary>
+        private void ShowControlsSection(bool enrolled, bool localOnly)
+        {
+            var controls = PodControls.Instance;
+            var running = controls?.Running;
+            recorder ??= FindFirstObjectByType<RecordingManager>();
+            var recording = recorder != null ? recorder.State != RecordingState.Idle : screen.Recording;
+
+            ShowCharge(headsetBattery, "Headset", headsetPct);
+            ShowCharge(leftBattery, "Left", controls?.Controllers.Left);
+            ShowCharge(rightBattery, "Right", controls?.Controllers.Right);
+
+            Set(checkText, running == PodControl.Check ? PodControlWords.Running(PodControl.Check) : "Check");
+            ShowEnabled(checkImage, checkText, SecondaryColor, running == null && !recording);
+            Set(toggleText, running is PodControl.Start or PodControl.Stop ? PodControlWords.Running(running.Value) : recording ? "Stop" : "Start");
+            ShowEnabled(toggleImage, toggleText, recording ? ErrorColor : PrimaryColor, running == null);
+
+            var canEnd = running == null && !recording && enrolled && !localOnly;
+            if (!canEnd) endArmedUntil = float.NegativeInfinity;
+            var armed = Time.unscaledTime < endArmedUntil;
+            Set(endText, running == PodControl.EndCollection ? PodControlWords.Running(PodControl.EndCollection) : armed ? "End now" : "End collection");
+            ShowEnabled(endImage, endText, armed ? ErrorColor : SecondaryColor, canEnd);
+
+            // The panel: the question while End collection waits for its second tap, else the last answer for a minute.
+            var last = controls?.Last;
+            if (armed)
+            {
+                ShowControlPanel(PodTone.Warning, PodControlWords.EndQuestion(screen.Credited, screen.Requested),
+                    "Tap End now to end it: its episodes are reviewed and uploaded as when it fills");
+            }
+            else if (running is PodControl busy)
+            {
+                ShowControlPanel(PodTone.Neutral, PodControlWords.Running(busy), "");
+            }
+            else if (last is PodControlResult result && Time.unscaledTime - controls!.LastAt < ResultShownSeconds)
+            {
+                ShowControlPanel(result.Ok ? PodTone.Good : PodTone.Error, PodControlWords.Line(result), "");
+            }
+            else
+            {
+                Show(controlPanelObj, false);
+            }
+        }
+
+        private void ShowControlPanel(PodTone tone, string headline, string action)
+        {
+            Show(controlPanelObj, true);
+            var tint = Tint(tone);
+            controlPanel.color = new Color(tint.r, tint.g, tint.b, 0.16f);
+            controlHeadline.color = tone == PodTone.Neutral ? TextColor : tint;
+            Set(controlHeadline, headline);
+            Show(controlAction.gameObject, action.Length > 0);
+            Set(controlAction, action);
+        }
+
+        /// <summary>"Left 64%", tinted by how low it is; "Left -" when it cannot be read.</summary>
+        private static void ShowCharge(TextMeshProUGUI text, string label, int? pct)
+        {
+            Set(text, label + " " + PodControlWords.Percent(pct));
+            text.color = pct is int p ? p <= 15 ? ErrorColor : p <= 30 ? WarningColor : GoodColor : DimTextColor;
+        }
+
+        /// <summary>A pill that cannot act now is drawn as a field, its word dimmed; it still answers a tap with why.</summary>
+        private static void ShowEnabled(Image pill, TextMeshProUGUI text, Color color, bool enabled)
+        {
+            pill.color = enabled ? color : FieldColor;
+            text.color = enabled ? Color.white : DimTextColor;
+        }
+
+        private void StartOrStop()
+        {
+            recorder ??= FindFirstObjectByType<RecordingManager>();
+            var recording = recorder != null ? recorder.State != RecordingState.Idle : screen.Recording;
+            PodControls.Instance?.Run(recording ? PodControl.Stop : PodControl.Start);
+        }
+
+        /// <summary>End collection asks for a second tap, with how far the collection got.</summary>
+        private void EndCollection()
+        {
+            if (Time.unscaledTime < endArmedUntil)
+            {
+                endArmedUntil = float.NegativeInfinity;
+                PodControls.Instance?.Run(PodControl.EndCollection);
+                return;
+            }
+            recorder ??= FindFirstObjectByType<RecordingManager>();
+            if (recorder != null && recorder.State != RecordingState.Idle)
+            {
+                // Refused with its reason, on the card and the phone.
+                PodControls.Instance?.Run(PodControl.EndCollection);
+                return;
+            }
+            endArmedUntil = Time.unscaledTime + EndConfirmSeconds;
+        }
+
+        /// <summary>deviceReport.battery_percent from the rig status; null when unread.</summary>
+        private static int? HeadsetBattery(string status)
+        {
+            try
+            {
+                return HeadsetStatusMap.Battery(Newtonsoft.Json.Linq.JToken.Parse(status) as Newtonsoft.Json.Linq.JObject);
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                return null;
+            }
         }
 
         /// <summary>Forget phone asks for a second tap: a forgotten phone pairs again only from a fresh QR.</summary>

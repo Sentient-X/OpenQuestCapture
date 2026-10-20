@@ -731,6 +731,99 @@ namespace RealityLog.Rig
         public string Command(string commandJson) => SxRig.Command(commandJson);
 
         /// <summary>
+        /// Check, on the Pod card and from the paired phone: <c>sx_rig_check</c> now, between
+        /// episodes, on the calling (worker) thread (bounded 10 s on a Factory). The report is
+        /// kept as <c>lastCheck</c>, so the card's devices show what it found.
+        /// </summary>
+        public PodControlResult CheckNow()
+        {
+            if (!opened)
+            {
+                return new PodControlResult(PodControl.Check, false,
+                    libraryMissing ? "this build has no libsx_rig.so" : "the rig is not open yet");
+            }
+            lock (episodeLock)
+            {
+                if (episodeActive || reservedSession != null)
+                {
+                    return new PodControlResult(PodControl.Check, false, "an episode is recording; check between episodes");
+                }
+                try
+                {
+                    var report = SxRig.RunCheck();
+                    lastCheckJson = report;
+                    var (ready, problems) = RigStatusJson.Check(report);
+                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: check asked by the operator: ready={ready} {problems}");
+                    return new PodControlResult(PodControl.Check, ready, ready ? "Ready to record" : problems);
+                }
+                catch (SxRigException ex)
+                {
+                    lastCheckJson = "{\"ready\":false,\"error\":" + ex.ErrorJson + "}";
+                    return new PodControlResult(PodControl.Check, false, ErrorDetail(ex));
+                }
+            }
+        }
+
+        /// <summary>
+        /// End collection now, on the Pod card and from the paired phone (after the operator
+        /// confirmed): <c>sx_rig_command {"command": "end_recording"}</c>, sx-pod's End collection.
+        /// The rig ends the open collection, tells the Factory, and sends what a collection that
+        /// filled sends (End collection, reviews, finalize), so its episodes finalize and upload
+        /// as at the cap. Refused while an episode records. Calling (worker) thread: it waits on
+        /// the network, holding the episode lock so no start slips in while it ends.
+        /// </summary>
+        public PodControlResult EndCollectionNow()
+        {
+            if (!opened || !enrolled || localOnly)
+            {
+                return new PodControlResult(PodControl.EndCollection, false,
+                    localOnly ? "Local only records no Factory collection" : "this headset is not on the Factory");
+            }
+            lock (episodeLock)
+            {
+                if (episodeActive || reservedSession != null)
+                {
+                    return new PodControlResult(PodControl.EndCollection, false, "an episode is recording; stop it first");
+                }
+                try
+                {
+                    var answer = SxRig.Command("{\"command\":\"end_recording\"}");
+                    var heard = JToken.Parse(answer)["answer"]?["heard"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
+                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collection ended by the operator: {answer}");
+                    return new PodControlResult(PodControl.EndCollection, true, heard
+                        ? "Ended; its episodes are reviewed and uploaded"
+                        : "Ended; the Factory is told when it hears the headset again");
+                }
+                catch (SxRigException ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: end collection refused: {ex.Message}");
+                    return new PodControlResult(PodControl.EndCollection, false, ErrorDetail(ex));
+                }
+                catch (JsonException)
+                {
+                    return new PodControlResult(PodControl.EndCollection, true, "Ended");
+                }
+            }
+        }
+
+        /// <summary>The rig's own words for a refusal: its error's detail, else the error.</summary>
+        private static string ErrorDetail(SxRigException ex)
+        {
+            try
+            {
+                if (JToken.Parse(ex.ErrorJson) is JObject error && error["detail"] is JValue { Type: JTokenType.String } detail
+                    && ((string?)detail)?.Length > 0)
+                {
+                    return (string)detail!;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return ex.Error.ToString();
+        }
+
+        /// <summary>
         /// Stops the rig's episode and returns its stop receipt (a JSON object: the library's
         /// <c>{"outcome": ...}</c>, or <c>{"error": {...}}</c> when the stop call itself failed),
         /// or null when no rig episode ran. Bounded 5 s. Any thread. Idempotent: a second call
