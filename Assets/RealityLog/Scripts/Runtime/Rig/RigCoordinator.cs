@@ -90,6 +90,7 @@ namespace RealityLog.Rig
         private volatile bool enrolled;
         private float lastIdentityPoll = float.NegativeInfinity;
         private volatile string headsetSerial = "";
+        private volatile string podName = "";
         private volatile string tailscaleIp = "";
         private volatile string apkBuildId = "";
         // EmbodimentAssets' install of the seal's meshes into filesDir; the rig opens only once
@@ -678,7 +679,46 @@ namespace RealityLog.Rig
         /// <c>sx_rig_sign_in</c> on the calling (worker) thread; throws
         /// <see cref="SxRigException"/>. The cue plays when the approval lands.
         /// </summary>
-        public string SignIn() => SxRig.SignIn();
+        public string SignIn()
+        {
+            var answer = SxRig.SignIn();
+            try
+            {
+                // {"user_code", "verification_uri_complete", "expires_in"}: remember when the code
+                // lapses, for the phone companion's SignInRequest.
+                if (JToken.Parse(answer) is JObject shown && shown["user_code"] is JValue { Type: JTokenType.String } code
+                    && shown["expires_in"] is JValue { Type: JTokenType.Integer } seconds)
+                {
+                    lastSignInCode = new IssuedSignInCode((string)code!, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (long)seconds * 1000);
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return answer;
+        }
+
+        /// <summary>A collector sign-in code this headset was issued, and when it lapses (Unix ms).</summary>
+        public sealed class IssuedSignInCode
+        {
+            public string Code { get; }
+            public long ExpiresAtMs { get; }
+
+            public IssuedSignInCode(string code, long expiresAtMs)
+            {
+                Code = code;
+                ExpiresAtMs = expiresAtMs;
+            }
+        }
+
+        private volatile IssuedSignInCode? lastSignInCode;
+
+        /// <summary>When <paramref name="code"/> lapses (Unix ms), or 0 when this run did not issue it.</summary>
+        public long SignInCodeExpiresAtMs(string code) =>
+            lastSignInCode is { } issued && issued.Code == code ? issued.ExpiresAtMs : 0;
+
+        /// <summary>pod_config.json's pod_name, "" when it has none (read with the identity).</summary>
+        public string PodName => podName;
 
         /// <summary><c>sx_rig_sign_out</c>; throws <see cref="SxRigException"/>.</summary>
         public void SignOut()
@@ -853,6 +893,18 @@ namespace RealityLog.Rig
                 meshes, tailscaleIp, rig, localOnly, apkBuildId).ToString(Formatting.None);
         }
 
+        private string ReadPodConfigName()
+        {
+            try
+            {
+                return ReadPodConfig()["pod_name"] is JValue { Type: JTokenType.String } name ? (string?)name ?? "" : "";
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+            {
+                return "";
+            }
+        }
+
         private string ReadPodConfigSerial()
         {
             try
@@ -919,6 +971,7 @@ namespace RealityLog.Rig
             {
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
                 headsetSerial = ReadPodConfigSerial();
+                podName = ReadPodConfigName();
                 localOnly = ReadLocalOnly();
                 using (var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName))
                 {

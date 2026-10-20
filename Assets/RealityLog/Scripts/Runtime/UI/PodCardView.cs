@@ -14,9 +14,10 @@ namespace RealityLog.UI
     /// panel; the collector and a sign-in code only while it is pending; then the status screen
     /// (PodScreenBoard): each rig device with its port, state pill and fix, the collection's
     /// task, progress, what the Factory expects next and its link, and each recent episode's
-    /// steps through the pipeline; a row of pill actions (Sign in, Scan QR, Local only, Set up
-    /// manually) and the manual setup (Factory URL, Auth URL, Join code, Enroll) collapsed until
-    /// asked for. The actions are PodSetupController's and RigCoordinator's, unchanged.
+    /// steps through the pipeline; the paired phone (PhoneCompanion: Pair phone scans the phone's
+    /// QR; Forget phone); a row of pill actions (Sign in, Scan QR, Local only, Set up manually)
+    /// and the manual setup (Factory URL, Auth URL, Join code, Enroll) collapsed until asked for.
+    /// The actions are PodSetupController's, RigCoordinator's and PhoneCompanion's.
     /// </summary>
     public sealed class PodCardView : MonoBehaviour
     {
@@ -85,6 +86,15 @@ namespace RealityLog.UI
         private GameObject manual = default!;
         private TextMeshProUGUI factoryValue = default!, authValue = default!, joinValue = default!, enrollText = default!;
         private bool expanded;
+        // The phone companion: a panel while pairing or after a failure, the Phone line, its pills.
+        private GameObject phoneSection = default!, phonePanelObj = default!;
+        private Image phonePanel = default!;
+        private TextMeshProUGUI phoneHeadline = default!, phoneAction = default!, phoneLine = default!;
+        private GameObject pairPill = default!, forgetPill = default!;
+        private Image pairImage = default!;
+        private TextMeshProUGUI pairText = default!, forgetText = default!;
+        private float forgetArmedUntil = float.NegativeInfinity;
+        private const float ForgetConfirmSeconds = 4f;
 
         private string? shownStatus;
         private StartRefusal? shownRefusal;
@@ -189,6 +199,29 @@ namespace RealityLog.UI
             }
             Fixed(legend, StateWidth);
             for (var i = 0; i < EpisodeRows; i++) episodes[i] = BuildEpisodeLine(episodesSection.transform);
+
+            // The phone companion: pairing (a panel says what to do), the paired phone, its pills.
+            phoneSection = Section(transform, "Phone");
+            phonePanelObj = new GameObject("PhonePanel", typeof(RectTransform));
+            phonePanelObj.transform.SetParent(phoneSection.transform, false);
+            phonePanel = phonePanelObj.AddComponent<Image>();
+            Rounded(phonePanel, FieldColor);
+            var phonePanelLayout = phonePanelObj.AddComponent<VerticalLayoutGroup>();
+            phonePanelLayout.padding = new RectOffset(18, 18, 12, 14);
+            phonePanelLayout.spacing = 2;
+            phonePanelLayout.childControlWidth = true;
+            phonePanelLayout.childControlHeight = true;
+            phonePanelLayout.childForceExpandWidth = true;
+            phonePanelLayout.childForceExpandHeight = false;
+            phoneHeadline = Text("Headline", phonePanelObj.transform, 24, TextColor, flexible: false);
+            phoneHeadline.fontStyle = FontStyles.Bold;
+            Wrap(phoneHeadline);
+            phoneAction = Text("Action", phonePanelObj.transform, 21, TextColor, flexible: false);
+            Wrap(phoneAction);
+            phoneLine = Field(phoneSection.transform, "Phone", out _);
+            var phoneActions = Row("PhoneActions", phoneSection.transform, PillHeight, 12);
+            pairPill = Pill(phoneActions, "PairPhone", PrimaryColor, () => PhoneCompanion.Instance?.PairOrCancel(), out pairText, out pairImage);
+            forgetPill = Pill(phoneActions, "ForgetPhone", SecondaryColor, ForgetPhone, out forgetText, out _);
 
             Space(transform, 6);
             setupLine = Field(transform, "Setup", out setupRow);
@@ -372,6 +405,8 @@ namespace RealityLog.UI
             localImage.color = SecondaryColor;
             localText.color = Color.white;
 
+            ShowPhone();
+
             Set(manualText, expanded ? "Hide setup" : "Set up manually");
             Show(manual, expanded && setup != null);
             if (expanded && setup != null)
@@ -381,6 +416,46 @@ namespace RealityLog.UI
                 Set(joinValue, setup.JoinCode.Length > 0 ? "entered" : "tap to type");
                 Set(enrollText, setup.Busy && !setup.Scanning && !setup.SigningIn ? "Enrolling..." : "Enroll");
             }
+        }
+
+        /// <summary>The Phone section from the companion's phase, in CompanionCard's words.</summary>
+        private void ShowPhone()
+        {
+            var companion = PhoneCompanion.Instance;
+            var phase = companion?.Phase ?? CompanionPhase.Unavailable;
+            var card = CompanionCard.Describe(phase, companion?.PhoneName ?? "", companion?.OperatorName ?? "",
+                companion?.PodLabel ?? "", companion?.Error ?? "");
+            Show(phoneSection, phase != CompanionPhase.Unavailable);
+            if (phase == CompanionPhase.Unavailable) return;
+            var panel = card.Headline.Length > 0;
+            Show(phonePanelObj, panel);
+            if (panel)
+            {
+                var tone = Tint(card.PanelTone);
+                phonePanel.color = new Color(tone.r, tone.g, tone.b, 0.16f);
+                phoneHeadline.color = card.PanelTone == PodTone.Neutral ? TextColor : tone;
+                Set(phoneHeadline, card.Headline);
+                Set(phoneAction, card.Action);
+            }
+            Set(phoneLine, card.Line);
+            phoneLine.color = card.LineTone == PodTone.Neutral ? TextColor : Tint(card.LineTone);
+            Show(pairPill, card.PairPill.Length > 0);
+            Set(pairText, card.PairPill);
+            pairImage.color = card.PairPrimary ? PrimaryColor : SecondaryColor;
+            Show(forgetPill, card.ShowForget);
+            Set(forgetText, Time.unscaledTime < forgetArmedUntil ? "Tap again to forget" : "Forget phone");
+        }
+
+        /// <summary>Forget phone asks for a second tap: a forgotten phone pairs again only from a fresh QR.</summary>
+        private void ForgetPhone()
+        {
+            if (Time.unscaledTime < forgetArmedUntil)
+            {
+                forgetArmedUntil = float.NegativeInfinity;
+                PhoneCompanion.Instance?.Forget();
+                return;
+            }
+            forgetArmedUntil = Time.unscaledTime + ForgetConfirmSeconds;
         }
 
         private void ToggleLocalOnly()

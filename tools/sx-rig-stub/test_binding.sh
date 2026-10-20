@@ -75,3 +75,11 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/pod-screen-harness.exe"
+
+# The phone companion: HeadsetStatus from the status screen, the sign-in hand-off, the Phone section.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+"$mono" "$out/companion-harness.exe"

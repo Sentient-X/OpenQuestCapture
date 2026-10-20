@@ -33,7 +33,24 @@ namespace RealityLog.Rig
         }
     }
 
-    /// <summary>One rig device as a row: its name, a short value, a state pill and a hint.</summary>
+    /// <summary>
+    /// A device's state in the closed vocabulary the phone companion mirrors
+    /// (companion.proto HeadsetDeviceState; the values are its numbers).
+    /// </summary>
+    public enum PodDeviceState
+    {
+        Ready = 1,
+        Live = 2,
+        Starting = 3,
+        Silent = 4,
+        Missing = 5,
+        Failed = 6,
+    }
+
+    /// <summary>
+    /// One rig device as a row: its name, a short value, a state pill and a hint; and, for the
+    /// phone companion, its role, side, port and state.
+    /// </summary>
     public readonly struct PodDeviceRow
     {
         public string Name { get; }
@@ -42,14 +59,26 @@ namespace RealityLog.Rig
         public PodTone Tone { get; }
         /// <summary>What to do about it; "" when nothing.</summary>
         public string Hint { get; }
+        /// <summary>The rig role ("left_hand_camera"), or the kind ("camera") before roles are known.</summary>
+        public string Role { get; }
+        /// <summary>"left", "right", or "" before roles are known.</summary>
+        public string Side { get; }
+        /// <summary>The USB port, "" when not attached or unknown.</summary>
+        public string Port { get; }
+        public PodDeviceState State { get; }
 
-        public PodDeviceRow(string name, string value, string pill, PodTone tone, string hint)
+        public PodDeviceRow(string name, string value, string pill, PodTone tone, string hint,
+            string role, string side, string port, PodDeviceState state)
         {
             Name = name;
             Value = value;
             Pill = pill;
             Tone = tone;
             Hint = hint;
+            Role = role;
+            Side = side;
+            Port = port;
+            State = state;
         }
     }
 
@@ -64,9 +93,12 @@ namespace RealityLog.Rig
         public int FailedAt { get; }
         public string Stage { get; }
         public PodTone Tone { get; }
+        /// <summary>What the card shows beneath the row: the failure, with its fix when one is known.</summary>
         public string Detail { get; }
+        /// <summary>The action that clears a failure we know; "" when none.</summary>
+        public string Fix { get; }
 
-        public PodEpisodeRow(string id, int reached, int failedAt, string stage, PodTone tone, string detail)
+        public PodEpisodeRow(string id, int reached, int failedAt, string stage, PodTone tone, string detail, string fix = "")
         {
             Id = id;
             Reached = reached;
@@ -74,6 +106,7 @@ namespace RealityLog.Rig
             Stage = stage;
             Tone = tone;
             Detail = detail;
+            Fix = fix;
         }
     }
 
@@ -90,6 +123,16 @@ namespace RealityLog.Rig
         public string Link { get; set; } = "";
         public PodTone LinkTone { get; set; } = PodTone.Neutral;
         public List<PodEpisodeRow> Episodes { get; } = new();
+        // The collection's numbers and the link, for the phone companion (Progress and Link word them).
+        public long Credited { get; set; }
+        /// <summary>The task's target; 0 when it has none or no task is known.</summary>
+        public long Requested { get; set; }
+        public long AwaitingReview { get; set; }
+        public bool LinkOk { get; set; }
+        /// <summary>Seconds since the Factory last heard the headset; null when it never has.</summary>
+        public long? HeardSecondsAgo { get; set; }
+        /// <summary>True while an episode records.</summary>
+        public bool Recording { get; set; }
     }
 
     /// <summary>
@@ -146,7 +189,7 @@ namespace RealityLog.Rig
             catch (JsonException)
             {
             }
-            var screen = new PodScreen();
+            var screen = new PodScreen { Recording = Recording(status) };
             var refusal = lastStart;
             if (refusal == null && !lastStartSucceeded && status?["lastRefusal"] is JObject rigRefusal)
             {
@@ -357,11 +400,13 @@ namespace RealityLog.Rig
                         if (i < ofKind.Count)
                         {
                             var port = Str(ofKind[i]["port"]);
-                            screen.Devices.Add(new PodDeviceRow(label, port.Length > 0 ? "port " + port : "attached", "Attached", PodTone.Neutral, ""));
+                            screen.Devices.Add(new PodDeviceRow(label, port.Length > 0 ? "port " + port : "attached", "Attached", PodTone.Neutral, "",
+                                kind, "", port, PodDeviceState.Starting));
                         }
                         else
                         {
-                            screen.Devices.Add(new PodDeviceRow(label, "not on USB", "Missing", PodTone.Error, "Plug it into the hub"));
+                            screen.Devices.Add(new PodDeviceRow(label, "not on USB", "Missing", PodTone.Error, "Plug it into the hub",
+                                kind, "", "", PodDeviceState.Missing));
                         }
                     }
                 }
@@ -372,13 +417,14 @@ namespace RealityLog.Rig
                 foreach (var (role, name, side, part) in Roles)
                 {
                     var entry = roles!.OfType<JObject>().FirstOrDefault(r => Str(r["role"]) == role);
-                    var row = DeviceRow(entry, name, side, part, recording, FailureFor(failures, side, part), liveness, now);
+                    var row = DeviceRow(entry, role, name, side, part, recording, FailureFor(failures, side, part), liveness, now);
                     // The last episode failed on it: a warning with the hint, until the next attempt.
                     var earlier = lastFailed.Length > 0 ? FailureFor(new[] { lastFailed }, side, part) : "";
                     if (row.Tone is PodTone.Good or PodTone.Neutral && !recording && earlier.Length > 0)
                     {
                         var hint = Hint(earlier);
-                        row = new PodDeviceRow(name, row.Value, "Failed last episode", PodTone.Warning, hint.Length > 0 ? hint : "Replug it before the next start");
+                        row = new PodDeviceRow(name, row.Value, "Failed last episode", PodTone.Warning, hint.Length > 0 ? hint : "Replug it before the next start",
+                            role, side, row.Port, PodDeviceState.Failed);
                     }
                     screen.Devices.Add(row);
                 }
@@ -389,7 +435,7 @@ namespace RealityLog.Rig
             }
         }
 
-        public static PodDeviceRow DeviceRow(JObject? entry, string name, string side, string part, bool recording, string failure,
+        public static PodDeviceRow DeviceRow(JObject? entry, string role, string name, string side, string part, bool recording, string failure,
             StreamLiveness liveness, DateTime now)
         {
             var attached = Bool(entry, "attached") == true;
@@ -397,9 +443,12 @@ namespace RealityLog.Rig
             var where = port.Length > 0 ? "port " + port : attached ? "attached" : "";
             var check = Str(entry?["check"]);
             var checkDetail = Str(entry?["check_detail"]);
+            PodDeviceRow Row(string value, string pill, PodTone tone, string hint, PodDeviceState state) =>
+                new(name, value, pill, tone, hint, role, side, port, state);
             if (!attached)
             {
-                return new PodDeviceRow(name, "not on USB", "Missing", PodTone.Error, failure.Length > 0 && Hint(failure).Length > 0 ? Hint(failure) : "Plug it into the hub");
+                return Row("not on USB", "Missing", PodTone.Error, failure.Length > 0 && Hint(failure).Length > 0 ? Hint(failure) : "Plug it into the hub",
+                    PodDeviceState.Missing);
             }
             if (recording && entry?["stream"] is JObject stream)
             {
@@ -407,23 +456,25 @@ namespace RealityLog.Rig
                 var rate = part == "camera" && stream["source_fps"] is JValue fps && fps.Type is JTokenType.Float or JTokenType.Integer
                     ? ((double)fps).ToString("F0", CultureInfo.InvariantCulture) + " fps" : counter.ToString(CultureInfo.InvariantCulture) + (part == "camera" ? " frames" : " samples");
                 var key = side + "_" + part;
-                if (liveness.Live(key, counter, now)) return new PodDeviceRow(name, where + " · " + rate, "Live", PodTone.Good, "");
+                if (liveness.Live(key, counter, now)) return Row(where + " · " + rate, "Live", PodTone.Good, "", PodDeviceState.Live);
                 return liveness.Starting(key, now)
-                    ? new PodDeviceRow(name, where + " · arming", "Starting", PodTone.Warning, "")
-                    : new PodDeviceRow(name, where + " · nothing for " + StreamLiveness.SilentAfterSeconds.ToString("F0", CultureInfo.InvariantCulture) + " s",
-                        "Silent", PodTone.Error, failure.Length > 0 && Hint(failure).Length > 0 ? Hint(failure) : "Replug it; if it stays silent, choose OpenQuestCapture when Android asks");
+                    ? Row(where + " · arming", "Starting", PodTone.Warning, "", PodDeviceState.Starting)
+                    : Row(where + " · nothing for " + StreamLiveness.SilentAfterSeconds.ToString("F0", CultureInfo.InvariantCulture) + " s",
+                        "Silent", PodTone.Error, failure.Length > 0 && Hint(failure).Length > 0 ? Hint(failure) : "Replug it; if it stays silent, choose OpenQuestCapture when Android asks",
+                        PodDeviceState.Silent);
             }
             if (failure.Length > 0)
             {
                 var hint = Hint(failure);
-                return new PodDeviceRow(name, where + " · " + Clip(failure.Substring(Math.Min(failure.Length, failure.IndexOf(':') + 1)).Trim(), 50),
-                    "Failed", PodTone.Error, hint.Length > 0 ? hint : "Replug it, then start again");
+                return Row(where + " · " + Clip(failure.Substring(Math.Min(failure.Length, failure.IndexOf(':') + 1)).Trim(), 50),
+                    "Failed", PodTone.Error, hint.Length > 0 ? hint : "Replug it, then start again", PodDeviceState.Failed);
             }
             return check switch
             {
-                "ready" => new PodDeviceRow(name, where, "Ready", PodTone.Good, ""),
-                "error" or "unavailable" => new PodDeviceRow(name, where + " · " + Clip(checkDetail, 50), "Check failed", PodTone.Warning, Hint(checkDetail)),
-                _ => new PodDeviceRow(name, where, "Attached", PodTone.Neutral, ""),
+                "ready" => Row(where, "Ready", PodTone.Good, "", PodDeviceState.Ready),
+                "error" or "unavailable" => Row(where + " · " + Clip(checkDetail, 50), "Check failed", PodTone.Warning, Hint(checkDetail), PodDeviceState.Failed),
+                // Attached, not checked yet: the next start checks it.
+                _ => Row(where, "Attached", PodTone.Neutral, "", PodDeviceState.Starting),
             };
         }
 
@@ -454,6 +505,8 @@ namespace RealityLog.Rig
             {
                 var ok = Bool(link, "ok") == true;
                 var ago = link["heard_seconds_ago"] is JValue { Type: JTokenType.Integer } seconds ? (long)seconds : -1;
+                screen.LinkOk = ok;
+                screen.HeardSecondsAgo = ago >= 0 ? ago : (long?)null;
                 if (ok)
                 {
                     screen.Link = "OK · heard " + (ago <= 1 ? "just now" : ago.ToString(CultureInfo.InvariantCulture) + " s ago");
@@ -485,6 +538,9 @@ namespace RealityLog.Rig
             var progress = factory["progress"] as JObject;
             var target = progress != null ? Long(progress["target"]) : Long(task?["target"]);
             var credited = progress != null ? Long(progress["credited"]) : Long(task?["done"]);
+            screen.Credited = credited;
+            screen.Requested = target;
+            screen.AwaitingReview = Long(progress?["awaiting_review"]);
             if (task != null)
             {
                 var parts = new List<string>
@@ -534,7 +590,7 @@ namespace RealityLog.Rig
                 var row = EpisodeRow(attempt);
                 var hint = row.Tone == PodTone.Error ? Hint(row.Detail) : "";
                 screen.Episodes.Add(hint.Length > 0
-                    ? new PodEpisodeRow(row.Id, row.Reached, row.FailedAt, row.Stage, row.Tone, Clip(row.Detail, 60) + " · " + hint)
+                    ? new PodEpisodeRow(row.Id, row.Reached, row.FailedAt, row.Stage, row.Tone, Clip(row.Detail, 60) + " · " + hint, hint)
                     : row);
             }
         }
@@ -594,7 +650,7 @@ namespace RealityLog.Rig
         private static JToken? Lifted(JObject? status, string key) =>
             status?[key] is JToken lifted && lifted.Type != JTokenType.Null ? lifted : Native(status)?[key];
 
-        private static bool Recording(JObject? status) =>
+        public static bool Recording(JObject? status) =>
             Bool(status, "episodeActive") == true || Str(Native(status)?["state"]) == "recording";
 
         private static bool? Bool(JObject? obj, string key) =>
