@@ -1074,7 +1074,8 @@ namespace RealityLog.Rig
             }
             else
             {
-                json.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null");
+                json.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null")
+                    .Append(",\"devices\":null,\"roles\":null,\"attempts\":null,\"factory\":null");
                 // The rig's verdict on the meshes ({ready, configured, assets, missing}) comes
                 // with its status; until the rig is open, say only that it has none yet.
                 json.Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
@@ -1156,6 +1157,11 @@ namespace RealityLog.Rig
                         ["uplink"] = status["uplink"],
                         ["floor"] = status["floor"],
                         ["embodiment_assets"] = status["embodiment_assets"],
+                        // The Pod card's status screen (PodScreenBoard), kept while the rig is busy.
+                        ["devices"] = status["devices"],
+                        ["roles"] = status["roles"],
+                        ["attempts"] = status["attempts"],
+                        ["factory"] = status["factory"],
                     }.ToString(Formatting.None);
                     var signedIn = CollectorSignedIn(status) == true;
                     // Only a transition seen while running cues; a sign-in already held at
