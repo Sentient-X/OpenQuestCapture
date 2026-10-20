@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -99,67 +100,123 @@ namespace RealityLog.UI
         /// </summary>
         public List<RecordingInfo> Recordings => new List<RecordingInfo>(recordings);
 
+        private readonly RecordingListRefreshGate gate = new RecordingListRefreshGate();
+        private readonly ConcurrentQueue<List<RecordingInfo>> scanned = new ConcurrentQueue<List<RecordingInfo>>();
+        private RecordingManager? recordingManager;
+
         /// <summary>
-        /// Scans the persistent data path for recording directories.
+        /// True while an episode records or stops. The list neither scans nor rebuilds then: the
+        /// pose loggers sample on the main thread, and a stalled main thread leaves the cameras
+        /// without head-pose coverage, which the seal refuses.
+        /// </summary>
+        public bool RecordingActive
+        {
+            get
+            {
+                if (recordingManager == null) recordingManager = FindFirstObjectByType<RecordingManager>();
+                return recordingManager != null && recordingManager.State != RecordingState.Idle;
+            }
+        }
+
+        /// <summary>
+        /// Asks for the recordings to be scanned again. The scan runs off the main thread and its
+        /// result reaches <see cref="OnRecordingsUpdated"/> on the main thread. Asked while
+        /// recording, it waits for the recording to end; asked while a scan runs, it is one more scan.
         /// </summary>
         public void RefreshRecordings()
         {
-            recordings.Clear();
-
-            try
+            if (gate.Request(RecordingActive))
             {
-                string dataPath = Application.persistentDataPath;
-                
-                if (!Directory.Exists(dataPath))
+                StartScan();
+            }
+            else if (gate.Deferred)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingListManager: refresh deferred until the recording ends");
+            }
+        }
+
+        private void StartScan()
+        {
+            string dataPath = Application.persistentDataPath; // main thread only
+            string pattern = recordingDirectoryPattern;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                List<RecordingInfo> found;
+                try
                 {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListManager: Data path does not exist: {dataPath}");
+                    found = Scan(dataPath, pattern);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] RecordingListManager: Error scanning recordings: {e.Message}");
+                    found = new List<RecordingInfo>();
+                }
+                scanned.Enqueue(found);
+            });
+        }
+
+        private void Update()
+        {
+            bool recording = RecordingActive;
+            while (scanned.TryDequeue(out var found))
+            {
+                var (apply, scanAgain) = gate.Completed(recording);
+                if (apply)
+                {
+                    recordings = found;
+                    Debug.Log($"[{Constants.LOG_TAG}] RecordingListManager: Found {recordings.Count} recordings");
                     OnRecordingsUpdated?.Invoke(recordings);
-                    return;
                 }
-
-                var directories = Directory.GetDirectories(dataPath);
-                
-                foreach (var dirPath in directories)
+                if (scanAgain)
                 {
-                    string dirName = Path.GetFileName(dirPath);
-                    
-                    // Check if directory name matches recording pattern (YYYYMMDD_HHMMSS)
-                    if (System.Text.RegularExpressions.Regex.IsMatch(dirName, recordingDirectoryPattern))
-                    {
-                        try
-                        {
-                            var info = new DirectoryInfo(dirPath);
-                            var recordingInfo = new RecordingInfo
-                            {
-                                DirectoryName = dirName,
-                                FullPath = dirPath,
-                                CreationTime = info.CreationTime,
-                                SizeBytes = CalculateDirectorySize(dirPath),
-                                QuickHealth = QuickHealthCheck(dirPath),
-                                DurationSeconds = QuickParseDuration(dirPath),
-                                EpisodeMarkerCount = QuickParseEpisodeMarkerCount(dirPath)
-                            };
-
-                            recordings.Add(recordingInfo);
-                        }
-                        catch (Exception e)
-                        {
-                            Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListManager: Error reading directory {dirName}: {e.Message}");
-                        }
-                    }
+                    StartScan();
                 }
-
-                // Sort by creation time, newest first
-                recordings = recordings.OrderByDescending(r => r.CreationTime).ToList();
-
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingListManager: Found {recordings.Count} recordings");
-                OnRecordingsUpdated?.Invoke(recordings);
             }
-            catch (Exception e)
+            if (gate.Tick(recording))
             {
-                Debug.LogError($"[{Constants.LOG_TAG}] RecordingListManager: Error scanning recordings: {e.Message}");
-                OnRecordingsUpdated?.Invoke(recordings);
+                StartScan();
             }
+        }
+
+        /// <summary>The recording directories under <paramref name="dataPath"/>, newest first (any thread).</summary>
+        private List<RecordingInfo> Scan(string dataPath, string pattern)
+        {
+            var result = new List<RecordingInfo>();
+            if (!Directory.Exists(dataPath))
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListManager: Data path does not exist: {dataPath}");
+                return result;
+            }
+
+            foreach (var dirPath in Directory.GetDirectories(dataPath))
+            {
+                string dirName = Path.GetFileName(dirPath);
+
+                // Check if directory name matches recording pattern (YYYYMMDD_HHMMSS)
+                if (!System.Text.RegularExpressions.Regex.IsMatch(dirName, pattern))
+                    continue;
+                try
+                {
+                    var info = new DirectoryInfo(dirPath);
+                    result.Add(new RecordingInfo
+                    {
+                        DirectoryName = dirName,
+                        FullPath = dirPath,
+                        CreationTime = info.CreationTime,
+                        SizeBytes = CalculateDirectorySize(dirPath),
+                        QuickHealth = QuickHealthCheck(dirPath),
+                        DurationSeconds = QuickParseDuration(dirPath),
+                        EpisodeMarkerCount = QuickParseEpisodeMarkerCount(dirPath)
+                    });
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListManager: Error reading directory {dirName}: {e.Message}");
+                }
+            }
+
+            // Sort by creation time, newest first
+            return result.OrderByDescending(r => r.CreationTime).ToList();
         }
 
         /// <summary>

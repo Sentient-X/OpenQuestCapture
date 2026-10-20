@@ -89,24 +89,11 @@ namespace RealityLog.UI
             }
         }
 
+        private Coroutine? buildCoroutine;
+
         private void OnRecordingsUpdated(List<RecordingListManager.RecordingInfo> recordings)
         {
             Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: OnRecordingsUpdated called with {recordings.Count} recordings");
-
-            // Collapse expanded items before destroying to clean up detail panels
-            foreach (var item in itemInstances)
-            {
-                if (item != null)
-                    item.CollapseIfExpanded();
-            }
-
-            // Clear existing items
-            foreach (var item in itemInstances)
-            {
-                if (item != null)
-                    Destroy(item.gameObject);
-            }
-            itemInstances.Clear();
 
             // Destroy old Delete All button
             if (deleteAllButtonObj != null)
@@ -122,7 +109,6 @@ namespace RealityLog.UI
                 emptyListMessage.SetActive(recordings.Count == 0);
             }
 
-            // Create list items
             if (recordingItemPrefab == null)
             {
                 Debug.LogError($"[{Constants.LOG_TAG}] RecordingListUI: recordingItemPrefab is null!");
@@ -135,32 +121,13 @@ namespace RealityLog.UI
                 return;
             }
 
-            Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Creating {recordings.Count} list items...");
-            int createdCount = 0;
-
-            foreach (var recording in recordings)
-            {
-                var itemObj = Instantiate(recordingItemPrefab, listContainer);
-                var itemUI = itemObj.GetComponent<RecordingListItemUI>();
-                
-                if (itemUI != null)
-                {
-                    itemUI.SetRecording(recording);
-                    itemUI.OnDeleteClicked += HandleDelete;
-                    itemUI.OnExportClicked += HandleExport;
-                    itemUI.OnToggleExpand += HandleAccordion;
-                    itemInstances.Add(itemUI);
-                    createdCount++;
-                }
-                else
-                {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListUI: Prefab doesn't have RecordingListItemUI component!");
-                }
-            }
-
-            Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Created {createdCount} list items");
-
             ShowPodCard();
+
+            if (buildCoroutine != null)
+            {
+                StopCoroutine(buildCoroutine);
+            }
+            buildCoroutine = StartCoroutine(BuildRows(new List<RecordingListManager.RecordingInfo>(recordings)));
 
             // Delete All button disabled for now
             // if (recordings.Count > 0 && listContainer != null)
@@ -168,6 +135,73 @@ namespace RealityLog.UI
             //     CreateDeleteAllButton(recordings.Count);
             // }
         }
+
+        /// <summary>
+        /// Fills the rows a few per frame, reusing the rows already built and creating only the
+        /// missing ones; rows past the end are hidden, not destroyed. It pauses while an episode
+        /// records: the pose loggers sample on the main thread, and a stall there costs the
+        /// cameras their head-pose coverage.
+        /// </summary>
+        private System.Collections.IEnumerator BuildRows(List<RecordingListManager.RecordingInfo> recordings)
+        {
+            int created = 0;
+            int inFrame = 0;
+            for (int i = 0; i < recordings.Count; i++)
+            {
+                while (listManager != null && listManager.RecordingActive)
+                {
+                    yield return null;
+                }
+
+                RecordingListItemUI? itemUI;
+                if (i < itemInstances.Count && itemInstances[i] != null)
+                {
+                    itemUI = itemInstances[i];
+                    itemUI.CollapseIfExpanded();
+                    itemUI.gameObject.SetActive(true);
+                }
+                else
+                {
+                    var itemObj = Instantiate(recordingItemPrefab, listContainer);
+                    itemUI = itemObj.GetComponent<RecordingListItemUI>();
+                    if (itemUI == null)
+                    {
+                        Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingListUI: Prefab doesn't have RecordingListItemUI component!");
+                        Destroy(itemObj);
+                        buildCoroutine = null;
+                        yield break;
+                    }
+                    itemUI.OnDeleteClicked += HandleDelete;
+                    itemUI.OnExportClicked += HandleExport;
+                    itemUI.OnToggleExpand += HandleAccordion;
+                    if (i < itemInstances.Count) itemInstances[i] = itemUI;
+                    else itemInstances.Add(itemUI);
+                    created++;
+                }
+                itemUI.SetRecording(recordings[i]);
+
+                if (++inFrame >= RecordingListRefreshGate.RowsPerFrame)
+                {
+                    inFrame = 0;
+                    yield return null;
+                }
+            }
+
+            // Rows past the end stay built for the next refresh, hidden.
+            for (int i = recordings.Count; i < itemInstances.Count; i++)
+            {
+                if (itemInstances[i] != null)
+                {
+                    itemInstances[i].CollapseIfExpanded();
+                    itemInstances[i].gameObject.SetActive(false);
+                }
+            }
+            shownCount = recordings.Count;
+            buildCoroutine = null;
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingListUI: Showing {recordings.Count} rows ({created} created)");
+        }
+
+        private int shownCount;
 
         private PodCardView? podCard;
 
@@ -251,10 +285,10 @@ namespace RealityLog.UI
 
             // Delete all recordings
             var dirs = new List<string>();
-            foreach (var item in itemInstances)
+            for (int i = 0; i < shownCount && i < itemInstances.Count; i++)
             {
-                if (item != null)
-                    dirs.Add(item.GetDirectoryName());
+                if (itemInstances[i] != null)
+                    dirs.Add(itemInstances[i].GetDirectoryName());
             }
 
             foreach (var dir in dirs)
@@ -272,7 +306,7 @@ namespace RealityLog.UI
             deleteAllConfirmPending = false;
             if (buttonText != null)
             {
-                buttonText.text = $"Delete All ({itemInstances.Count})";
+                buttonText.text = $"Delete All ({shownCount})";
                 buttonText.color = Color.white;
             }
             deleteAllResetCoroutine = null;

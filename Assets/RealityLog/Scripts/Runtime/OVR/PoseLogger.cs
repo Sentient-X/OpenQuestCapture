@@ -78,10 +78,18 @@ namespace RealityLog.OVR
                 firstTimestamp = 0;
                 lastTimestamp = 0;
 
-                Debug.Log($"[{Constants.LOG_TAG}] {fileName} - Reset base times: OVR={baseOvrTimeSec:F3}s, Unix={baseUnixTimeMs}ms");
-                
                 var filePath = Path.Combine(Application.persistentDataPath, DirectoryName, fileName);
                 writer = new CsvWriter(filePath, HEADER);
+
+                // Sample once now, exactly as FixedUpdate does, so pose coverage begins before the
+                // cameras start (RecordingManager starts them after the loggers) however late the
+                // next FixedUpdate comes. The seal refuses a camera frame more than 250 ms outside
+                // the head-pose coverage; on 2026-10-20 a main-thread stall put the first
+                // FixedUpdate row 291 ms after the first camera frame. A pose without a fresh
+                // timestamp (tracking not yet valid) writes nothing, as in FixedUpdate.
+                EnqueueRowIfNeeded(writer);
+
+                Debug.Log($"[{Constants.LOG_TAG}] {fileName} - Reset base times: OVR={baseOvrTimeSec:F3}s, Unix={baseUnixTimeMs}ms, first pose OVR={(firstTimestamp > 0 ? firstTimestamp.ToString("F3", CultureInfo.InvariantCulture) + "s" : "none yet")}");
             }
             catch (Exception ex)
             {

@@ -83,3 +83,9 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/companion-harness.exe"
+
+# RecordingListRefreshGate: the recordings list stays off the main thread's back while recording.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/list-refresh-harness.exe" "$here/RecordingListRefreshGateHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingListRefreshGate.cs"
+"$mono" "$out/list-refresh-harness.exe"
