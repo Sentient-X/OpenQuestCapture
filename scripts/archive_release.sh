@@ -33,6 +33,8 @@ cp "$apk" "$target/$name"
 apk_sha="$(sha256sum "$target/$name" | cut -d' ' -f1)"
 so="$root/Assets/Plugins/Android/libs/arm64-v8a/libsx_rig.so"
 keys="$root/Assets/RealityLog/Resources/sx_rig_config_keys.json"
+# The phone companion (sx packages/sx-companion-android, companionAar), git-ignored like questcameralib.aar.
+companion="$root/Assets/Plugins/Android/sx-companion-release.aar"
 certs="$("$(dirname "$aapt2")/apksigner" verify --print-certs "$target/$name")"
 cert="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$certs")"
 unity="$(sed -n 's/^m_EditorVersion: //p' "$root/ProjectSettings/ProjectVersion.txt")"
@@ -50,6 +52,7 @@ cat > "$target/build.json" <<JSON
   "questcameralib_commit": "$(git -C "$root/QuestCameraLib" rev-parse HEAD)",
   "libsx_rig_so_sha256": "$(sha256sum "$so" | cut -d' ' -f1)",
   "sx_rig_config_keys_sha256": "$(sha256sum "$keys" | cut -d' ' -f1)",
+  "sx_companion_aar_sha256": "$(sha256sum "$companion" | cut -d' ' -f1)",
   "unity_version": "$unity",
   "archived_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

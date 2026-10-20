@@ -16,7 +16,7 @@ namespace RealityLog.Rig
     /// <summary>
     /// The headset's phone companion (spec: ~/p3/tmp/headset-companion-spec.md). <b>Pair phone</b>
     /// on the Pod card reads the phone's sxc1: QR through the passthrough camera (the session the
-    /// recorder keeps open; never while recording), then the companion library pairs over
+    /// recorder keeps open; never while recording), then the companion library (CompanionLink) pairs over
     /// Bluetooth LE with that phone, whose operator confirms on the phone. Once paired, it
     /// reconnects on every launch; the phone's SignInAsk and SignOutAsk run the Pod card's own
     /// sign-in and sign-out; a pending sign-in code goes to the phone, and so does its result;
@@ -45,6 +45,7 @@ namespace RealityLog.Rig
         public string PodLabel => PodName().Length > 0 ? PodName() : PodId();
 
         private CompanionLink? link;
+        private readonly CompanionLinkTracker tracker = new();
         // A phase this side holds over the link's (scanning, a refusal, a denied permission).
         private CompanionPhase? local;
         private bool scanning;
@@ -72,8 +73,9 @@ namespace RealityLog.Rig
             link = CompanionLink.Open();
             if (link == null) return;
             if (PodSetupController.Instance is { } setup) setup.SignInFailed += OnSignInFailed;
+            tracker.Reset(link.Paired);
             // Reconnect to the paired phone on launch, once Bluetooth is allowed.
-            if (Safe(() => link.Paired, false)) WithPermissions(() => Safe(link.Resume));
+            if (link.Paired) WithPermissions(() => Safe(link.Connect));
         }
 
         private void OnDestroy()
@@ -88,7 +90,7 @@ namespace RealityLog.Rig
         public void PairOrCancel()
         {
             if (link == null) return;
-            if (scanning || Phase is CompanionPhase.Connecting or CompanionPhase.Confirming)
+            if (scanning || tracker.Pairing)
             {
                 Cancel();
                 return;
@@ -106,12 +108,16 @@ namespace RealityLog.Rig
             WithPermissions(StartScan);
         }
 
+        /// <summary>Stops a scan or a pairing in progress; a phone already paired is looked for again.</summary>
         public void Cancel()
         {
             StopScan();
             local = null;
             Error = "";
-            Safe(() => link?.Cancel());
+            if (link == null || !tracker.Pairing) return;
+            Safe(link.Disconnect);
+            tracker.Reset(link.Paired);
+            if (link.Paired) Safe(link.Connect);
         }
 
         /// <summary>Forgets the paired phone: it can no longer connect until paired again from a fresh QR.</summary>
@@ -120,7 +126,9 @@ namespace RealityLog.Rig
             StopScan();
             local = null;
             Error = "";
-            Safe(() => link?.Forget());
+            if (link == null) return;
+            Safe(link.Forget);
+            tracker.Reset(false);
         }
 
         private void StartScan()
@@ -153,6 +161,8 @@ namespace RealityLog.Rig
             if (local == CompanionPhase.Scanning) local = null;
         }
 
+        private static bool Safe(Action call) => Safe(() => { call(); return true; }, false);
+
         private void Update()
         {
             if (link == null)
@@ -162,7 +172,8 @@ namespace RealityLog.Rig
             }
             PollScan();
             ReadLink();
-            if (Phase != CompanionPhase.Connected)
+            // The session's work follows the link itself, whatever this side shows over it.
+            if (tracker.Phase != CompanionPhase.Connected)
             {
                 wasConnected = false;
                 return;
@@ -174,7 +185,6 @@ namespace RealityLog.Rig
                 signIn.LinkRestarted();
                 lastStatusPrint = "";
             }
-            Asks();
             HandOffSignIn();
             PushStatus();
         }
@@ -200,10 +210,9 @@ namespace RealityLog.Rig
                 }
                 RigCoordinator.Instance?.QueueCue(RigCues.Cue.Sealed);
                 local = null;
-                if (!Safe(() => link!.Pair(text, PodId(), PodName(), HeadsetId())))
-                {
-                    Refuse("the companion did not start");
-                }
+                tracker.PairStarted();
+                // A refused code (expired, malformed) arrives as an error, then the tracker shows it.
+                if (!Safe(() => link!.Pair(text, PodId(), PodName(), HeadsetId()), false)) tracker.OnState("idle", link!.Paired);
             }
             else if (Time.unscaledTime - scanStarted > ScanTimeoutSeconds)
             {
@@ -214,33 +223,14 @@ namespace RealityLog.Rig
 
         private void ReadLink()
         {
-            var phase = Safe(() => link!.Phase, CompanionPhase.Failed);
-            PhoneName = Safe(() => link!.PhoneName, "");
-            OperatorName = Safe(() => link!.OperatorName, "");
-            if (phase == CompanionPhase.Failed)
-            {
-                var error = Safe(() => link!.Error, "");
-                if (error.Length > 0) Error = error;
-            }
-            // The link's own progress (connecting onward) replaces a held refusal.
-            if (local is CompanionPhase.Failed or CompanionPhase.PermissionDenied
-                && phase is CompanionPhase.Connecting or CompanionPhase.Confirming or CompanionPhase.Connected)
-            {
-                local = null;
-            }
-            Phase = local ?? phase;
-        }
-
-        private void Asks()
-        {
-            for (var i = 0; i < 4; i++)
-            {
-                var ask = Safe(() => link!.NextAsk(), "");
-                if (ask.Length == 0) return;
-                if (ask == "sign_in") SignInAsked();
-                else if (ask == "sign_out") SignOutAsked();
-                else Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: an ask this build does not take: {ask}");
-            }
+            var before = tracker.Phase;
+            Safe(() => link!.Drain(tracker, SignInAsked, SignOutAsked));
+            PhoneName = link!.PhoneName;
+            OperatorName = link.OperatorName;
+            // The link's own progress replaces a refusal this side held.
+            if (local is CompanionPhase.Failed or CompanionPhase.PermissionDenied && (tracker.Pairing || tracker.Phase != before)) local = null;
+            Phase = local ?? tracker.Phase;
+            Error = local != null ? Error : tracker.Error;
         }
 
         /// <summary>The phone's SignInAsk: the Pod card's Sign in, or the collector already signed in.</summary>
@@ -250,12 +240,12 @@ namespace RealityLog.Rig
             if (rig is { CollectorSignedInNow: true })
             {
                 var name = HeadsetStatusMap.Collector(Status());
-                Safe(() => link!.SendSignInResult(name.Length > 0 ? name : "a collector", ""));
+                Safe(() => link!.SendSignInResult(name.Length > 0 ? name : "a collector", ""), false);
                 return;
             }
             if (PodSetupController.Instance is not { } setup)
             {
-                Safe(() => link!.SendSignInResult("", "The headset's pod setup is not running"));
+                Safe(() => link!.SendSignInResult("", "The headset's pod setup is not running"), false);
                 return;
             }
             if (setup.SignIn() is string refused) signIn.SignInFailed(refused);
@@ -298,10 +288,10 @@ namespace RealityLog.Rig
             switch (send.Kind)
             {
                 case CompanionSignInSendKind.Request:
-                    Safe(() => link!.SendSignInRequest(send.UserCode, send.VerificationUriComplete, send.ExpiresAtMs));
+                    Safe(() => link!.SendSignInRequest(send.UserCode, send.VerificationUriComplete, send.ExpiresAtMs), false);
                     break;
                 case CompanionSignInSendKind.Result:
-                    Safe(() => link!.SendSignInResult(send.Collector, send.Error));
+                    Safe(() => link!.SendSignInResult(send.Collector, send.Error), false);
                     break;
             }
         }
@@ -319,11 +309,11 @@ namespace RealityLog.Rig
             var podName = PodName();
             HeadsetStatusMap.Write(screen, status, podName, print);
             if (print.Text == lastStatusPrint && now - lastStatusSent < StatusEverySeconds) return;
-            if (Safe(() => link!.SendStatus(writer => HeadsetStatusMap.Write(screen, status, podName, writer))))
-            {
-                lastStatusPrint = print.Text;
-                lastStatusSent = now;
-            }
+            // The library keeps the latest and repeats it every 5 s; this side resends at 5 s too so
+            // the link's age is fresh. A send with no session open is still the one sent on reconnect.
+            Safe(() => link!.SendStatus(writer => HeadsetStatusMap.Write(screen, status, podName, writer)), false);
+            lastStatusPrint = print.Text;
+            lastStatusSent = now;
         }
 
         // ---- Permissions ----
@@ -402,21 +392,7 @@ namespace RealityLog.Rig
         private static string HeadsetId() =>
             Status()?["headsetSerial"] is JValue { Type: JTokenType.String } serial ? (string?)serial ?? "" : "";
 
-        /// <summary>A bridge call; a Java exception is logged and reads as false, never thrown into Update.</summary>
-        private static bool Safe(Action call)
-        {
-            try
-            {
-                call();
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: {ex.Message}");
-                return false;
-            }
-        }
-
+        /// <summary>A library call; a Java exception is logged and reads as the fallback, never thrown into Update.</summary>
         private static T Safe<T>(Func<T> call, T fallback)
         {
             try

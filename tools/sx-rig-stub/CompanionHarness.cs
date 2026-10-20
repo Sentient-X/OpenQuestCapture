@@ -62,6 +62,7 @@ static class CompanionHarness
         SignInHandOff();
         Offers();
         Card();
+        Tracker();
         Console.WriteLine(failures == 0 ? "companion harness: all passed" : "companion harness: " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }
@@ -187,5 +188,67 @@ static class CompanionHarness
         Expect(failed.Headline == "Pairing failed: the operator declined" && failed.PairPill == "Pair phone", "failed: " + failed.Headline);
         Expect(CompanionCard.Named("", "Asha") == "Asha's phone", "no phone name: the operator's phone");
         Expect(CompanionCard.Describe(CompanionPhase.Unavailable, "", "", "", "").PairPill == "", "no library: no pill");
+    }
+
+    static void Tracker()
+    {
+        // A pairing: scanning, connecting, the operator asked, connected.
+        var t = new CompanionLinkTracker();
+        t.Reset(false);
+        Expect(t.Phase == CompanionPhase.NotPaired, "launch, nothing paired: not paired");
+        t.PairStarted();
+        t.OnState("scanning", false);
+        Expect(t.Phase == CompanionPhase.Connecting && t.Pairing, "pairing: scanning reads as connecting");
+        t.OnState("awaiting_operator", false);
+        Expect(t.Phase == CompanionPhase.Confirming, "the operator is asked: confirming");
+        t.OnState("connected", true);
+        Expect(t.Phase == CompanionPhase.Connected && !t.Pairing, "accepted: connected");
+
+        // A session drops: the library retries; Bluetooth hiccups never show.
+        t.OnState("waiting_to_retry", true);
+        Expect(t.Phase == CompanionPhase.Reconnecting, "a dropped session: looking for it");
+        Expect(!t.OnError("GATT", "subscribe failed (133)") && t.Phase == CompanionPhase.Reconnecting, "a GATT error while resuming stays quiet");
+        t.OnError("BLUETOOTH_OFF", "turn Bluetooth on");
+        t.OnState("waiting_to_retry", true);
+        Expect(t.Phase == CompanionPhase.BluetoothOff, "Bluetooth off stays on the card through retries");
+        t.OnState("scanning", true);
+        Expect(t.Phase == CompanionPhase.Reconnecting, "Bluetooth back: looking again");
+
+        // A declined pairing: the error waits for idle, then shows.
+        var d = new CompanionLinkTracker();
+        d.PairStarted();
+        d.OnState("handshaking", false);
+        d.OnError("REJECTED", "COMPANION_REJECT_REASON_DECLINED");
+        Expect(d.Phase == CompanionPhase.Connecting, "a refusal waits for the attempt to end");
+        d.OnState("idle", false);
+        Expect(d.Phase == CompanionPhase.Failed && d.Error == "the operator declined on the phone", "declined: " + d.Error);
+
+        var gone = new CompanionLinkTracker();
+        gone.PairStarted();
+        gone.OnError("NOT_FOUND", "the phone showing the code is not in range");
+        gone.OnState("idle", false);
+        Expect(gone.Error == "the phone showing the code is not in range", "not found: " + gone.Error);
+        var expired = new CompanionLinkTracker();
+        expired.PairStarted();
+        expired.OnError("OFFER_EXPIRED", "the code expired; scan the phone again");
+        expired.OnState("idle", false);
+        Expect(expired.Error.StartsWith("the QR expired"), "expired code: " + expired.Error);
+
+        // The phone forgot this headset: final, and the headset forgets too.
+        var forgot = new CompanionLinkTracker();
+        forgot.Reset(true);
+        Expect(forgot.Phase == CompanionPhase.Reconnecting, "launch, paired: looking for it");
+        Expect(forgot.OnError("REJECTED", "COMPANION_REJECT_REASON_UNKNOWN_PAIRING"), "unknown pairing -> forget it here too");
+        forgot.OnState("idle", false);
+        Expect(forgot.Phase == CompanionPhase.Failed && forgot.Error.Contains("pair again"), "unknown pairing: " + forgot.Error);
+
+        var denied = new CompanionLinkTracker();
+        denied.PairStarted();
+        denied.OnError("PERMISSION", "need BLUETOOTH_SCAN");
+        denied.OnState("idle", false);
+        Expect(denied.Phase == CompanionPhase.PermissionDenied, "a permission error: permission denied, not a failed pairing");
+        var odd = new CompanionLinkTracker();
+        odd.OnState("teleporting", false);
+        Expect(odd.Phase == CompanionPhase.Failed, "an unknown state word never reads as connected");
     }
 }

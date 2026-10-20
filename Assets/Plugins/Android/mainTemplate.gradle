@@ -53,4 +53,9 @@ dependencies {
     // questcameralib.aar's QR decoder (pod setup); an AAR does not carry its dependencies.
     implementation "com.google.zxing:core:3.5.3"
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3"
+    // sx-companion-release.aar (the phone companion, packages/sx-companion-android): its wire
+    // classes are javalite, and it is built with Kotlin 2.2.20, whose stdlib wins over the 1.9
+    // one kotlinx-serialization brings.
+    implementation "com.google.protobuf:protobuf-javalite:4.29.3"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:2.2.20"
 }

@@ -232,6 +232,135 @@ namespace RealityLog.Rig
         BluetoothOff,
     }
 
+    /// <summary>
+    /// Where the link stands, from the companion library's CompanionHeadset callbacks: its state
+    /// words, its errors, a finished pairing. A pairing is one attempt: its error is held until the
+    /// library goes idle, then shown. While a paired phone is being resumed, a Bluetooth hiccup is
+    /// the library's to retry and never shows; a refusal from the phone is final. Pure: tested on
+    /// the host. Main thread.
+    /// </summary>
+    public sealed class CompanionLinkTracker
+    {
+        private bool pairing;
+        private string pairError = "";
+
+        public CompanionPhase Phase { get; private set; } = CompanionPhase.NotPaired;
+        /// <summary>The last failure's words, "" when none.</summary>
+        public string Error { get; private set; } = "";
+        /// <summary>True from <see cref="PairStarted"/> until that attempt ends.</summary>
+        public bool Pairing => pairing;
+
+        /// <summary>Launch, or after a cancel: a paired phone is being looked for.</summary>
+        public void Reset(bool paired)
+        {
+            pairing = false;
+            pairError = "";
+            Error = "";
+            Phase = paired ? CompanionPhase.Reconnecting : CompanionPhase.NotPaired;
+        }
+
+        public void PairStarted()
+        {
+            pairing = true;
+            pairError = "";
+            Error = "";
+            Phase = CompanionPhase.Connecting;
+        }
+
+        /// <summary>A CompanionHeadset.State word.</summary>
+        public void OnState(string state, bool paired)
+        {
+            switch (state)
+            {
+                case "connected":
+                    pairing = false;
+                    Error = "";
+                    Phase = CompanionPhase.Connected;
+                    break;
+                case "awaiting_operator":
+                    Phase = CompanionPhase.Confirming;
+                    break;
+                case "scanning":
+                case "connecting":
+                case "handshaking":
+                case "waiting_to_retry":
+                    // A waiting retry keeps a reason the person must clear (Bluetooth off) on the card.
+                    if (state == "waiting_to_retry" && Phase is CompanionPhase.BluetoothOff or CompanionPhase.PermissionDenied) break;
+                    Phase = pairing ? CompanionPhase.Connecting : CompanionPhase.Reconnecting;
+                    break;
+                case "idle":
+                    if (pairing)
+                    {
+                        pairing = false;
+                        Phase = CompanionPhase.Failed;
+                        Error = pairError.Length > 0 ? pairError : "the pairing stopped";
+                    }
+                    else if (Phase is not (CompanionPhase.Failed or CompanionPhase.PermissionDenied or CompanionPhase.BluetoothOff))
+                    {
+                        Phase = paired ? CompanionPhase.Reconnecting : CompanionPhase.NotPaired;
+                    }
+                    break;
+                default:
+                    Phase = CompanionPhase.Failed;
+                    Error = "the companion said '" + state + "'";
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// A CompanionHeadset error (a CompanionFailure name or a Platform word). True when the
+        /// phone no longer holds this pairing, so the headset forgets it too.
+        /// </summary>
+        public bool OnError(string failure, string detail)
+        {
+            switch (failure)
+            {
+                case "BLUETOOTH_OFF":
+                    Phase = CompanionPhase.BluetoothOff;
+                    return false;
+                case "PERMISSION":
+                    pairing = false;
+                    Phase = CompanionPhase.PermissionDenied;
+                    return false;
+                case "NOT_PAIRED":
+                    pairing = false;
+                    Phase = CompanionPhase.NotPaired;
+                    return false;
+            }
+            var words = ErrorWords(failure, detail);
+            if (pairing)
+            {
+                pairError = words;
+                return false;
+            }
+            if (failure != "REJECTED") return false; // resuming: the library retries
+            Phase = CompanionPhase.Failed;
+            Error = words;
+            return detail.Contains("UNKNOWN_PAIRING");
+        }
+
+        /// <summary>A companion failure in the card's words.</summary>
+        public static string ErrorWords(string failure, string detail)
+        {
+            if (failure == "REJECTED")
+            {
+                if (detail.Contains("DECLINED")) return "the operator declined on the phone";
+                if (detail.Contains("UNKNOWN_PAIRING")) return "the phone no longer holds this pairing: pair again";
+                if (detail.Contains("EXPIRED")) return "nobody confirmed on the phone in time";
+                return "the phone refused";
+            }
+            return failure switch
+            {
+                "BAD_OFFER" => "that QR is not a phone's pairing code",
+                "OFFER_EXPIRED" => "the QR expired: scan the code the phone shows now",
+                "NOT_FOUND" => "the phone showing the code is not in range",
+                "BAD_MAC" => "the phone did not prove the code: scan again",
+                "GATT" => "Bluetooth: " + detail,
+                _ => failure.ToLowerInvariant().Replace('_', ' ') + (detail.Length > 0 ? ": " + detail : ""),
+            };
+        }
+    }
+
     /// <summary>The Pod card's Phone section: its line, its panel (when there is one) and its pills.</summary>
     public readonly struct CompanionCardLines
     {
