@@ -6756,6 +6756,7 @@ MonoBehaviour:
   calibrationOverlay: {fileID: 2200000006}
   menuPanel: {fileID: 330503377}
   menuPositioner: {fileID: 1929108984}
+  closedMenuHint: {fileID: 487299148}
   toggleButton: 8
   controller: -1
 --- !u!114 &730769974
