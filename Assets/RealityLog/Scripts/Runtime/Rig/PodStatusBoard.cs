@@ -301,7 +301,9 @@ namespace RealityLog.Rig
         public static string Explain(string code, string message)
         {
             var lower = message.ToLowerInvariant();
-            if (lower.Contains("readiness checks are not passing")) return "The Factory's readiness checks are not passing";
+            // The Factory's own start refusals, never as the JSON they arrive in (start_session: {...}).
+            if (lower.Contains("readiness checks are not passing")) return "Readiness checks are failing: run Check";
+            if (lower.Contains("no assigned episodes remain")) return "No episodes left in this assignment: add episodes or assign a task in the Console";
             if (lower.Contains("no assigned task")) return "No task assigned to this pod";
             string Detail(string prefix) => message.Length > 0 ? prefix + ": " + message : prefix;
             return code switch

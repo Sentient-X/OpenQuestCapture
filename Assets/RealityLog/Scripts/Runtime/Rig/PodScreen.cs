@@ -133,6 +133,11 @@ namespace RealityLog.Rig
         public long? HeardSecondsAgo { get; set; }
         /// <summary>True while an episode records.</summary>
         public bool Recording { get; set; }
+        /// <summary>
+        /// A start now would certainly be refused (<see cref="PodScreenBoard.StartBlocker"/>): the
+        /// card and the phone offer no Start, and the menu button buzzes with the reason.
+        /// </summary>
+        public bool StartBlocked { get; set; }
     }
 
     /// <summary>
@@ -200,8 +205,81 @@ namespace RealityLog.Rig
             Collection(screen, status);
             Episodes(screen, status);
             screen.Blocker = Blocker(status, refusal, screen);
+            screen.StartBlocked = StartBlocker(status) != null;
             return screen;
         }
+
+        // ---- Start ----
+
+        /// <summary>
+        /// What makes a start now certainly refused, as a blocker with its plain-words reason and
+        /// action; null when a start may go ahead (or while recording, when the button stops). The
+        /// refusals named here are the ones the start itself would meet: a rig that cannot run,
+        /// no collector, a device without USB access, and the Factory's own refusals as quest-rig
+        /// reads them from its capture workspace (factory.start_refusal: no task, a readiness check
+        /// the start's device check cannot fix, no episodes left). Anything less certain (a device
+        /// the start's check may find again, an unheard Factory) leaves Start offered.
+        /// </summary>
+        public static PodBlocker? StartBlocker(string? rigStatusJson)
+        {
+            try
+            {
+                return StartBlocker(string.IsNullOrEmpty(rigStatusJson) ? null : JToken.Parse(rigStatusJson!) as JObject);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        public static PodBlocker? StartBlocker(JObject? status)
+        {
+            if (Bool(status, "expected") != true || Recording(status)) return null;
+            if (Str(status?["library"]) == "missing")
+            {
+                return new PodBlocker("This build has no rig library", "Install a build that carries libsx_rig", PodTone.Error);
+            }
+            if (Bool(status, "open") != true && status?["openError"] is JObject openError)
+            {
+                return new PodBlocker("The rig did not open: " + Clip(Str(openError["detail"]), 70), "Fix what it names, then restart the app", PodTone.Error);
+            }
+            var localOnly = Bool(status, "localOnly") ?? true;
+            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false)
+            {
+                var (code, _) = PodStatusBoard.PendingSignIn(status, false);
+                return code.Length > 0
+                    ? new PodBlocker("Collector sign-in pending", "Approve code " + code + " on your phone", PodTone.Warning)
+                    : new PodBlocker("Collector signed out", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
+            }
+            if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
+            {
+                return new PodBlocker("A rig device waits for USB access", "Choose OpenQuestCapture when Android asks (replug it if no prompt shows)", PodTone.Warning);
+            }
+            if (localOnly || Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
+            switch (Str(refused["reason"]))
+            {
+                case "no_task":
+                    return NoTask();
+                case "no_episodes":
+                    return NoEpisodes();
+                case "readiness":
+                    var checks = refused["checks"] is JArray named
+                        ? string.Join(", ", named.Select(c => Str(c)).Where(c => c.Length > 0))
+                        : "";
+                    return Readiness(checks);
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>The Factory refuses a start while its readiness checks fail ("required readiness checks are not passing").</summary>
+        public static PodBlocker Readiness(string checks) =>
+            new(checks.Length > 0 ? "Readiness checks are failing: " + Clip(checks, 70) : "Readiness checks are failing",
+                "Run Check, then fix what it names", PodTone.Error);
+
+        /// <summary>The Factory refuses a start once no assigned episode remains ("no assigned episodes remain available").</summary>
+        public static PodBlocker NoEpisodes() =>
+            new("No episodes left in this assignment", "Add episodes or assign a task in the Console", PodTone.Error);
 
         // ---- The blocker ----
 
@@ -259,6 +337,9 @@ namespace RealityLog.Rig
                     {
                         var id = Str(check["id"]);
                         if (id == "operator") continue; // the collector, above
+                        // A failing hardware check alone never refuses a start (its own check
+                        // runs first); while the Factory would refuse for something else, that shows.
+                        if (Str(check["category"]) == "hardware" && factory["start_refusal"] is JObject) continue;
                         if (id == "recorder_build")
                         {
                             return new PodBlocker("This build's trial is not admitted",
@@ -274,11 +355,15 @@ namespace RealityLog.Rig
                     }
                 }
                 if (factory.ContainsKey("task") && factory["task"] is not JObject) return NoTask();
+                if (factory["start_refusal"] is JObject refused && Str(refused["reason"]) == "no_episodes") return NoEpisodes();
             }
             if (refusal != null)
             {
                 var text = PodStatusBoard.Explain(refusal.Code, refusal.Message);
-                if (refusal.Message.ToLowerInvariant().Contains("no assigned task")) return NoTask();
+                var said = refusal.Message.ToLowerInvariant();
+                if (said.Contains("no assigned task")) return NoTask();
+                if (said.Contains("no assigned episodes remain")) return NoEpisodes();
+                if (said.Contains("readiness checks are not passing")) return Readiness(FailingChecks(factory));
                 var hint = Hint(refusal.Message);
                 return new PodBlocker("Last start refused: " + Clip(text, 70),
                     hint.Length > 0 ? hint : "Fix it, then press the menu button to start again", PodTone.Error);
@@ -305,6 +390,13 @@ namespace RealityLog.Rig
                 ? new PodBlocker("Ready (Local only)", "Press the menu button to record; nothing goes to the Factory", PodTone.Good)
                 : new PodBlocker("Ready to record", "Press the menu button to start", PodTone.Good);
         }
+
+        /// <summary>The Factory's failing blocking checks by their summaries, "" when it named none.</summary>
+        private static string FailingChecks(JObject? factory) =>
+            factory?["blocking"] is JArray blocking
+                ? string.Join(", ", blocking.OfType<JObject>().Where(c => Str(c["id"]) != "operator")
+                    .Select(c => Str(c["summary"]).Length > 0 ? Str(c["summary"]) : Str(c["id"])).Where(c => c.Length > 0))
+                : "";
 
         private static PodBlocker NoTask() =>
             new("The Factory shows this pod no task", "Assign a task to this pod in the Console", PodTone.Error);

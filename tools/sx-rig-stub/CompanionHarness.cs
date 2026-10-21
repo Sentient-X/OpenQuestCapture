@@ -39,6 +39,8 @@ static class CompanionHarness
         public void Episode(string id, int stage, string reason, string fix) => Episodes.Add((id, stage, reason, fix));
         public (int? left, int? right) Pads;
         public void Controllers(int? leftPct, int? rightPct) => Pads = (leftPct, rightPct);
+        public bool? Blocked;
+        public void StartBlocked(bool blocked) => Blocked = blocked;
     }
 
     static Recorder Map(string body, StreamLiveness? live = null, DateTime? at = null, ControllerCharge pads = default)
@@ -82,6 +84,13 @@ static class CompanionHarness
         Expect(status.Head == (false, 64, "pod_q1", "Bench pod 1", "Asha"), "header: not recording, battery 64, pod, collector " + status.Head);
         Expect(status.Block is { } b && b.headline.StartsWith("Right camera"), "blocker: the missing camera " + status.Block);
         Expect(status.Devices.Count == 4, "four roles");
+        Expect(status.Blocked == false, "a missing device leaves Start offered: the start checks first");
+        var allReady = "[" + Role("left_hand_camera", true, "1-1.1", "ready") + "," + Role("right_hand_camera", true, "1-1.2", "ready") + ","
+            + Role("left_hand_encoder", true, "1-1.3", "ready") + "," + Role("right_hand_encoder", true, "1-1.4", "ready") + "]";
+        var full = Map(Pod + "," + SignedIn + ",\"roles\":" + allReady + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+            + ",\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[]}}");
+        Expect(full.Blocked == true && full.Block is { } nb && nb.headline == "No episodes left in this assignment"
+            && nb.action == "Add episodes or assign a task in the Console", "no episodes: start_blocked with its reason " + full.Block);
         Expect(status.Devices[0] == ("left_hand_camera", "left", "1-1.1", PodDeviceState.Ready, "port 1-1.1", ""), "left camera ready on its port: " + status.Devices[0]);
         Expect(status.Devices[1].role == "right_hand_camera" && status.Devices[1].side == "right" && status.Devices[1].state == PodDeviceState.Missing
             && status.Devices[1].port == "" && status.Devices[1].fix.Length > 0, "right camera missing with a fix: " + status.Devices[1]);
@@ -276,7 +285,14 @@ static class CompanionHarness
         Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"message\":\"the device check did not pass: right camera missing\"}", true)
             == "the device check did not pass: right camera missing", "a refused start in the rig's words");
         Expect(PodControlWords.HttpWords(409, "{\"error\":\"not_recording\"}", false) == "not_recording", "a refusal with no message names its error");
+        Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_start_failed\",\"message\":\"sx_rig_start_armed failed: Device {\\\"code\\\":\\\"device\\\",\\\"detail\\\":\\\"start_session: {\\\\\\\"code\\\\\\\":\\\\\\\"http_409\\\\\\\",\\\\\\\"message\\\\\\\":\\\\\\\"no assigned episodes remain available; unfinished attempts reserve demand\\\\\\\"}\\\"}\"}", true)
+            == "No episodes left in this assignment: add episodes or assign a task in the Console", "a Factory 409 reaches the phone in plain words");
+        Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_start_failed\",\"message\":\"start_session: http_422 required readiness checks are not passing\"}", true)
+            == "Readiness checks are failing: run Check", "a Factory 422 reaches the phone in plain words");
         Expect(PodControlWords.HttpWords(500, "not json", false) == "the stop was refused (500)", "an unreadable refusal names the status");
-        Expect(PodControlWords.Percent(null) == "-" && PodControlWords.Percent(7) == "7%", "percent words");
+        Expect(PodControlWords.Percent(null) == "not available" && PodControlWords.Percent(7) == "7%", "percent words");
+        Expect(ControllerCharge.FromLevel(true, 0.6f) == 60 && ControllerCharge.FromLevel(true, 0f) == null
+            && ControllerCharge.FromLevel(false, 0.6f) == null && ControllerCharge.FromLevel(true, 1.5f) == null, "XR batteryLevel 0..1 -> percent, 0 unknown");
+        Expect(ControllerCharge.First(null, 40) == 40 && ControllerCharge.First(60, 40) == 60 && ControllerCharge.First(null, null) == null, "the first source that read it");
     }
 }

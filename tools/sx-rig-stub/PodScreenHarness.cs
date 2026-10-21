@@ -46,6 +46,34 @@ static class PodScreenHarness
         Expect(ready.Next == "a review verdict on the recorded episode", "next: " + ready.Next);
         Expect(ready.Link == "OK · heard 3 s ago" && ready.LinkTone == PodTone.Good, "link: " + ready.Link);
 
+        Expect(!ready.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + SignedIn + "}")) == null, "ready: Start offered");
+
+        // Start only when the Factory would take it (factory.start_refusal, from quest-rig).
+        var full = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[],\"admissible\":0," + Task
+            + ",\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[]}}");
+        Expect(full.StartBlocked && full.Blocker.Headline == "No episodes left in this assignment"
+            && full.Blocker.Action == "Add episodes or assign a task in the Console", "no episodes left: Start blocked: " + full.Blocker.Headline);
+        var clock = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
+            + "{\"id\":\"rig_check\",\"state\":\"fail\",\"category\":\"hardware\",\"summary\":\"rig check is stale\"},"
+            + "{\"id\":\"clock\",\"state\":\"fail\",\"category\":\"clock\",\"summary\":\"clock is not synchronized\",\"remediation\":\"Enable network time\"}]," + Task
+            + ",\"start_refusal\":{\"reason\":\"readiness\",\"checks\":[\"clock is not synchronized\"]}}");
+        Expect(clock.StartBlocked && clock.Blocker.Headline == "clock is not synchronized", "a non-hardware check blocks Start and shows itself: " + clock.Blocker.Headline);
+        var clockBlocker = PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + SignedIn + ",\"factory\":{\"start_refusal\":{\"reason\":\"readiness\",\"checks\":[\"clock is not synchronized\"]}}}"));
+        Expect(clockBlocker is { } c && c.Headline == "Readiness checks are failing: clock is not synchronized" && c.Action == "Run Check, then fix what it names", "readiness start blocker names the checks");
+        var stale = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
+            + "{\"id\":\"rig_check\",\"state\":\"fail\",\"category\":\"hardware\",\"summary\":\"rig check is stale\"}]," + Task + ",\"start_refusal\":null}");
+        Expect(!stale.StartBlocked, "a stale rig check alone leaves Start offered (the start checks first)");
+        var signedOut = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
+        Expect(signedOut.StartBlocked, "signed out: Start blocked");
+        var localOnly = Screen("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"factory\":{\"start_refusal\":{\"reason\":\"no_episodes\"}}");
+        Expect(!localOnly.StartBlocked, "Local only never asks the Factory");
+        var refused409 = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
+            new StartRefusal("rig_start_failed", "start_session: {\"code\":\"http_409\",\"message\":\"no assigned episodes remain available; unfinished attempts reserve demand\"}", T0));
+        Expect(refused409.Blocker.Headline == "No episodes left in this assignment", "a 409 refusal in plain words: " + refused409.Blocker.Headline);
+        var refused422 = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}",
+            new StartRefusal("rig_start_failed", "start_session: {\"code\":\"http_422\",\"message\":\"required readiness checks are not passing\"}", T0));
+        Expect(refused422.Blocker.Headline == "Readiness checks are failing" && refused422.Blocker.Action == "Run Check, then fix what it names", "a 422 refusal in plain words: " + refused422.Blocker.Headline);
+
         // No task.
         var noTask = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"task_contract\",\"state\":\"fail\",\"summary\":\"no task\"}],\"task\":null,\"progress\":null,\"collection\":null}");
         Expect(noTask.Blocker.Headline == "The Factory shows this pod no task" && noTask.Blocker.Action == "Assign a task to this pod in the Console", "no task -> assign in the Console");

@@ -22,6 +22,8 @@ namespace RealityLog.Rig
         void Episode(string id, int stage, string reason, string fix);
         /// <summary>Each controller's charge, 0..100; null when it cannot be read.</summary>
         void Controllers(int? leftPct, int? rightPct);
+        /// <summary>A start now would certainly be refused; the blocker says why. The phone then offers no Start.</summary>
+        void StartBlocked(bool blocked);
     }
 
     /// <summary>The Touch controllers' charge, read on the main thread (OVRInput); null where unknown.</summary>
@@ -44,6 +46,16 @@ namespace RealityLog.Rig
         /// </summary>
         public static int? Reading(bool connected, int percent) =>
             connected && percent > 0 ? Math.Min(percent, 100) : (int?)null;
+
+        /// <summary>
+        /// Unity XR's batteryLevel (0..1) as a percent: a read that failed, or 0, is unknown (a
+        /// runtime that does not report answers 0), as is anything outside 0..1.
+        /// </summary>
+        public static int? FromLevel(bool ok, float level) =>
+            ok && level > 0f && level <= 1f ? (int?)Math.Max(1, (int)Math.Round(level * 100f)) : null;
+
+        /// <summary>The first source that read the charge.</summary>
+        public static int? First(int? preferred, int? fallback) => preferred ?? fallback;
     }
 
     /// <summary>The operator's controls, on the Pod card and from the paired phone (companion.proto CompanionCommand).</summary>
@@ -115,7 +127,17 @@ namespace RealityLog.Rig
             {
                 if (body != null && JToken.Parse(body) is JObject json)
                 {
-                    if (json["message"] is JValue { Type: JTokenType.String } message && ((string?)message)?.Length > 0) return (string)message!;
+                    if (json["message"] is JValue { Type: JTokenType.String } message && ((string?)message)?.Length > 0)
+                    {
+                        // The Factory's own refusals arrive as JSON inside the rig's words: never pass that on.
+                        var said = (string)message!;
+                        var lower = said.ToLowerInvariant();
+                        if (lower.Contains("readiness checks are not passing") || lower.Contains("no assigned episodes remain") || lower.Contains("no assigned task"))
+                        {
+                            return PodStatusBoard.Explain(json["reason"] is JValue { Type: JTokenType.String } r ? (string?)r ?? "" : "", said);
+                        }
+                        return said;
+                    }
                     if (json["error"] is JValue { Type: JTokenType.String } error && ((string?)error)?.Length > 0) return (string)error!;
                 }
             }
@@ -125,8 +147,8 @@ namespace RealityLog.Rig
             return (start ? "the start" : "the stop") + " was refused (" + statusCode + ")";
         }
 
-        /// <summary>A controller's charge on the strip: "64%", or "-" when unknown.</summary>
-        public static string Percent(int? pct) => pct is int p ? p + "%" : "-";
+        /// <summary>A controller's charge on the strip: "64%", or "not available" when no source reads it.</summary>
+        public static string Percent(int? pct) => pct is int p ? p + "%" : "not available";
     }
 
     /// <summary>
@@ -151,7 +173,10 @@ namespace RealityLog.Rig
             writer.Header(screen.Recording, Battery(status), podId, podName, Collector(status));
             writer.Controllers(controllers.Left, controllers.Right);
             // Ready and Recording stop nothing: the phone shows the headset as ready from that.
-            if (screen.Blocker.Tone != PodTone.Good) writer.Blocker(screen.Blocker.Headline, screen.Blocker.Action);
+            var blocker = screen.Blocker;
+            if (screen.StartBlocked && blocker.Tone == PodTone.Good && PodScreenBoard.StartBlocker(status) is { } start) blocker = start;
+            if (blocker.Tone != PodTone.Good) writer.Blocker(blocker.Headline, blocker.Action);
+            writer.StartBlocked(screen.StartBlocked);
             foreach (var device in screen.Devices)
             {
                 writer.Device(device.Role, device.Side, device.Port, device.State, device.Value, device.Hint);
@@ -219,6 +244,8 @@ namespace RealityLog.Rig
 
         public void Episode(string id, int stage, string reason, string fix) =>
             text.Append("E|").Append(id).Append('|').Append(stage).Append('|').Append(reason).Append('|').Append(fix).Append('\n');
+
+        public void StartBlocked(bool blocked) => text.Append("S|").Append(blocked).Append('\n');
 
         public void Controllers(int? leftPct, int? rightPct) =>
             text.Append("K|").Append(leftPct?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('|')

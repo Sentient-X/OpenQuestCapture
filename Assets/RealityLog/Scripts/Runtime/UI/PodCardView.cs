@@ -506,7 +506,8 @@ namespace RealityLog.UI
             Set(checkText, running == PodControl.Check ? PodControlWords.Running(PodControl.Check) : "Check");
             ShowEnabled(checkImage, checkText, SecondaryColor, running == null && !recording);
             Set(toggleText, running is PodControl.Start or PodControl.Stop ? PodControlWords.Running(running.Value) : recording ? "Stop" : "Start");
-            ShowEnabled(toggleImage, toggleText, recording ? ErrorColor : PrimaryColor, running == null);
+            // Start dims while it would certainly be refused (the blocker says why); a tap still says why.
+            ShowEnabled(toggleImage, toggleText, recording ? ErrorColor : PrimaryColor, running == null && (recording || !screen.StartBlocked));
 
             var canEnd = running == null && !recording && enrolled && !localOnly;
             if (!canEnd) endArmedUntil = float.NegativeInfinity;

@@ -212,6 +212,8 @@ namespace RealityLog.Rig
 
             public void Controllers(int? leftPct, int? rightPct) => Call("setControllerBattery", leftPct ?? -1, rightPct ?? -1);
 
+            public void StartBlocked(bool blocked) => Call("setStartBlocked", blocked);
+
             private static int Clamp(long value) => (int)Math.Max(0, Math.Min(value, int.MaxValue));
         }
     }
