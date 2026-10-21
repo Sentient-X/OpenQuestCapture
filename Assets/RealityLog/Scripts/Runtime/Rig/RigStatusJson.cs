@@ -26,6 +26,15 @@ namespace RealityLog.Rig
                 : null;
 
         /// <summary>
+        /// floor.operator.restored: a sign-in kept from before this launch that the Factory has
+        /// not confirmed yet; false otherwise.
+        /// </summary>
+        public static bool CollectorRestored(JObject? status) =>
+            CollectorSignedIn(status) == true
+            && status!["floor"]!["operator"]!["restored"] is JValue { Type: JTokenType.Boolean } restored
+            && (bool)restored;
+
+        /// <summary>
         /// The signed-in collector's name (floor.operator.display_name while signed_in is true),
         /// the identity sx-pod seals an episode under; null when nobody is signed in.
         /// </summary>

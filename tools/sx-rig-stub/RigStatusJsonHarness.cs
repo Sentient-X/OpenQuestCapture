@@ -22,6 +22,10 @@ static class RigStatusJsonHarness
         Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\" Asha \"}}}")) == "Asha", "signed in: the collector's display name");
         Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":false,\"display_name\":\"Asha\"}}}")) == null, "signed out: no name");
         Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"\"}}}")) == null, "an empty name is no name");
+        Expect(RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"restored\":true}}}")), "a kept sign-in not yet confirmed is restored");
+        Expect(!RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"restored\":false}}}")), "a confirmed sign-in is not restored");
+        Expect(!RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true}}}")), "an older library's status: not restored");
+        Expect(!RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":null}")), "no floor: not restored");
         Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true}}}")) == null, "no display_name: no name");
         Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":null}")) == null && RigStatusJson.CollectorName(null) == null, "local mode: no name");
 

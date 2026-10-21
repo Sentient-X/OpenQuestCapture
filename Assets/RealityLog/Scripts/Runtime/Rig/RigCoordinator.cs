@@ -175,6 +175,7 @@ namespace RealityLog.Rig
         private bool sealsObserved;
         private readonly System.Collections.Concurrent.ConcurrentQueue<RigCues.Cue> cues = new();
         private bool floorObserved; // native-status timer thread only
+        private bool collectorRestored; // native-status timer thread only
 
         private const string NotExpectedStatus =
             "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"localOnly\":true,\"headsetSerial\":null," +
@@ -1308,6 +1309,17 @@ namespace RealityLog.Rig
                     {
                         signInCuePending = true;
                     }
+                    // A sign-in kept across the restart: logged, not cued (nobody signed in now).
+                    var restored = RigStatusJson.CollectorRestored(status);
+                    if (restored && !collectorRestored)
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector sign-in restored from before this launch");
+                    }
+                    else if (!restored && collectorRestored)
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: restored collector sign-in {(signedIn ? "confirmed by the Factory" : "rejected; sign in again")}");
+                    }
+                    collectorRestored = restored;
                     collectorSignedIn = signedIn;
                     collectorName = RigStatusJson.CollectorName(status);
                     floorObserved = true;
