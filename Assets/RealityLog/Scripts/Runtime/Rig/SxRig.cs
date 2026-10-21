@@ -242,7 +242,7 @@ namespace RealityLog.Rig
         public static void DetachUsb(string deviceName) =>
             Check("sx_rig_detach_usb", () => NativeDetachUsb(Utf8(deviceName)));
 
-        /// <summary><c>sx_rig_check</c>: the device check report. Bounded 10 s on a Factory (the device reads 5 s, the Factory's rig 5 s), else 5 s.</summary>
+        /// <summary><c>sx_rig_check</c>: the device check report. Bounded about 16 s on a Factory (the device reads 5 s, the Factory's rig 5 s, then each bound device opened for live data in the arm's 2 s window: about 6 s at worst, under a second when all deliver), else about 11 s.</summary>
         public static string RunCheck() => CallJson("sx_rig_check", NativeCheck);
 
         /// <summary>

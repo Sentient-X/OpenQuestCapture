@@ -46,6 +46,7 @@ namespace RealityLog.Rig
         private readonly ConcurrentQueue<PodControlResult> done = new();
         private float lastControllerRead = float.NegativeInfinity;
         private string lastControllerLog = "";
+        private readonly ControllerBattery battery = new();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -167,25 +168,19 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// OVRInput's controller battery (Meta XR SDK 81 keeps it, marked obsolete for OpenXR, where
-        /// a runtime may answer 0): a disconnected controller or a 0 reads as unknown.
+        /// The controllers' charge (<see cref="ControllerBattery"/>: Unity XR's batteryLevel, else
+        /// OVRInput, which answers 0 under OpenXR); a controller no source reads is unknown.
         /// </summary>
         private void ReadControllers()
         {
             try
             {
-#pragma warning disable CS0618 // the only controller-battery API this SDK has; 0 is treated as unknown
-                var left = OVRInput.GetControllerBatteryPercentRemaining(OVRInput.Controller.LTouch);
-                var right = OVRInput.GetControllerBatteryPercentRemaining(OVRInput.Controller.RTouch);
-#pragma warning restore CS0618
-                Controllers = new ControllerCharge(
-                    ControllerCharge.Reading(OVRInput.IsControllerConnected(OVRInput.Controller.LTouch), left),
-                    ControllerCharge.Reading(OVRInput.IsControllerConnected(OVRInput.Controller.RTouch), right));
-                var log = left + "/" + right;
+                Controllers = battery.Read();
+                var log = PodControlWords.Percent(Controllers.Left) + " / " + PodControlWords.Percent(Controllers.Right);
                 if (log != lastControllerLog)
                 {
                     lastControllerLog = log;
-                    Debug.Log($"[{Constants.LOG_TAG}] PodControls: controller battery raw L={left} R={right} -> {PodControlWords.Percent(Controllers.Left)} / {PodControlWords.Percent(Controllers.Right)}");
+                    Debug.Log($"[{Constants.LOG_TAG}] PodControls: controller battery {log}");
                 }
             }
             catch (Exception ex)

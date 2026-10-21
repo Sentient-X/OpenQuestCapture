@@ -352,7 +352,7 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// Steps 1–2 of a rig start, for a caller that decided the rig takes part (any thread,
-        /// never Unity's main thread: <c>sx_rig_check</c> is bounded 10 s on a Factory): runs the device check
+        /// never Unity's main thread: <c>sx_rig_check</c> is bounded about 16 s on a Factory: it opens each device for live data): runs the device check
         /// every time (<see cref="RigStartGate"/>) and, only when it passed, reserves
         /// <paramref name="sessionName"/> (the rig's episode_id) for the OQC start that follows,
         /// which <see cref="RecordingManager"/> reads as <see cref="ReservedSession"/>; a stop
@@ -732,7 +732,9 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// Check, on the Pod card and from the paired phone: <c>sx_rig_check</c> now, between
-        /// episodes, on the calling (worker) thread (bounded 10 s on a Factory). The report is
+        /// episodes, on the calling (worker) thread (bounded about 16 s on a Factory). It opens each bound
+        /// encoder and camera and requires live data in the arm's 2 s startup window, so a device that is
+        /// attached but silent fails here, with the arm's words and fix, rather than at the next start. The report is
         /// kept as <c>lastCheck</c>, so the card's devices show what it found.
         /// </summary>
         public PodControlResult CheckNow()
@@ -1164,8 +1166,8 @@ namespace RealityLog.Rig
             }
 
             var nativeJson = opened ? nativeStatusJson : "null";
-            // A start's check holds episodeLock while it asks the Factory for the rig (up to
-            // 10 s); the main thread never waits on it, it keeps the status it has this poll.
+            // A start's check holds episodeLock while it asks the Factory for the rig and
+            // opens each device (up to about 16 s); the main thread never waits on it, it keeps the status it has this poll.
             if (!System.Threading.Monitor.TryEnter(episodeLock)) return;
             bool episodeIsActive;
             try { episodeIsActive = episodeActive; }

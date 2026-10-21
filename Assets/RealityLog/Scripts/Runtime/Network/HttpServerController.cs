@@ -314,6 +314,15 @@ namespace RealityLog.Network
                 return wanted ? "an episode is already recording" : "no episode is recording";
             }
             var rigExpected = RigCoordinator.Instance is { } r && r.IsExpected;
+            // A start that would certainly be refused is not offered: the card and the phone
+            // disable it, and the menu button buzzes with the same reason.
+            if (starting && rigExpected && PodScreenBoard.StartBlocker(RigCoordinator.StatusJsonOrDefault) is { } blocked)
+            {
+                Volatile.Write(ref menuBusy, 0);
+                Debug.Log($"[{Constants.LOG_TAG}] menu-button start not offered: {blocked.Headline} ({blocked.Action})");
+                if (done == null) RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+                return blocked.Headline + ": " + blocked.Action;
+            }
             Debug.Log($"[{Constants.LOG_TAG}] menu-button {(starting ? "start" : "stop")}{(start == null ? "" : " (asked)")}");
             System.Threading.Tasks.Task.Run(() =>
             {
