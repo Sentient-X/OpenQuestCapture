@@ -90,6 +90,7 @@ namespace RealityLog.Rig
         private volatile bool enrolled;
         private float lastIdentityPoll = float.NegativeInfinity;
         private volatile string headsetSerial = "";
+        private volatile string podName = "";
         private volatile string tailscaleIp = "";
         private volatile string apkBuildId = "";
         // EmbodimentAssets' install of the seal's meshes into filesDir; the rig opens only once
@@ -678,7 +679,46 @@ namespace RealityLog.Rig
         /// <c>sx_rig_sign_in</c> on the calling (worker) thread; throws
         /// <see cref="SxRigException"/>. The cue plays when the approval lands.
         /// </summary>
-        public string SignIn() => SxRig.SignIn();
+        public string SignIn()
+        {
+            var answer = SxRig.SignIn();
+            try
+            {
+                // {"user_code", "verification_uri_complete", "expires_in"}: remember when the code
+                // lapses, for the phone companion's SignInRequest.
+                if (JToken.Parse(answer) is JObject shown && shown["user_code"] is JValue { Type: JTokenType.String } code
+                    && shown["expires_in"] is JValue { Type: JTokenType.Integer } seconds)
+                {
+                    lastSignInCode = new IssuedSignInCode((string)code!, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (long)seconds * 1000);
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return answer;
+        }
+
+        /// <summary>A collector sign-in code this headset was issued, and when it lapses (Unix ms).</summary>
+        public sealed class IssuedSignInCode
+        {
+            public string Code { get; }
+            public long ExpiresAtMs { get; }
+
+            public IssuedSignInCode(string code, long expiresAtMs)
+            {
+                Code = code;
+                ExpiresAtMs = expiresAtMs;
+            }
+        }
+
+        private volatile IssuedSignInCode? lastSignInCode;
+
+        /// <summary>When <paramref name="code"/> lapses (Unix ms), or 0 when this run did not issue it.</summary>
+        public long SignInCodeExpiresAtMs(string code) =>
+            lastSignInCode is { } issued && issued.Code == code ? issued.ExpiresAtMs : 0;
+
+        /// <summary>pod_config.json's pod_name, "" when it has none (read with the identity).</summary>
+        public string PodName => podName;
 
         /// <summary><c>sx_rig_sign_out</c>; throws <see cref="SxRigException"/>.</summary>
         public void SignOut()
@@ -689,6 +729,99 @@ namespace RealityLog.Rig
 
         /// <summary><c>sx_rig_command</c> on the calling (worker) thread.</summary>
         public string Command(string commandJson) => SxRig.Command(commandJson);
+
+        /// <summary>
+        /// Check, on the Pod card and from the paired phone: <c>sx_rig_check</c> now, between
+        /// episodes, on the calling (worker) thread (bounded 10 s on a Factory). The report is
+        /// kept as <c>lastCheck</c>, so the card's devices show what it found.
+        /// </summary>
+        public PodControlResult CheckNow()
+        {
+            if (!opened)
+            {
+                return new PodControlResult(PodControl.Check, false,
+                    libraryMissing ? "this build has no libsx_rig.so" : "the rig is not open yet");
+            }
+            lock (episodeLock)
+            {
+                if (episodeActive || reservedSession != null)
+                {
+                    return new PodControlResult(PodControl.Check, false, "an episode is recording; check between episodes");
+                }
+                try
+                {
+                    var report = SxRig.RunCheck();
+                    lastCheckJson = report;
+                    var (ready, problems) = RigStatusJson.Check(report);
+                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: check asked by the operator: ready={ready} {problems}");
+                    return new PodControlResult(PodControl.Check, ready, ready ? "Ready to record" : problems);
+                }
+                catch (SxRigException ex)
+                {
+                    lastCheckJson = "{\"ready\":false,\"error\":" + ex.ErrorJson + "}";
+                    return new PodControlResult(PodControl.Check, false, ErrorDetail(ex));
+                }
+            }
+        }
+
+        /// <summary>
+        /// End collection now, on the Pod card and from the paired phone (after the operator
+        /// confirmed): <c>sx_rig_command {"command": "end_recording"}</c>, sx-pod's End collection.
+        /// The rig ends the open collection, tells the Factory, and sends what a collection that
+        /// filled sends (End collection, reviews, finalize), so its episodes finalize and upload
+        /// as at the cap. Refused while an episode records. Calling (worker) thread: it waits on
+        /// the network, holding the episode lock so no start slips in while it ends.
+        /// </summary>
+        public PodControlResult EndCollectionNow()
+        {
+            if (!opened || !enrolled || localOnly)
+            {
+                return new PodControlResult(PodControl.EndCollection, false,
+                    localOnly ? "Local only records no Factory collection" : "this headset is not on the Factory");
+            }
+            lock (episodeLock)
+            {
+                if (episodeActive || reservedSession != null)
+                {
+                    return new PodControlResult(PodControl.EndCollection, false, "an episode is recording; stop it first");
+                }
+                try
+                {
+                    var answer = SxRig.Command("{\"command\":\"end_recording\"}");
+                    var heard = JToken.Parse(answer)["answer"]?["heard"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
+                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collection ended by the operator: {answer}");
+                    return new PodControlResult(PodControl.EndCollection, true, heard
+                        ? "Ended; its episodes are reviewed and uploaded"
+                        : "Ended; the Factory is told when it hears the headset again");
+                }
+                catch (SxRigException ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: end collection refused: {ex.Message}");
+                    return new PodControlResult(PodControl.EndCollection, false, ErrorDetail(ex));
+                }
+                catch (JsonException)
+                {
+                    return new PodControlResult(PodControl.EndCollection, true, "Ended");
+                }
+            }
+        }
+
+        /// <summary>The rig's own words for a refusal: its error's detail, else the error.</summary>
+        private static string ErrorDetail(SxRigException ex)
+        {
+            try
+            {
+                if (JToken.Parse(ex.ErrorJson) is JObject error && error["detail"] is JValue { Type: JTokenType.String } detail
+                    && ((string?)detail)?.Length > 0)
+                {
+                    return (string)detail!;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return ex.Error.ToString();
+        }
 
         /// <summary>
         /// Stops the rig's episode and returns its stop receipt (a JSON object: the library's
@@ -853,6 +986,18 @@ namespace RealityLog.Rig
                 meshes, tailscaleIp, rig, localOnly, apkBuildId).ToString(Formatting.None);
         }
 
+        private string ReadPodConfigName()
+        {
+            try
+            {
+                return ReadPodConfig()["pod_name"] is JValue { Type: JTokenType.String } name ? (string?)name ?? "" : "";
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+            {
+                return "";
+            }
+        }
+
         private string ReadPodConfigSerial()
         {
             try
@@ -919,6 +1064,7 @@ namespace RealityLog.Rig
             {
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
                 headsetSerial = ReadPodConfigSerial();
+                podName = ReadPodConfigName();
                 localOnly = ReadLocalOnly();
                 using (var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName))
                 {
@@ -1074,7 +1220,8 @@ namespace RealityLog.Rig
             }
             else
             {
-                json.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null");
+                json.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null")
+                    .Append(",\"devices\":null,\"roles\":null,\"attempts\":null,\"factory\":null");
                 // The rig's verdict on the meshes ({ready, configured, assets, missing}) comes
                 // with its status; until the rig is open, say only that it has none yet.
                 json.Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
@@ -1156,6 +1303,11 @@ namespace RealityLog.Rig
                         ["uplink"] = status["uplink"],
                         ["floor"] = status["floor"],
                         ["embodiment_assets"] = status["embodiment_assets"],
+                        // The Pod card's status screen (PodScreenBoard), kept while the rig is busy.
+                        ["devices"] = status["devices"],
+                        ["roles"] = status["roles"],
+                        ["attempts"] = status["attempts"],
+                        ["factory"] = status["factory"],
                     }.ToString(Formatting.None);
                     var signedIn = CollectorSignedIn(status) == true;
                     // Only a transition seen while running cues; a sign-in already held at

@@ -10,10 +10,14 @@ namespace RealityLog.UI
 {
     /// <summary>
     /// The recordings menu's Pod card, first in the list and styled like a recording list item:
-    /// a title with a status chip, label/value lines (PodStatusBoard's words), a sign-in code only
-    /// while it is pending, a row of pill actions (Sign in, Scan QR, Local only, Set up manually)
+    /// a title with a status chip; the one blocker and the action that clears it, in a tinted
+    /// panel; the collector and a sign-in code only while it is pending; then the status screen
+    /// (PodScreenBoard): each rig device with its port, state pill and fix, the collection's
+    /// task, progress, what the Factory expects next and its link, and each recent episode's
+    /// steps through the pipeline; the paired phone (PhoneCompanion: Pair phone scans the phone's
+    /// QR; Forget phone); a row of pill actions (Sign in, Scan QR, Local only, Set up manually)
     /// and the manual setup (Factory URL, Auth URL, Join code, Enroll) collapsed until asked for.
-    /// The actions are PodSetupController's and RigCoordinator's, unchanged.
+    /// The actions are PodSetupController's, RigCoordinator's and PhoneCompanion's.
     /// </summary>
     public sealed class PodCardView : MonoBehaviour
     {
@@ -33,6 +37,9 @@ namespace RealityLog.UI
         private const float LabelWidth = 160;
         private const float LineHeight = 32;
         private const float PillHeight = 56;
+        private const float StateWidth = 190;
+        private const int DeviceRows = 4;
+        private const int EpisodeRows = 5;
 
         private Sprite? sprite;
         private TMP_FontAsset? font;
@@ -41,8 +48,37 @@ namespace RealityLog.UI
         private TextMeshProUGUI title = default!;
         private Image chip = default!;
         private TextMeshProUGUI chipText = default!;
-        private TextMeshProUGUI collector = default!, task = default!, rig = default!, refusal = default!, episode = default!, setupLine = default!;
-        private GameObject refusalRow = default!, codeRow = default!, addressRow = default!, setupRow = default!;
+        private TextMeshProUGUI collector = default!, setupLine = default!;
+        private GameObject codeRow = default!, addressRow = default!, setupRow = default!;
+        // The status screen.
+        private Image blockerPanel = default!;
+        private TextMeshProUGUI blockerHeadline = default!, blockerAction = default!;
+        private GameObject devicesSection = default!, devicesNoteRow = default!;
+        private TextMeshProUGUI devicesNote = default!;
+        private readonly StateRow[] devices = new StateRow[DeviceRows];
+        private TextMeshProUGUI taskValue = default!, progressValue = default!, nextValue = default!, linkValue = default!;
+        private GameObject progressRow = default!, nextRow = default!;
+        private GameObject episodesSection = default!;
+        private readonly EpisodeLine[] episodes = new EpisodeLine[EpisodeRows];
+        private readonly StreamLiveness liveness = new();
+        private PodScreen screen = new();
+
+        /// <summary>A device row: name, value, state pill, and the fix beneath when there is one.</summary>
+        private sealed class StateRow
+        {
+            public GameObject Row = default!, HintRow = default!;
+            public TextMeshProUGUI Name = default!, Value = default!, Hint = default!, PillText = default!;
+            public Image Pill = default!;
+        }
+
+        /// <summary>An episode row: its id, the six pipeline steps, a stage pill, and its detail beneath.</summary>
+        private sealed class EpisodeLine
+        {
+            public GameObject Row = default!, DetailRow = default!;
+            public TextMeshProUGUI Id = default!, Detail = default!, PillText = default!;
+            public Image Pill = default!;
+            public readonly Image[] Steps = new Image[PodScreenBoard.Steps.Length];
+        }
         private TextMeshProUGUI code = default!, address = default!;
         private GameObject signInPill = default!;
         private TextMeshProUGUI signInText = default!, scanText = default!, localText = default!, manualText = default!;
@@ -50,6 +86,28 @@ namespace RealityLog.UI
         private GameObject manual = default!;
         private TextMeshProUGUI factoryValue = default!, authValue = default!, joinValue = default!, enrollText = default!;
         private bool expanded;
+        // The phone companion: a panel while pairing or after a failure, the Phone line, its pills.
+        private GameObject phoneSection = default!, phonePanelObj = default!;
+        private Image phonePanel = default!;
+        private TextMeshProUGUI phoneHeadline = default!, phoneAction = default!, phoneLine = default!;
+        private GameObject pairPill = default!, forgetPill = default!;
+        private Image pairImage = default!;
+        private TextMeshProUGUI pairText = default!, forgetText = default!;
+        private float forgetArmedUntil = float.NegativeInfinity;
+        private const float ForgetConfirmSeconds = 4f;
+        // The operator's controls: the battery strip, Check · Start/Stop · End collection, and a
+        // panel for End collection's question or the last control's answer.
+        private TextMeshProUGUI headsetBattery = default!, leftBattery = default!, rightBattery = default!;
+        private TextMeshProUGUI checkText = default!, toggleText = default!, endText = default!;
+        private Image checkImage = default!, toggleImage = default!, endImage = default!;
+        private GameObject controlPanelObj = default!;
+        private Image controlPanel = default!;
+        private TextMeshProUGUI controlHeadline = default!, controlAction = default!;
+        private float endArmedUntil = float.NegativeInfinity;
+        private const float EndConfirmSeconds = 8f;
+        private const float ResultShownSeconds = 60f;
+        private int? headsetPct;
+        private RecordingManager? recorder;
 
         private string? shownStatus;
         private StartRefusal? shownRefusal;
@@ -102,16 +160,113 @@ namespace RealityLog.UI
             chipText.alignment = TextAlignmentOptions.Center;
             Space(transform, 4);
 
+            // The blocker: what is in the way and what clears it, tinted by how bad it is.
+            var blocker = new GameObject("Blocker", typeof(RectTransform));
+            blocker.transform.SetParent(transform, false);
+            blockerPanel = blocker.AddComponent<Image>();
+            Rounded(blockerPanel, FieldColor);
+            var blockerLayout = blocker.AddComponent<VerticalLayoutGroup>();
+            blockerLayout.padding = new RectOffset(18, 18, 12, 14);
+            blockerLayout.spacing = 2;
+            blockerLayout.childControlWidth = true;
+            blockerLayout.childControlHeight = true;
+            blockerLayout.childForceExpandWidth = true;
+            blockerLayout.childForceExpandHeight = false;
+            blockerHeadline = Text("Headline", blocker.transform, 24, TextColor, flexible: false);
+            blockerHeadline.fontStyle = FontStyles.Bold;
+            Wrap(blockerHeadline);
+            blockerAction = Text("Action", blocker.transform, 21, TextColor, flexible: false);
+            Wrap(blockerAction);
+            Space(transform, 8);
+
             collector = Field(transform, "Collector", out _);
             codeRow = Row("SignInCode", transform, 52, 12).gameObject;
             Label(codeRow.transform, "Sign-in code");
             code = Text("Code", codeRow.transform, 34, Color.white, flexible: true);
             code.fontStyle = FontStyles.Bold;
             address = Field(transform, "Approve at", out addressRow);
-            task = Field(transform, "Task", out _);
-            rig = Field(transform, "Rig", out _);
-            refusal = Field(transform, "Last refusal", out refusalRow);
-            episode = Field(transform, "Last episode", out _);
+
+            // Controls: the battery strip, then Check · Start/Stop · End collection, then a panel
+            // with End collection's question or the last control's answer.
+            var controlsSection = Section(transform, "Controls");
+            var battery = Row("Battery", controlsSection.transform, LineHeight, 12);
+            Label(battery, "Battery");
+            headsetBattery = Text("Headset", battery, 22, TextColor, flexible: true);
+            leftBattery = Text("Left", battery, 22, TextColor, flexible: true);
+            rightBattery = Text("Right", battery, 22, TextColor, flexible: true);
+            var controlRow = Row("ControlActions", controlsSection.transform, PillHeight, 12);
+            Pill(controlRow, "Check", SecondaryColor, () => PodControls.Instance?.Run(PodControl.Check), out checkText, out checkImage);
+            Pill(controlRow, "StartStop", PrimaryColor, StartOrStop, out toggleText, out toggleImage);
+            Pill(controlRow, "EndCollection", SecondaryColor, EndCollection, out endText, out endImage);
+            controlPanelObj = new GameObject("ControlPanel", typeof(RectTransform));
+            controlPanelObj.transform.SetParent(controlsSection.transform, false);
+            controlPanel = controlPanelObj.AddComponent<Image>();
+            Rounded(controlPanel, FieldColor);
+            var controlPanelLayout = controlPanelObj.AddComponent<VerticalLayoutGroup>();
+            controlPanelLayout.padding = new RectOffset(18, 18, 10, 12);
+            controlPanelLayout.spacing = 2;
+            controlPanelLayout.childControlWidth = true;
+            controlPanelLayout.childControlHeight = true;
+            controlPanelLayout.childForceExpandWidth = true;
+            controlPanelLayout.childForceExpandHeight = false;
+            controlHeadline = Text("Headline", controlPanelObj.transform, 22, TextColor, flexible: false);
+            controlHeadline.fontStyle = FontStyles.Bold;
+            Wrap(controlHeadline);
+            controlAction = Text("Action", controlPanelObj.transform, 20, TextColor, flexible: false);
+            Wrap(controlAction);
+            controlPanelObj.SetActive(false);
+
+            // Devices: one row per role, a pill for its state and its fix beneath.
+            devicesSection = Section(transform, "Devices");
+            for (var i = 0; i < DeviceRows; i++) devices[i] = BuildStateRow(devicesSection.transform);
+            devicesNote = Field(devicesSection.transform, "", out devicesNoteRow);
+            devicesNote.color = DimTextColor;
+            devicesNote.fontSize = 19;
+
+            // The collection: task, progress, what the Factory expects next, and the link.
+            var collection = Section(transform, "Collection");
+            taskValue = Field(collection.transform, "Task", out _);
+            progressValue = Field(collection.transform, "Progress", out progressRow);
+            nextValue = Field(collection.transform, "Next", out nextRow);
+            linkValue = Field(collection.transform, "Factory", out _);
+
+            // Episodes: the newest first, each across the pipeline's steps.
+            episodesSection = Section(transform, "Episodes");
+            var legend = Row("Legend", episodesSection.transform, 22, 6);
+            Fixed(legend, LabelWidth - 6);
+            foreach (var step in PodScreenBoard.Steps)
+            {
+                var label = Text(step, legend, 15, DimTextColor, flexible: true);
+                label.alignment = TextAlignmentOptions.Center;
+                label.text = step;
+            }
+            Fixed(legend, StateWidth);
+            for (var i = 0; i < EpisodeRows; i++) episodes[i] = BuildEpisodeLine(episodesSection.transform);
+
+            // The phone companion: pairing (a panel says what to do), the paired phone, its pills.
+            phoneSection = Section(transform, "Phone");
+            phonePanelObj = new GameObject("PhonePanel", typeof(RectTransform));
+            phonePanelObj.transform.SetParent(phoneSection.transform, false);
+            phonePanel = phonePanelObj.AddComponent<Image>();
+            Rounded(phonePanel, FieldColor);
+            var phonePanelLayout = phonePanelObj.AddComponent<VerticalLayoutGroup>();
+            phonePanelLayout.padding = new RectOffset(18, 18, 12, 14);
+            phonePanelLayout.spacing = 2;
+            phonePanelLayout.childControlWidth = true;
+            phonePanelLayout.childControlHeight = true;
+            phonePanelLayout.childForceExpandWidth = true;
+            phonePanelLayout.childForceExpandHeight = false;
+            phoneHeadline = Text("Headline", phonePanelObj.transform, 24, TextColor, flexible: false);
+            phoneHeadline.fontStyle = FontStyles.Bold;
+            Wrap(phoneHeadline);
+            phoneAction = Text("Action", phonePanelObj.transform, 21, TextColor, flexible: false);
+            Wrap(phoneAction);
+            phoneLine = Field(phoneSection.transform, "Phone", out _);
+            var phoneActions = Row("PhoneActions", phoneSection.transform, PillHeight, 12);
+            pairPill = Pill(phoneActions, "PairPhone", PrimaryColor, () => PhoneCompanion.Instance?.PairOrCancel(), out pairText, out pairImage);
+            forgetPill = Pill(phoneActions, "ForgetPhone", SecondaryColor, ForgetPhone, out forgetText, out _);
+
+            Space(transform, 6);
             setupLine = Field(transform, "Setup", out setupRow);
             Space(transform, 10);
 
@@ -170,7 +325,10 @@ namespace RealityLog.UI
                 shownSucceeded = succeeded;
                 shownAsking = asking;
                 lines = PodStatusBoard.Lines(status, lastStart, succeeded, asking);
+                headsetPct = HeadsetBattery(status);
+                screen = PodScreenBoard.Build(status, lastStart, succeeded, liveness, DateTime.UtcNow);
                 ShowStatus();
+                ShowScreen();
             }
             ShowControls(setup);
         }
@@ -195,11 +353,79 @@ namespace RealityLog.UI
             Set(code, lines.SignInCode);
             Show(addressRow, pending && lines.SignInAddress.Length > 0);
             Set(address, lines.SignInAddress);
-            Set(task, PodStatusBoard.Field(lines.Task).value);
-            Set(rig, PodStatusBoard.Field(lines.Rig).value);
-            Show(refusalRow, lines.HasRefusal);
-            Set(refusal, PodStatusBoard.Field(lines.LastRefusal).value);
-            Set(episode, PodStatusBoard.Field(lines.LastEpisode).value);
+        }
+
+        private void ShowScreen()
+        {
+            var tone = Tint(screen.Blocker.Tone);
+            blockerPanel.color = new Color(tone.r, tone.g, tone.b, 0.16f);
+            blockerHeadline.color = screen.Blocker.Tone == PodTone.Neutral ? TextColor : tone;
+            Set(blockerHeadline, screen.Blocker.Headline);
+            Set(blockerAction, screen.Blocker.Action);
+
+            for (var i = 0; i < DeviceRows; i++)
+            {
+                var row = devices[i];
+                var on = i < screen.Devices.Count;
+                Show(row.Row, on);
+                Show(row.HintRow, on && screen.Devices[i].Hint.Length > 0);
+                if (!on) continue;
+                var device = screen.Devices[i];
+                Set(row.Name, device.Name);
+                Set(row.Value, device.Value);
+                SetPill(row.Pill, row.PillText, device.Pill, device.Tone);
+                row.Hint.color = Tint(device.Tone == PodTone.Error ? PodTone.Error : PodTone.Warning);
+                Set(row.Hint, device.Hint);
+            }
+            Show(devicesNoteRow, screen.DevicesNote.Length > 0);
+            Set(devicesNote, screen.DevicesNote);
+
+            Set(taskValue, screen.Task);
+            Show(progressRow, screen.Progress.Length > 0);
+            Set(progressValue, screen.Progress);
+            Show(nextRow, screen.Next.Length > 0);
+            Set(nextValue, screen.Next);
+            Set(linkValue, screen.Link);
+            linkValue.color = screen.LinkTone == PodTone.Neutral ? TextColor : Tint(screen.LinkTone);
+
+            Show(episodesSection, screen.Episodes.Count > 0);
+            for (var i = 0; i < EpisodeRows; i++)
+            {
+                var line = episodes[i];
+                var on = i < screen.Episodes.Count;
+                Show(line.Row, on);
+                Show(line.DetailRow, on && screen.Episodes[i].Detail.Length > 0);
+                if (!on) continue;
+                var episode = screen.Episodes[i];
+                Set(line.Id, episode.Id);
+                for (var step = 0; step < line.Steps.Length; step++)
+                {
+                    line.Steps[step].color = step == episode.FailedAt ? ErrorColor
+                        : step < episode.Reached ? GoodColor
+                        : step == episode.Reached && episode.FailedAt < 0 && episode.Reached < line.Steps.Length ? new Color(WarningColor.r, WarningColor.g, WarningColor.b, 0.55f)
+                        : FieldColor;
+                }
+                SetPill(line.Pill, line.PillText, episode.Stage, episode.Tone);
+                line.Detail.color = episode.Tone == PodTone.Error ? ErrorColor : DimTextColor;
+                Set(line.Detail, episode.Detail);
+            }
+        }
+
+        private static Color Tint(PodTone tone) => tone switch
+        {
+            PodTone.Good => GoodColor,
+            PodTone.Warning => WarningColor,
+            PodTone.Error => ErrorColor,
+            _ => DimTextColor,
+        };
+
+        /// <summary>A state pill as the title's chip draws it: the tone's colour faint behind, bold in front.</summary>
+        private static void SetPill(Image pill, TextMeshProUGUI text, string word, PodTone tone)
+        {
+            var tint = Tint(tone);
+            pill.color = new Color(tint.r, tint.g, tint.b, 0.18f);
+            text.color = tint;
+            Set(text, word);
         }
 
         private void ShowControls(PodSetupController? setup)
@@ -223,6 +449,9 @@ namespace RealityLog.UI
             localImage.color = SecondaryColor;
             localText.color = Color.white;
 
+            ShowControlsSection(enrolled, localOnly);
+            ShowPhone();
+
             Set(manualText, expanded ? "Hide setup" : "Set up manually");
             Show(manual, expanded && setup != null);
             if (expanded && setup != null)
@@ -232,6 +461,154 @@ namespace RealityLog.UI
                 Set(joinValue, setup.JoinCode.Length > 0 ? "entered" : "tap to type");
                 Set(enrollText, setup.Busy && !setup.Scanning && !setup.SigningIn ? "Enrolling..." : "Enroll");
             }
+        }
+
+        /// <summary>The Phone section from the companion's phase, in CompanionCard's words.</summary>
+        private void ShowPhone()
+        {
+            var companion = PhoneCompanion.Instance;
+            var phase = companion?.Phase ?? CompanionPhase.Unavailable;
+            var card = CompanionCard.Describe(phase, companion?.PhoneName ?? "", companion?.OperatorName ?? "",
+                companion?.PodLabel ?? "", companion?.Error ?? "");
+            Show(phoneSection, phase != CompanionPhase.Unavailable);
+            if (phase == CompanionPhase.Unavailable) return;
+            var panel = card.Headline.Length > 0;
+            Show(phonePanelObj, panel);
+            if (panel)
+            {
+                var tone = Tint(card.PanelTone);
+                phonePanel.color = new Color(tone.r, tone.g, tone.b, 0.16f);
+                phoneHeadline.color = card.PanelTone == PodTone.Neutral ? TextColor : tone;
+                Set(phoneHeadline, card.Headline);
+                Set(phoneAction, card.Action);
+            }
+            Set(phoneLine, card.Line);
+            phoneLine.color = card.LineTone == PodTone.Neutral ? TextColor : Tint(card.LineTone);
+            Show(pairPill, card.PairPill.Length > 0);
+            Set(pairText, card.PairPill);
+            pairImage.color = card.PairPrimary ? PrimaryColor : SecondaryColor;
+            Show(forgetPill, card.ShowForget);
+            Set(forgetText, Time.unscaledTime < forgetArmedUntil ? "Tap again to forget" : "Forget phone");
+        }
+
+        /// <summary>The battery strip, the three controls by state, and End collection's question or the last answer.</summary>
+        private void ShowControlsSection(bool enrolled, bool localOnly)
+        {
+            var controls = PodControls.Instance;
+            var running = controls?.Running;
+            recorder ??= FindFirstObjectByType<RecordingManager>();
+            var recording = recorder != null ? recorder.State != RecordingState.Idle : screen.Recording;
+
+            ShowCharge(headsetBattery, "Headset", headsetPct);
+            ShowCharge(leftBattery, "Left", controls?.Controllers.Left);
+            ShowCharge(rightBattery, "Right", controls?.Controllers.Right);
+
+            Set(checkText, running == PodControl.Check ? PodControlWords.Running(PodControl.Check) : "Check");
+            ShowEnabled(checkImage, checkText, SecondaryColor, running == null && !recording);
+            Set(toggleText, running is PodControl.Start or PodControl.Stop ? PodControlWords.Running(running.Value) : recording ? "Stop" : "Start");
+            ShowEnabled(toggleImage, toggleText, recording ? ErrorColor : PrimaryColor, running == null);
+
+            var canEnd = running == null && !recording && enrolled && !localOnly;
+            if (!canEnd) endArmedUntil = float.NegativeInfinity;
+            var armed = Time.unscaledTime < endArmedUntil;
+            Set(endText, running == PodControl.EndCollection ? PodControlWords.Running(PodControl.EndCollection) : armed ? "End now" : "End collection");
+            ShowEnabled(endImage, endText, armed ? ErrorColor : SecondaryColor, canEnd);
+
+            // The panel: the question while End collection waits for its second tap, else the last answer for a minute.
+            var last = controls?.Last;
+            if (armed)
+            {
+                ShowControlPanel(PodTone.Warning, PodControlWords.EndQuestion(screen.Credited, screen.Requested),
+                    "Tap End now to end it: its episodes are reviewed and uploaded as when it fills");
+            }
+            else if (running is PodControl busy)
+            {
+                ShowControlPanel(PodTone.Neutral, PodControlWords.Running(busy), "");
+            }
+            else if (last is PodControlResult result && Time.unscaledTime - controls!.LastAt < ResultShownSeconds)
+            {
+                ShowControlPanel(result.Ok ? PodTone.Good : PodTone.Error, PodControlWords.Line(result), "");
+            }
+            else
+            {
+                Show(controlPanelObj, false);
+            }
+        }
+
+        private void ShowControlPanel(PodTone tone, string headline, string action)
+        {
+            Show(controlPanelObj, true);
+            var tint = Tint(tone);
+            controlPanel.color = new Color(tint.r, tint.g, tint.b, 0.16f);
+            controlHeadline.color = tone == PodTone.Neutral ? TextColor : tint;
+            Set(controlHeadline, headline);
+            Show(controlAction.gameObject, action.Length > 0);
+            Set(controlAction, action);
+        }
+
+        /// <summary>"Left 64%", tinted by how low it is; "Left -" when it cannot be read.</summary>
+        private static void ShowCharge(TextMeshProUGUI text, string label, int? pct)
+        {
+            Set(text, label + " " + PodControlWords.Percent(pct));
+            text.color = pct is int p ? p <= 15 ? ErrorColor : p <= 30 ? WarningColor : GoodColor : DimTextColor;
+        }
+
+        /// <summary>A pill that cannot act now is drawn as a field, its word dimmed; it still answers a tap with why.</summary>
+        private static void ShowEnabled(Image pill, TextMeshProUGUI text, Color color, bool enabled)
+        {
+            pill.color = enabled ? color : FieldColor;
+            text.color = enabled ? Color.white : DimTextColor;
+        }
+
+        private void StartOrStop()
+        {
+            recorder ??= FindFirstObjectByType<RecordingManager>();
+            var recording = recorder != null ? recorder.State != RecordingState.Idle : screen.Recording;
+            PodControls.Instance?.Run(recording ? PodControl.Stop : PodControl.Start);
+        }
+
+        /// <summary>End collection asks for a second tap, with how far the collection got.</summary>
+        private void EndCollection()
+        {
+            if (Time.unscaledTime < endArmedUntil)
+            {
+                endArmedUntil = float.NegativeInfinity;
+                PodControls.Instance?.Run(PodControl.EndCollection);
+                return;
+            }
+            recorder ??= FindFirstObjectByType<RecordingManager>();
+            if (recorder != null && recorder.State != RecordingState.Idle)
+            {
+                // Refused with its reason, on the card and the phone.
+                PodControls.Instance?.Run(PodControl.EndCollection);
+                return;
+            }
+            endArmedUntil = Time.unscaledTime + EndConfirmSeconds;
+        }
+
+        /// <summary>deviceReport.battery_percent from the rig status; null when unread.</summary>
+        private static int? HeadsetBattery(string status)
+        {
+            try
+            {
+                return HeadsetStatusMap.Battery(Newtonsoft.Json.Linq.JToken.Parse(status) as Newtonsoft.Json.Linq.JObject);
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Forget phone asks for a second tap: a forgotten phone pairs again only from a fresh QR.</summary>
+        private void ForgetPhone()
+        {
+            if (Time.unscaledTime < forgetArmedUntil)
+            {
+                forgetArmedUntil = float.NegativeInfinity;
+                PhoneCompanion.Instance?.Forget();
+                return;
+            }
+            forgetArmedUntil = Time.unscaledTime + ForgetConfirmSeconds;
         }
 
         private void ToggleLocalOnly()
@@ -245,6 +622,116 @@ namespace RealityLog.UI
         }
 
         // ---- Building blocks ----
+
+        /// <summary>A titled group: a dim heading over its rows.</summary>
+        private GameObject Section(Transform parent, string title)
+        {
+            var section = new GameObject(title, typeof(RectTransform));
+            section.transform.SetParent(parent, false);
+            var layout = section.AddComponent<VerticalLayoutGroup>();
+            layout.padding = new RectOffset(0, 0, 12, 0);
+            layout.spacing = 4;
+            layout.childControlWidth = true;
+            layout.childControlHeight = true;
+            layout.childForceExpandWidth = true;
+            layout.childForceExpandHeight = false;
+            var heading = Text("Heading", section.transform, 19, TitleColor, flexible: false);
+            heading.fontStyle = FontStyles.Bold;
+            heading.text = title.ToUpperInvariant();
+            heading.characterSpacing = 4;
+            var size = heading.gameObject.AddComponent<LayoutElement>();
+            size.minHeight = size.preferredHeight = 28;
+            return section;
+        }
+
+        private StateRow BuildStateRow(Transform parent)
+        {
+            var row = new StateRow();
+            var line = Row("Device", parent, 38, 12);
+            row.Row = line.gameObject;
+            row.Name = Text("Name", line, 21, TextColor, flexible: false);
+            var nameSize = row.Name.gameObject.AddComponent<LayoutElement>();
+            nameSize.minWidth = nameSize.preferredWidth = LabelWidth;
+            row.Value = Text("Value", line, 20, DimTextColor, flexible: true);
+            (row.Pill, row.PillText) = StatePill(line);
+            var hint = Row("Fix", parent, 28, 12);
+            row.HintRow = hint.gameObject;
+            Fixed(hint, LabelWidth);
+            row.Hint = Text("Hint", hint, 19, WarningColor, flexible: true);
+            return row;
+        }
+
+        private EpisodeLine BuildEpisodeLine(Transform parent)
+        {
+            var line = new EpisodeLine();
+            var row = Row("Episode", parent, 38, 6);
+            line.Row = row.gameObject;
+            line.Id = Text("Id", row, 19, TextColor, flexible: false);
+            var idSize = line.Id.gameObject.AddComponent<LayoutElement>();
+            idSize.minWidth = idSize.preferredWidth = LabelWidth - 6;
+            for (var i = 0; i < line.Steps.Length; i++)
+            {
+                // A step: a short rounded bar centred in its cell, under the legend's word.
+                var cell = new GameObject("Step", typeof(RectTransform));
+                cell.transform.SetParent(row, false);
+                var cellSize = cell.AddComponent<LayoutElement>();
+                cellSize.minWidth = 0;
+                cellSize.preferredWidth = 1;
+                cellSize.flexibleWidth = 1;
+                cellSize.minHeight = cellSize.preferredHeight = 38;
+                var bar = new GameObject("Bar", typeof(RectTransform));
+                bar.transform.SetParent(cell.transform, false);
+                var rect = (RectTransform)bar.transform;
+                rect.anchorMin = new Vector2(0.06f, 0.5f);
+                rect.anchorMax = new Vector2(0.94f, 0.5f);
+                rect.sizeDelta = new Vector2(0, 10);
+                line.Steps[i] = bar.AddComponent<Image>();
+                Rounded(line.Steps[i], FieldColor);
+                line.Steps[i].raycastTarget = false;
+            }
+            (line.Pill, line.PillText) = StatePill(row);
+            var detail = Row("Detail", parent, 26, 12);
+            line.DetailRow = detail.gameObject;
+            Fixed(detail, LabelWidth - 6);
+            line.Detail = Text("Detail", detail, 18, DimTextColor, flexible: true);
+            return line;
+        }
+
+        /// <summary>A state pill like the title's chip, at the end of a row.</summary>
+        private (Image, TextMeshProUGUI) StatePill(Transform row)
+        {
+            var obj = new GameObject("State", typeof(RectTransform));
+            obj.transform.SetParent(row, false);
+            var image = obj.AddComponent<Image>();
+            Rounded(image, Color.clear);
+            image.raycastTarget = false;
+            var size = obj.AddComponent<LayoutElement>();
+            size.minWidth = size.preferredWidth = StateWidth;
+            size.minHeight = size.preferredHeight = 32;
+            var text = Text("Text", obj.transform, 17, Color.white, flexible: false);
+            Stretch(text.rectTransform);
+            text.rectTransform.sizeDelta = new Vector2(-16, 0);
+            text.fontStyle = FontStyles.Bold;
+            text.alignment = TextAlignmentOptions.Center;
+            return (image, text);
+        }
+
+        /// <summary>A fixed-width gap in a row, so a line beneath lines up with the values above.</summary>
+        private static void Fixed(Transform row, float width)
+        {
+            var gap = new GameObject("Indent", typeof(RectTransform));
+            gap.transform.SetParent(row, false);
+            var size = gap.AddComponent<LayoutElement>();
+            size.minWidth = size.preferredWidth = width;
+        }
+
+        /// <summary>Lets a line wrap, its height following its text (the blocker's lines).</summary>
+        private static void Wrap(TextMeshProUGUI text)
+        {
+            text.textWrappingMode = TextWrappingModes.Normal;
+            text.overflowMode = TextOverflowModes.Overflow;
+            text.alignment = TextAlignmentOptions.TopLeft;
+        }
 
         private void Rounded(Image image, Color color)
         {

@@ -68,3 +68,24 @@ cp "$newtonsoft" "$out/"
     -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/pod-status-harness.exe"
+
+# PodScreenBoard: the Pod card's status screen (blocker, devices, collection, episodes).
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/pod-screen-harness.exe" "$here/PodScreenHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+"$mono" "$out/pod-screen-harness.exe"
+
+# The phone companion: HeadsetStatus from the status screen, the sign-in hand-off, the Phone section.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+"$mono" "$out/companion-harness.exe"
+
+# RecordingListRefreshGate: the recordings list stays off the main thread's back while recording.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/list-refresh-harness.exe" "$here/RecordingListRefreshGateHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingListRefreshGate.cs"
+"$mono" "$out/list-refresh-harness.exe"

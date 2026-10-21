@@ -89,7 +89,12 @@ namespace RealityLog.Rig
                 Fail("Stop the recording before setting up the pod.");
                 return;
             }
-            scanCamera = LeftCamera();
+            if (PhoneCompanion.Instance is { Scanning: true })
+            {
+                Fail("Finish pairing the phone first.");
+                return;
+            }
+            scanCamera = PassthroughQrCamera();
             if (scanCamera == null || !scanCamera.StartQrScan())
             {
                 Fail("The passthrough camera is not available for scanning.");
@@ -132,17 +137,19 @@ namespace RealityLog.Rig
         /// Signs a collector in on this enrolled headset, as a laptop pod's kiosk does: the rig
         /// asks the Factory for a code, the panel shows it with the address to approve it at,
         /// and the headset chimes when the approval lands (a start needs a signed-in collector).
+        /// Returns why it did not start, or null when it started (or one is already being asked
+        /// for); a sign-in call that fails later raises <see cref="SignInFailed"/>.
         /// </summary>
-        public void SignIn()
+        public string? SignIn()
         {
-            if (Busy) return;
+            if (signingIn) return null;
+            if (Busy) return Fail("Wait for the pod setup step to finish, then sign in.");
             var rig = RigCoordinator.Instance;
-            if (rig is not { Enrolled: true }) { Fail("Enroll this headset as a pod before signing in."); return; }
-            if (rig.LocalOnly) { Fail("Turn Local only off to sign in: a local headset needs no collector."); return; }
+            if (rig is not { Enrolled: true }) return Fail("Enroll this headset as a pod before signing in.");
+            if (rig.LocalOnly) return Fail("Turn Local only off to sign in: a local headset needs no collector.");
             if (FindFirstObjectByType<RecordingManager>() is { IsRecording: true })
             {
-                Fail("Stop the recording before signing in.");
-                return;
+                return Fail("Stop the recording before signing in.");
             }
             signingIn = true;
             Status = "Asking the Factory for a sign-in code...";
@@ -165,7 +172,7 @@ namespace RealityLog.Rig
                     mainThread.Enqueue(() =>
                     {
                         signingIn = false;
-                        Fail("Sign-in failed: " + RigStatusJson.ErrorDetail(ex.ErrorJson, ex.Message));
+                        SignInFailed?.Invoke(Fail("Sign-in failed: " + RigStatusJson.ErrorDetail(ex.ErrorJson, ex.Message)));
                     });
                 }
                 catch (Newtonsoft.Json.JsonException ex)
@@ -173,11 +180,15 @@ namespace RealityLog.Rig
                     mainThread.Enqueue(() =>
                     {
                         signingIn = false;
-                        Fail("Sign-in failed: " + ex.Message);
+                        SignInFailed?.Invoke(Fail("Sign-in failed: " + ex.Message));
                     });
                 }
             });
+            return null;
         }
+
+        /// <summary>A started sign-in's call failed (main thread): its words, as the panel shows them.</summary>
+        public event Action<string>? SignInFailed;
 
         /// <summary>Enrolls with the URLs and join code entered (or scanned).</summary>
         public void Enroll()
@@ -268,7 +279,11 @@ namespace RealityLog.Rig
                     scanCamera.StopQrScan();
                     scanning = false;
                     var (factory, auth, code, error) = PodSetupJson.ParseQr(text);
-                    if (error != null)
+                    if (CompanionCard.IsOffer(text))
+                    {
+                        Fail("That is a phone's pairing code: tap Pair phone to pair it.");
+                    }
+                    else if (error != null)
                     {
                         Fail(error);
                     }
@@ -308,14 +323,19 @@ namespace RealityLog.Rig
             keyboard = TouchScreenKeyboard.Open(current, TouchScreenKeyboardType.URL, false, false, secure);
         }
 
-        private void Fail(string message)
+        private string Fail(string message)
         {
             Status = message;
             Debug.LogWarning($"[{Constants.LOG_TAG}] PodSetup: {message}");
             RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+            return message;
         }
 
-        private static VideoRecorderSurfaceProvider? LeftCamera()
+        /// <summary>
+        /// The passthrough camera a QR scan reads (the left eye's recorder, else any): the scan
+        /// uses the session the recorder keeps open and never opens one of its own.
+        /// </summary>
+        internal static VideoRecorderSurfaceProvider? PassthroughQrCamera()
         {
             VideoRecorderSurfaceProvider? first = null;
             foreach (var provider in FindObjectsByType<VideoRecorderSurfaceProvider>(FindObjectsSortMode.None))

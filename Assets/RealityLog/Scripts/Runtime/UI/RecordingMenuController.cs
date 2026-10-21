@@ -68,7 +68,11 @@ namespace RealityLog.UI
             
             if (menuPanel != null)
             {
-                if (listManager != null)
+                // Only opening refreshes, so closing stays cheap: a start closes the menu
+                // (onRecordingStarted -> HideMenu) inside RecordingManager.StartRecording, and a
+                // rebuild there stalled the pose loggers. Opened while recording, the refresh
+                // waits for the recording to end (RecordingListManager).
+                if (isMenuVisible && listManager != null)
                 {
                     listManager.RefreshRecordings();
                 }
