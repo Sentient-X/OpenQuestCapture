@@ -33,7 +33,7 @@ cp "$apk" "$target/$name"
 apk_sha="$(sha256sum "$target/$name" | cut -d' ' -f1)"
 so="$root/Assets/Plugins/Android/libs/arm64-v8a/libsx_rig.so"
 keys="$root/Assets/RealityLog/Resources/sx_rig_config_keys.json"
-# The phone companion (sx packages/sx-companion-android, companionAar), git-ignored like questcameralib.aar.
+# The phone companion (sx packages/sx-companion-android, companionAar), committed like libsx_rig.so.
 companion="$root/Assets/Plugins/Android/sx-companion-release.aar"
 certs="$("$(dirname "$aapt2")/apksigner" verify --print-certs "$target/$name")"
 cert="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$certs")"

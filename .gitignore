@@ -66,6 +66,8 @@ sysinfo.txt
 *.apk
 *.aab
 *.aar
+# Built in sx (packages/sx-companion-android) and committed like libsx_rig.so: no in-repo build step.
+!Assets/Plugins/Android/sx-companion-release.aar
 *.unitypackage
 *.unitypackage.meta
 *.app
