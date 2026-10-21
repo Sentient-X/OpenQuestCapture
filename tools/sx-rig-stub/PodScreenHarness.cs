@@ -64,7 +64,8 @@ static class PodScreenHarness
             + "{\"id\":\"rig_check\",\"state\":\"fail\",\"category\":\"hardware\",\"summary\":\"rig check is stale\"}]," + Task + ",\"start_refusal\":null}");
         Expect(!stale.StartBlocked, "a stale rig check alone leaves Start offered (the start checks first)");
         var signedOut = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(signedOut.StartBlocked, "signed out: Start blocked");
+        Expect(signedOut.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}}}"))?.Headline == "Sign in to record",
+            "signed out: Start blocked, Sign in to record");
         var localOnly = Screen("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"factory\":{\"start_refusal\":{\"reason\":\"no_episodes\"}}");
         Expect(!localOnly.StartBlocked, "Local only never asks the Factory");
         var refused409 = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
@@ -86,7 +87,7 @@ static class PodScreenHarness
 
         // Signed out comes before the Factory's checks; a pending code names the code.
         var out_ = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(out_.Blocker.Headline == "Collector signed out" && out_.Blocker.Action.StartsWith("Tap Sign in"), "signed out -> sign in");
+        Expect(out_.Blocker.Headline == "Sign in to record" && out_.Blocker.Action.StartsWith("Tap Sign in"), "signed out -> sign in");
         var pending = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}},\"factory\":{" + Heard + "}");
         Expect(pending.Blocker.Action == "Approve code WXYZ-1234 on your phone", "pending sign-in names the code");
 

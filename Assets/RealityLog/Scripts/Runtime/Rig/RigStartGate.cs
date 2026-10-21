@@ -1,6 +1,7 @@
 # nullable enable
 
 using System;
+using Newtonsoft.Json.Linq;
 
 namespace RealityLog.Rig
 {
@@ -60,8 +61,7 @@ namespace RealityLog.Rig
             }
             if (!facts.CollectorReady)
             {
-                return new RigRefusal("collector_signed_out",
-                    "no collector is signed in on this headset; POST /api/sign-in and approve the code");
+                return SignInToRecord();
             }
             string report;
             try
@@ -77,6 +77,50 @@ namespace RealityLog.Rig
             // A check that answers is not a check that passed.
             var (ready, problems) = RigStatusJson.Check(report);
             return ready ? null : new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, report);
+        }
+
+        /// <summary>The seal's operator in Local only mode, or on a headset not enrolled: no collector signs in there.</summary>
+        public const string LocalOperatorId = "local-only";
+
+        /// <summary>An enrolled headset with no collector signed in: a start is refused.</summary>
+        public static RigRefusal SignInToRecord() => new RigRefusal("collector_signed_out",
+            "Sign in to record: no collector is signed in on this headset; POST /api/sign-in and approve the code");
+
+        /// <summary>
+        /// The operator_id an episode's seal names, as sx-pod's does: on an enrolled headset
+        /// that is not Local only, the signed-in collector (<paramref name="collectorName"/>,
+        /// the Factory's display name), whatever a start body says, and null when nobody is
+        /// signed in (refuse with <see cref="SignInToRecord"/>). Otherwise no collector can sign
+        /// in: the start body's <c>operator_id</c> when it names one, else
+        /// <see cref="LocalOperatorId"/>. Never pod_config.json.
+        /// </summary>
+        public static string? SealOperatorId(bool enrolled, bool localOnly, string? collectorName, string? bodyOperatorId)
+        {
+            if (enrolled && !localOnly)
+            {
+                return collectorName?.Trim() is { Length: > 0 } name ? name : null;
+            }
+            return bodyOperatorId?.Trim() is { Length: > 0 } named ? named : LocalOperatorId;
+        }
+
+        /// <summary>
+        /// The sx_rig_start_armed episode body. The seal needs operator_id
+        /// (<see cref="SealOperatorId"/>), quest_apk_build_id and quest_session_dir.
+        /// </summary>
+        public static JObject EpisodeBody(string sessionName, string operatorId, string apkBuildId,
+            string sessionDir, string appVersion, string? taskAssignmentId, string? mode)
+        {
+            var episode = new JObject
+            {
+                ["episode_id"] = sessionName,
+                ["operator_id"] = operatorId,
+                ["quest_apk_build_id"] = apkBuildId,
+                ["quest_session_dir"] = sessionDir,
+                ["app_version"] = appVersion,
+            };
+            if (taskAssignmentId != null) episode["task_assignment_id"] = taskAssignmentId;
+            if (mode != null) episode["mode"] = mode;
+            return episode;
         }
 
         /// <summary>

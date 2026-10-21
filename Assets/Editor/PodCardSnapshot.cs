@@ -180,6 +180,7 @@ public static class PodCardSnapshot
         yield return ("b-ready", Ready());
         yield return ("c-blocked", Blocked());
         yield return ("d-long", LongList());
+        yield return ("e-signed-out", SignedOut());
     }
 
     /// <summary>(a) A fresh install: not enrolled, Local only off, nothing plugged in; the real boards' words.</summary>
@@ -283,6 +284,19 @@ public static class PodCardSnapshot
         var state = Enrolled(screen, Lines(PodReadiness.Refused, "Refused", "Asha Rao (signed in)"));
         state.PanelTone = PodTone.Error;
         state.PanelHeadline = "Check failed: right encoder sends nothing; left camera is not on USB";
+        return state;
+    }
+
+    /// <summary>(e) Enrolled, nobody signed in: Start is blocked with "Sign in to record"; the real board's words.</summary>
+    private static PodCardState SignedOut()
+    {
+        const string status =
+            "{\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
+            "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"operator\":{\"signed_in\":false}}," +
+            "\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}}}";
+        var state = Enrolled(PodScreenBoard.Build(status, null, false, new StreamLiveness(), DateTime.UtcNow),
+            Lines(PodReadiness.NotReady, "Not ready", "nobody signed in"));
+        state.SignedIn = false;
         return state;
     }
 

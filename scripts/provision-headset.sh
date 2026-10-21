@@ -3,7 +3,7 @@
 #
 # Android hides ro.serialno from apps, so the headset cannot read its own serial; the
 # Factory needs it to commission a headset pod. This writes headset_serial (read over
-# adb) into the app's pod_config.json with the seal's operator_id, keeps Local only off, grants the permissions the
+# adb) into the app's pod_config.json, keeps Local only off, grants the permissions the
 # app needs, relaunches it and turns on Wi-Fi ADB.
 #
 # Usage: scripts/provision-headset.sh [adb-serial]   (connect the headset by USB first)
@@ -70,8 +70,8 @@ if not isinstance(config, dict):
     config = {}
 config["headset_serial"] = os.environ["SERIAL"]
 config.setdefault("local_only", False)
-# The seal's operator_id: OQC reads it from here, not from the signed-in collector (yet).
-config.setdefault("operator_id", "bench-operator")
+# The seal's operator_id is the signed-in collector, never this file: drop a stale one.
+config.pop("operator_id", None)
 print(json.dumps(config, indent=2))
 EOF
 )

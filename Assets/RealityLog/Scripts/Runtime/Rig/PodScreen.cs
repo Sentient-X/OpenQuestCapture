@@ -249,7 +249,7 @@ namespace RealityLog.Rig
                 var (code, _) = PodStatusBoard.PendingSignIn(status, false);
                 return code.Length > 0
                     ? new PodBlocker("Collector sign-in pending", "Approve code " + code + " on your phone", PodTone.Warning)
-                    : new PodBlocker("Collector signed out", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
+                    : new PodBlocker("Sign in to record", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
             }
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
@@ -315,7 +315,7 @@ namespace RealityLog.Rig
                 var (code, _) = PodStatusBoard.PendingSignIn(status, false);
                 return code.Length > 0
                     ? new PodBlocker("Collector sign-in pending", "Approve code " + code + " on your phone", PodTone.Warning)
-                    : new PodBlocker("Collector signed out", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
+                    : new PodBlocker("Sign in to record", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
             }
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {

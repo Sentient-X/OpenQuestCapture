@@ -166,6 +166,8 @@ namespace RealityLog.Rig
         // pod_config.json's local_only (default true), re-read with the identity poll.
         private volatile bool localOnly = true;
         private volatile bool collectorSignedIn;
+        // The signed-in collector's name from the last readable status: the seal's operator_id.
+        private volatile string? collectorName;
         private volatile bool signInCuePending;
         // Seal verdicts seen so far (native-status timer thread); a change to sealed or refused
         // after the first observation queues a cue for the main thread.
@@ -442,17 +444,8 @@ namespace RealityLog.Rig
                     $"the recording '{sessionName}' stopped before the rig armed"));
             }
             reservedSession = null;
-            // The seal needs operator_id, quest_apk_build_id and quest_session_dir.
-            var episode = new JObject
-            {
-                ["episode_id"] = sessionName,
-                ["operator_id"] = operatorId,
-                ["quest_apk_build_id"] = apkBuildId,
-                ["quest_session_dir"] = Path.Combine(dataPath, sessionName),
-                ["app_version"] = appVersion,
-            };
-            if (taskAssignmentId != null) episode["task_assignment_id"] = taskAssignmentId;
-            if (mode != null) episode["mode"] = mode;
+            var episode = RigStartGate.EpisodeBody(sessionName, operatorId, apkBuildId,
+                Path.Combine(dataPath, sessionName), appVersion, taskAssignmentId, mode);
             string started;
             try
             {
@@ -463,8 +456,7 @@ namespace RealityLog.Rig
                 // A sign-out between the check and the start.
                 if (ex.Error == SxRigError.State && enrolled && CollectorSignedIn(SafeStatus()) == false)
                 {
-                    return (null, new RigRefusal("collector_signed_out",
-                        "the collector signed out; POST /api/sign-in and approve the code", ex.ErrorJson));
+                    return (null, new RigRefusal("collector_signed_out", RigStartGate.SignInToRecord().Message, ex.ErrorJson));
                 }
                 return (null, Refusal(ex, "rig_start_failed"));
             }
@@ -645,23 +637,20 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The operator a local headset records under when the start body names none:
-        /// pod_config.json's <c>operator_id</c>. Null when absent or unreadable. Any thread.
+        /// The operator_id this headset's next episode is sealed under
+        /// (<see cref="RigStartGate.SealOperatorId"/>): the signed-in collector on an enrolled
+        /// headset, null when nobody is signed in there; else the start body's, or
+        /// <see cref="RigStartGate.LocalOperatorId"/>. Reads the rig's status now, falling back
+        /// to the last one heard while the rig is busy. Never pod_config.json. Any thread.
         /// </summary>
-        public string? DefaultOperatorId
+        public string? SealOperatorId(string? bodyOperatorId)
         {
-            get
+            var name = collectorName;
+            if (enrolled && !localOnly && SafeStatus() is JObject status)
             {
-                try
-                {
-                    return ReadPodConfig()["operator_id"] is JValue { Type: JTokenType.String } value
-                        && ((string?)value)?.Trim() is { Length: > 0 } id ? id : null;
-                }
-                catch (Exception)
-                {
-                    return null;
-                }
+                name = RigStatusJson.CollectorName(status);
             }
+            return RigStartGate.SealOperatorId(enrolled, localOnly, name, bodyOperatorId);
         }
 
         /// <summary>
@@ -725,6 +714,7 @@ namespace RealityLog.Rig
         {
             SxRig.SignOut();
             collectorSignedIn = false;
+            collectorName = null;
         }
 
         /// <summary><c>sx_rig_command</c> on the calling (worker) thread.</summary>
@@ -976,7 +966,7 @@ namespace RealityLog.Rig
         private string BuildConfig()
         {
             // An explicit allow-list (RigOpenConfig): the rig refuses unknown keys, and
-            // pod_config.json carries app-only ones (operator_id, local_only). Local only (the
+            // pod_config.json carries the app-only local_only (and the retired operator_id, never read). Local only (the
             // default) drops the site, so the rig never contacts the Factory. Apps cannot read
             // ro.serialno on the 3S: provisioning writes headset_serial into pod_config.json,
             // which the rig also reads through pod_config_path. The seal's meshes are passed
@@ -1319,6 +1309,7 @@ namespace RealityLog.Rig
                         signInCuePending = true;
                     }
                     collectorSignedIn = signedIn;
+                    collectorName = RigStatusJson.CollectorName(status);
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
                     var episodeId = activeEpisodeId;

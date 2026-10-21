@@ -108,7 +108,7 @@ static class CompanionHarness
         Expect(ready.Block == null, "ready: no blocker");
         Expect(ready.Head.battery == null, "no device report: battery absent");
         var signedOut = Map(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + readyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(signedOut.Head.collector == "" && signedOut.Block is { headline: "Collector signed out" }, "signed out: no collector, the blocker says so");
+        Expect(signedOut.Head.collector == "" && signedOut.Block is { headline: "Sign in to record" }, "signed out: no collector, the blocker says so");
 
         // Recording: LIVE while counters rise; the header says recording.
         var live = new StreamLiveness();

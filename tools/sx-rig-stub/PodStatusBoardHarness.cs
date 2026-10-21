@@ -59,7 +59,7 @@ static class PodStatusBoardHarness
         Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: {\"code\":\"http_409\",\"message\":\"no assigned episodes remain available; unfinished attempts reserve demand\"}")
             == "No episodes left in this assignment: add episodes or assign a task in the Console", "no-episodes refusal, never its JSON");
         Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_404 pod has no assigned task") == "No task assigned to this pod", "no task refusal");
-        Expect(PodStatusBoard.Explain("collector_signed_out", "the collector signed out; POST /api/sign-in") == "Collector signed out: sign in first", "signed out refusal");
+        Expect(PodStatusBoard.Explain("collector_signed_out", "the collector signed out; POST /api/sign-in") == "Sign in to record", "signed out refusal");
         Expect(PodStatusBoard.Explain("rig_check_failed", "left camera missing") == "The rig's device check failed: left camera missing", "check refusal");
         Expect(PodStatusBoard.Explain("storage_full", "Insufficient storage") == "Storage is too low to record", "storage refusal");
 
@@ -70,10 +70,10 @@ static class PodStatusBoardHarness
         var refused = Lines(Base, log.Last, log.Succeeded);
         Expect(refused.LastRefusal == "Last refusal (14:03:07): Readiness checks are failing: run Check", "refusal with time: " + refused.LastRefusal);
         log.Record(409, "{\"error\":\"rig_not_ready\",\"reason\":\"collector_signed_out\",\"message\":\"x\"}", new DateTime(2026, 10, 19, 14, 4, 0));
-        Expect(Lines(Base, log.Last, log.Succeeded).LastRefusal == "Last refusal (14:04:00): Collector signed out: sign in first", "the newest refusal wins");
+        Expect(Lines(Base, log.Last, log.Succeeded).LastRefusal == "Last refusal (14:04:00): Sign in to record", "the newest refusal wins");
         log.Record(200, "{\"status\":\"recording\"}", new DateTime(2026, 10, 19, 14, 5, 0));
         Expect(log.Last == null && Lines(Base + ",\"lastRefusal\":{\"code\":\"rig_check_failed\",\"message\":\"old\"}", log.Last, log.Succeeded).LastRefusal == "Last refusal: none", "a successful start clears the refusal");
-        Expect(Lines(Base + ",\"lastRefusal\":{\"code\":\"collector_signed_out\",\"message\":\"x\"}").LastRefusal == "Last refusal: Collector signed out: sign in first", "the rig's own refusal shows (no time) before any start here");
+        Expect(Lines(Base + ",\"lastRefusal\":{\"code\":\"collector_signed_out\",\"message\":\"x\"}").LastRefusal == "Last refusal: Sign in to record", "the rig's own refusal shows (no time) before any start here");
         var bare = new PodStartLog();
         bare.Record(500, "not json", DateTime.Now);
         Expect(bare.Last?.Code == "http_500", "an unreadable error body is its status code");

@@ -25,6 +25,17 @@ namespace RealityLog.Rig
                 ? (bool?)(bool)signedIn
                 : null;
 
+        /// <summary>
+        /// The signed-in collector's name (floor.operator.display_name while signed_in is true),
+        /// the identity sx-pod seals an episode under; null when nobody is signed in.
+        /// </summary>
+        public static string? CollectorName(JObject? status) =>
+            CollectorSignedIn(status) == true
+            && status!["floor"]!["operator"]!["display_name"] is JValue { Type: JTokenType.String } name
+            && ((string?)name)?.Trim() is { Length: > 0 } trimmed
+                ? trimmed
+                : null;
+
         /// <summary>The <c>state</c> of one seal verdict ("sealed", "refused", "pending"), or "".</summary>
         public static string SealState(JToken? verdict) =>
             verdict is JObject fields && fields["state"] is JValue { Type: JTokenType.String } state

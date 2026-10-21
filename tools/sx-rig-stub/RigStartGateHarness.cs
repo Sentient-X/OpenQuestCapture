@@ -2,6 +2,7 @@
 // device check runs whenever the preconditions hold, and only a ready report lets a start arm.
 // Run by test_binding.sh; not part of the Unity project.
 using System;
+using Newtonsoft.Json.Linq;
 using RealityLog.Rig;
 
 static class RigStartGateHarness
@@ -74,6 +75,23 @@ static class RigStartGateHarness
         Expect(storage.Code == "rig_storage_low", "storage -> rig_storage_low");
         var other = RigStartGate.FromError(new SxRigException("sx_rig_start_armed", SxRigError.Internal, "{\"code\":\"internal\"}"), "rig_start_failed");
         Expect(other.Code == "rig_start_failed", "other errors keep the caller's code");
+
+        // The seal's operator_id is the signed-in collector, as sx-pod's (Principal.display_name).
+        var signedIn = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha Rao\"}}}");
+        var signedOut = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}}}");
+        var collector = RigStartGate.SealOperatorId(true, false, RigStatusJson.CollectorName(signedIn), "someone-else");
+        Expect(collector == "Asha Rao", "enrolled, signed in: the collector names the seal, never the body: " + collector);
+        var body = RigStartGate.EpisodeBody("20261021_120000", collector!, "sha256:ab", "/data/20261021_120000", "1.0", null, null);
+        Expect((string?)body["operator_id"] == "Asha Rao" && (string?)body["episode_id"] == "20261021_120000",
+            "the start body carries the collector's id: " + body.ToString(Newtonsoft.Json.Formatting.None));
+        Expect(RigStartGate.SealOperatorId(true, false, RigStatusJson.CollectorName(signedOut), "bench-operator") == null,
+            "enrolled, nobody signed in: no operator (refused), whatever the body names");
+        Expect(RigStartGate.SealOperatorId(true, false, RigStatusJson.CollectorName(null), null) == null, "enrolled, no status: refused");
+        var refusal = RigStartGate.SignInToRecord();
+        Expect(refusal.Code == "collector_signed_out" && refusal.Message.StartsWith("Sign in to record"), "the refusal says Sign in to record: " + refusal.Message);
+        Expect(RigStartGate.SealOperatorId(true, true, null, null) == RigStartGate.LocalOperatorId, "Local only, no body: local-only");
+        Expect(RigStartGate.SealOperatorId(false, false, null, null) == RigStartGate.LocalOperatorId, "not enrolled: local-only");
+        Expect(RigStartGate.SealOperatorId(true, true, "Asha Rao", " bench ") == "bench", "Local only: the body's operator_id when it names one");
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;
