@@ -63,6 +63,17 @@ static class RigOpenConfigHarness
         Expect((string?)newer["quest_apk_build_id"] == "sha256:abc", "a rig that takes quest_apk_build_id gets the APK's identity");
         Expect(rigKeys.Contains("quest_apk_build_id") || older["quest_apk_build_id"] == null, "a rig whose list lacks it never gets it");
 
+        // quest_app_version goes only to a rig whose list has it: the app's versionName and versionCode.
+        var withVersion = new System.Collections.Generic.HashSet<string>(rigKeys) { "quest_app_version" };
+        var version = RigOpenConfig.QuestAppVersion("1.5.0", 58);
+        var named = RigOpenConfig.Build(pod, withVersion, "/s", "/c", "/p", null, null, null, true, null, version);
+        Expect((string?)named["quest_app_version"]!["version_name"] == "1.5.0" && (long)named["quest_app_version"]!["version_code"]! == 58
+            && ((JObject)named["quest_app_version"]!).Count == 2, "a rig that takes quest_app_version gets the app's version");
+        var withoutVersion = new System.Collections.Generic.HashSet<string>(rigKeys);
+        withoutVersion.Remove("quest_app_version");
+        Expect(RigOpenConfig.Build(pod, withoutVersion, "/s", "/c", "/p", null, null, null, true, null, version)["quest_app_version"] == null,
+            "a rig whose list lacks quest_app_version never gets it");
+
         // local_only goes to a rig whose list has it, as the setting says; never from pod_config.
         var withLocal = new System.Collections.Generic.HashSet<string>(rigKeys) { "local_only" };
         var on = RigOpenConfig.Build(pod, withLocal, "/s", "/c", "/p", null, null, null, true);
