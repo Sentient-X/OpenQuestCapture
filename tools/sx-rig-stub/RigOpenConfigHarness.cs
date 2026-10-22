@@ -35,6 +35,8 @@ static class RigOpenConfigHarness
         var keys = local.Properties().Select(p => p.Name).ToArray();
         Expect(keys.All(rigKeys.Contains), "every key sent is in the rig's list: " + string.Join(",", keys));
         Expect(local["operator_id"] == null, "operator_id never reaches sx_rig_open");
+        Expect(!RigOpenConfig.AppKeys.Contains("operator_id") && RigOpenConfig.UnknownPodConfigKeys(JObject.Parse("{\"operator_id\":\"bench-operator\"}"), rigKeys).Length == 0,
+            "operator_id is retired: never read, and a stale one still opens");
         // local_only reaches the rig only as the app's setting (the Build argument), never as
         // pod_config.json's raw value, and only for a rig whose list has the key.
         var podSaysOff = (JObject)pod.DeepClone();

@@ -286,8 +286,8 @@ namespace RealityLog.Network
 
         /// <summary>
         /// Starts or stops a recording exactly as POST /api/start-recording (rig check, OQC
-        /// session first, sx_rig_start_armed) or /api/stop-recording does, with an empty body,
-        /// so operator_id comes from pod_config.json. Runs on a worker thread, since a start
+        /// session first, sx_rig_start_armed) or /api/stop-recording does, with an empty body:
+        /// the seal names the signed-in collector (Local only: local-only). Runs on a worker thread, since a start
         /// waits on the main thread and on the rig. The operator may not see the display:
         /// every outcome is a sound (start rises, stop falls, refused buzzes).
         /// The left menu button toggles (<paramref name="start"/> null); the Pod card and the
@@ -499,10 +499,14 @@ namespace RealityLog.Network
                 {
                     return AlreadyRecordingResponse();
                 }
-                // The rig's seal names the operator; a headset pod's start must carry one.
-                if (StartBodyOperatorId(request.Body, rig.DefaultOperatorId, out var bodyError) is not string operatorId)
+                // The rig's seal names the operator: the signed-in collector, as sx-pod's does.
+                if (!StartBodyOperatorId(request.Body, out var bodyOperatorId, out var bodyError))
                 {
                     return bodyError!;
+                }
+                if (rig.SealOperatorId(bodyOperatorId) is not string operatorId)
+                {
+                    return RigRefusalResponse(rig, RigStartGate.SignInToRecord());
                 }
                 if (!StartBodyCollection(request.Body, out var taskAssignmentId, out var mode, out var collectionError))
                 {
@@ -1513,13 +1517,15 @@ namespace RealityLog.Network
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
 
         /// <summary>
-        /// operator_id of a start body (a non-empty string), else pod_config.json's, or null
-        /// with the typed 400 to answer: invalid_body for a body that is not a JSON object,
-        /// operator_id_required.
+        /// A start body's operator_id (a non-empty string, or null when it names none), false
+        /// with the typed 400 invalid_body for a body that is not a JSON object. Only Local only
+        /// uses it: on an enrolled headset the seal names the signed-in collector
+        /// (<see cref="RigCoordinator.SealOperatorId"/>).
         /// </summary>
-        private static string? StartBodyOperatorId(string body, string? defaultOperatorId, out HttpResponse? error)
+        private static bool StartBodyOperatorId(string body, out string? operatorId, out HttpResponse? error)
         {
             error = null;
+            operatorId = null;
             JObject? fields = null;
             if (!string.IsNullOrWhiteSpace(body))
             {
@@ -1533,22 +1539,15 @@ namespace RealityLog.Network
                 if (fields == null)
                 {
                     error = TypedError(400, "invalid_body", "the start-recording body is not a JSON object");
-                    return null;
+                    return false;
                 }
             }
             if (fields?["operator_id"] is JValue { Type: JTokenType.String } value
-                && ((string?)value)?.Trim() is { Length: > 0 } operatorId)
+                && ((string?)value)?.Trim() is { Length: > 0 } named)
             {
-                return operatorId;
+                operatorId = named;
             }
-            // A local headset may name its operator once, in pod_config.json.
-            if (defaultOperatorId != null)
-            {
-                return defaultOperatorId;
-            }
-            error = TypedError(400, "operator_id_required",
-                "the wrist rig is configured, enrolled or plugged in, so the start body must carry operator_id (a non-empty string) for the episode's seal");
-            return null;
+            return true;
         }
 
         /// <summary>

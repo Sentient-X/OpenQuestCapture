@@ -22,7 +22,13 @@ namespace RealityLog.Rig
         public const string KeysSchema = "sx.rig_config_keys/v1";
 
         /// <summary>pod_config.json keys the app itself reads; never sent to the rig.</summary>
-        public static readonly string[] AppKeys = { "operator_id", "local_only" };
+        public static readonly string[] AppKeys = { "local_only" };
+
+        /// <summary>
+        /// pod_config.json keys the app no longer reads, tolerated so a headset provisioned
+        /// before still opens: <c>operator_id</c> (the seal names the signed-in collector now).
+        /// </summary>
+        public static readonly string[] RetiredKeys = { "operator_id" };
 
         /// <summary>Rig settings pod_config.json may give, sent when present.</summary>
         public static readonly string[] Settings =
@@ -93,7 +99,7 @@ namespace RealityLog.Rig
         /// </summary>
         public static string[] UnknownPodConfigKeys(JObject podConfig, ISet<string> rigKeys) =>
             podConfig.Properties().Select(p => p.Name)
-                .Where(k => !AppKeys.Contains(k)
+                .Where(k => !AppKeys.Contains(k) && !RetiredKeys.Contains(k)
                     && !((Settings.Contains(k) || Site.Contains(k)) && rigKeys.Contains(k)))
                 .ToArray();
 

@@ -18,6 +18,9 @@ namespace RealityLog.UI
         [Tooltip("WorldSpaceMenuPositioner component to position menu in front of player when opened")]
         [SerializeField] private WorldSpaceMenuPositioner? menuPositioner = default!;
 
+        [Tooltip("The head-locked hint ('Press the left menu button...'), hidden while the menu is open so it never sits over it")]
+        [SerializeField] private GameObject? closedMenuHint;
+
         [Header("Calibration")]
         [SerializeField] private CalibrationSession? calibrationSession;
         [SerializeField] private CalibrationOverlayUI? calibrationOverlay;
@@ -110,6 +113,15 @@ namespace RealityLog.UI
                 menuCanvasGroup.alpha = isMenuVisible ? 1f : 0f;
                 menuCanvasGroup.interactable = isMenuVisible;
                 menuCanvasGroup.blocksRaycasts = isMenuVisible;
+            }
+            // The hint's animator owns its active state, so it is faded instead: a CanvasGroup
+            // on it outlasts the animator's toggles.
+            if (closedMenuHint != null)
+            {
+                if (!closedMenuHint.TryGetComponent<CanvasGroup>(out var hint)) hint = closedMenuHint.AddComponent<CanvasGroup>();
+                hint.alpha = isMenuVisible ? 0f : 1f;
+                hint.blocksRaycasts = false;
+                hint.interactable = false;
             }
         }
 

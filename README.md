@@ -191,8 +191,8 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
 * **Local mode (no Factory).** With no `factory_url` in `pod_config.json` the headset records on
   its own: put the YUBI rig in `rig_config.json` (its roles, identities and calibration, in the
-  shape the rig defines; passed through as the open config's `rig`), and `operator_id` in
-  `pod_config.json` if start bodies will not carry one. Nothing asks for enrollment or sign-in.
+  shape the rig defines; passed through as the open config's `rig`). Nothing asks for enrollment
+  or sign-in; the seal's `operator_id` is the start body's, else `local-only`.
   `POST /api/start-recording` and `/api/stop-recording` record episode after episode; each stop
   seals that episode on the headset (`rig_staging/<session>/episode.mcap` + `seal.json`).
   `/api/status` → `rig.seals` holds each episode's verdict (`sealed` | `refused` | `pending`, with
@@ -233,7 +233,7 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   ```bash
   files=/sdcard/Android/data/com.samusynth.OpenQuestCapture/files
   serial=$(adb shell getprop ro.serialno | tr -d '\r')
-  printf '{"headset_serial":"%s","operator_id":"<operator>","rig_type_id":"rig_yubi"}\n' "$serial" > pod_config.json
+  printf '{"headset_serial":"%s","rig_type_id":"rig_yubi"}\n' "$serial" > pod_config.json
   adb push pod_config.json "$files/pod_config.json"
   adb push <calibration dir>/rig_config.yubi.json "$files/rig_config.json"   # e.g. yubi-06-quest
   adb push quest_builds.json "$files/rig_staging/quest_builds.json"
@@ -293,8 +293,12 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   400 `invalid_body` | `unknown_command` | `command_refused` (argument), 409 `not_enrolled` |
   `command_refused` (reason `state`, e.g. a review before the Factory observed the attempt:
   retry), 503 `command_refused`.
-* While the rig is expected, the start body must carry `"operator_id"` (else `400
-  operator_id_required`) and may carry `"task_assignment_id"` and `"mode"`
+* While the rig is expected, the seal's `operator_id` is the signed-in collector's name
+  (`rig.floor.operator.display_name`, as sx-pod's seal names `Principal.display_name`); on an
+  enrolled headset with nobody signed in a start is refused `409 collector_signed_out` ("Sign in to
+  record"). Local only, or not enrolled: the start body's `"operator_id"`, else `local-only`.
+  `pod_config.json` never names it (a stale `operator_id` there is ignored). The start body may
+  carry `"task_assignment_id"` and `"mode"`
   (`"directed"`|`"undirected"`), which open the collection on the Factory; the episode also records `quest_apk_build_id` (`sha256:` of the
   installed APK, as the laptop pod computes it) and `quest_session_dir`, which the seal reads.
   The rig stops after every OQC file of the session is final, so the seal never reads a partial one.

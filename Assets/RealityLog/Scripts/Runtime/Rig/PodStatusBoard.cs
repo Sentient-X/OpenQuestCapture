@@ -308,7 +308,7 @@ namespace RealityLog.Rig
             string Detail(string prefix) => message.Length > 0 ? prefix + ": " + message : prefix;
             return code switch
             {
-                "collector_signed_out" => "Collector signed out: sign in first",
+                "collector_signed_out" => "Sign in to record",
                 "rig_check_failed" => Detail("The rig's device check failed"),
                 "rig_storage_low" or "storage_full" => "Storage is too low to record",
                 "rig_usb_permission" => "Allow USB access to the rig's devices",
