@@ -50,6 +50,8 @@ namespace RealityLog.Rig
         /// <summary>The site an enrollment without base_url (and no site in pod_config.json) uses.</summary>
         public const string DefaultBaseUrl = "https://app.sentientx.io";
         private const string CredentialsDirectoryName = "sx_pod";
+        // Below the credentials directory: where the app's log lines go for the rig to ship.
+        private const string AppLogDirectoryName = "logs";
         private const string CredentialFileName = "machine-credential.json"; // libsx_rig's
         private const float IdentityPollSeconds = 5f;
         public const string StagingDirectoryName = "rig_staging";
@@ -93,6 +95,12 @@ namespace RealityLog.Rig
         private volatile string podName = "";
         private volatile string tailscaleIp = "";
         private volatile string apkBuildId = "";
+        // The installed APK's versionCode (PackageManager), for the rig's quest_app_version; -1 unread.
+        private long apkVersionCode = -1;
+        // What the collector does with the headset (worn, focus, input), for the rig's presence.
+        private readonly DevicePresence presence = new();
+        // The app's log lines in <credentials>/logs, which the rig ships as diagnostic files.
+        private AppLogFile? appLog;
         // EmbodimentAssets' install of the seal's meshes into filesDir; the rig opens only once
         // it is settled, because the library verifies the directory at open.
         private string embodimentDir = "";
@@ -156,6 +164,8 @@ namespace RealityLog.Rig
         private int nativeStatusBusy;
         private const string DeviceReportClassName = "com.samusynth.questcamera.pod.DeviceReport";
         private const int DeviceReportIntervalMs = 15000;
+        // How often worn, focus and input are looked at for a change worth reporting at once.
+        private const int DevicePresencePollMs = 1000;
         private System.Threading.Thread? deviceReportThread;
         private readonly System.Threading.ManualResetEvent deviceReportStop = new(false);
         private volatile int deviceReportsSent;
@@ -323,7 +333,50 @@ namespace RealityLog.Rig
                 }
             }
 #endif
+            // After credentialsPath is the app-private one: the rig ships closed files from there.
+            try
+            {
+                appLog = new AppLogFile(Path.Combine(credentialsPath, AppLogDirectoryName));
+                Application.logMessageReceivedThreaded += OnLogLine;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                appLog = null;
+                RecordStartupError("app_log", ex);
+            }
             Poll();
+        }
+
+        /// <summary>Every log line, from any thread, into the app log. A line that cannot be
+        /// written costs only itself.</summary>
+        private void OnLogLine(string condition, string stackTrace, LogType type)
+        {
+            try
+            {
+                var withTrace = type is LogType.Error or LogType.Exception or LogType.Assert && stackTrace.Length > 0;
+                appLog?.Write(DateTime.UtcNow, type.ToString().ToUpperInvariant(),
+                    withTrace ? condition + "\n" + stackTrace.TrimEnd() : condition);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void OnApplicationFocus(bool hasFocus) => presence.Focus(hasFocus);
+
+        private void OnApplicationPause(bool pauseStatus) => presence.Pause(pauseStatus);
+
+        /// <summary>The runtime's user-present (proximity) state; null when it cannot be read.</summary>
+        private static bool? ReadUserPresent()
+        {
+            try
+            {
+                return OVRManager.instance != null ? OVRManager.instance.isUserPresent : OVRPlugin.userPresent;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         private void RecordStartupError(string what, Exception ex)
@@ -335,6 +388,11 @@ namespace RealityLog.Rig
 
         private void Update()
         {
+            presence.Worn(ReadUserPresent());
+            if (OVRInput.GetDown(OVRInput.Button.Any))
+            {
+                presence.KeyPressed();
+            }
             if (signInCuePending)
             {
                 signInCuePending = false;
@@ -1059,8 +1117,9 @@ namespace RealityLog.Rig
             // is missing); omitted when this APK carries none.
             var meshes = embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed" ? embodimentDir : null;
             JToken? rig = File.Exists(configPath) ? JObject.Parse(File.ReadAllText(configPath)) : null;
+            var questApp = apkVersionCode >= 0 ? RigOpenConfig.QuestAppVersion(appVersion, apkVersionCode) : null;
             return RigOpenConfig.Build(ReadPodConfig(), rigKeys ?? new HashSet<string>(), stagingPath, credentialsPath, podConfigPath,
-                meshes, tailscaleIp, rig, localOnly, apkBuildId).ToString(Formatting.None);
+                meshes, tailscaleIp, rig, localOnly, apkBuildId, questApp).ToString(Formatting.None);
         }
 
         private string ReadPodConfigName()
@@ -1149,6 +1208,13 @@ namespace RealityLog.Rig
                 }
                 tailscaleIp = identity.CallStatic<string>("tailscaleIp") ?? "";
                 apkBuildId = identity.CallStatic<string>("apkBuildId", activity) ?? "";
+                if (apkVersionCode < 0)
+                {
+                    using var packages = activity.Call<AndroidJavaObject>("getPackageManager");
+                    using var info = packages.Call<AndroidJavaObject>("getPackageInfo",
+                        activity.Call<string>("getPackageName"), 0);
+                    apkVersionCode = info.Call<long>("getLongVersionCode");
+                }
             }
             catch (Exception ex)
             {
@@ -1317,10 +1383,13 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// Reports battery, charging and the network-time fix (Kotlin DeviceReport) to the rig
-        /// every 15 s on a background thread; the heartbeat trusts a report for 60 s, so a
-        /// stalled app reads not ready instead of stale-ready. A report Kotlin cannot make
-        /// (no battery state) is skipped, never invented.
+        /// Reports battery, charging and the network-time fix (Kotlin DeviceReport), with whether the
+        /// headset is worn, whether this app has its focus and the collector's input totals
+        /// (<see cref="DevicePresence"/>), to the rig on a background thread: at once when worn,
+        /// focus or input change (looked at every second), and at least every 15 s; Kotlin's part
+        /// is read every 15 s. The heartbeat trusts a report for 60 s, so a stalled app reads not
+        /// ready instead of stale-ready. A report Kotlin cannot make (no battery state) is skipped,
+        /// never invented.
         /// </summary>
         private void StartDeviceReports()
         {
@@ -1333,16 +1402,30 @@ namespace RealityLog.Rig
                 try
                 {
                     using var report = new AndroidJavaClass(DeviceReportClassName);
+                    string? battery = null;
+                    var batteryAt = DateTime.MinValue;
+                    var sent = "";
+                    var sentAt = DateTime.MinValue;
                     var wait = 0; // the first report goes at once
                     while (!deviceReportStop.WaitOne(wait))
                     {
-                        wait = DeviceReportIntervalMs;
+                        wait = DevicePresencePollMs;
                         if (!opened) continue;
                         try
                         {
-                            var json = report.CallStatic<string>("json", context);
-                            if (string.IsNullOrEmpty(json)) continue;
+                            var now = DateTime.UtcNow;
+                            if (battery == null || now - batteryAt >= TimeSpan.FromMilliseconds(DeviceReportIntervalMs))
+                            {
+                                battery = report.CallStatic<string>("json", context);
+                                batteryAt = now;
+                            }
+                            if (string.IsNullOrEmpty(battery)) continue;
+                            var json = presence.Report(battery!);
+                            if (json == null) continue;
+                            if (json == sent && now - sentAt < TimeSpan.FromMilliseconds(DeviceReportIntervalMs)) continue;
                             SxRig.ReportDevice(json);
+                            sent = json;
+                            sentAt = now;
                             deviceReportJson = json;
                             deviceReportsSent++;
                         }
@@ -1498,6 +1581,9 @@ namespace RealityLog.Rig
                 SxRig.Close();
                 opened = false;
             }
+            Application.logMessageReceivedThreaded -= OnLogLine;
+            appLog?.Dispose();
+            appLog = null;
             try
             {
                 bridge?.Call("close");

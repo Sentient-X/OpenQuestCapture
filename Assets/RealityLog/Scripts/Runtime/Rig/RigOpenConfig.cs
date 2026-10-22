@@ -43,9 +43,17 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// Rig keys the app sets when the shipped rig list has them (a newer rig): the installed
-        /// APK's content identity, which the rig reports as its recorder build.
+        /// APK's content identity, which the rig reports as its recorder build, and the app's
+        /// version, which the rig's activity names as its Quest app.
         /// </summary>
-        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "local_only" };
+        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "local_only", "quest_app_version" };
+
+        /// <summary>The <c>quest_app_version</c> value: the app's versionName and versionCode.</summary>
+        public static JObject QuestAppVersion(string versionName, long versionCode) => new()
+        {
+            ["version_name"] = versionName,
+            ["version_code"] = versionCode,
+        };
 
         /// <summary>
         /// The rig's key set from <c>sx_rig_config_keys.json</c>: a JSON array of strings, or an
@@ -113,7 +121,7 @@ namespace RealityLog.Rig
         /// </summary>
         public static JObject Build(JObject podConfig, ISet<string> rigKeys, string stagingDir, string credentialsDir,
             string podConfigPath, string? embodimentAssetsDir, string? tailscaleIp, JToken? rig, bool localOnly,
-            string? questApkBuildId = null)
+            string? questApkBuildId = null, JObject? questAppVersion = null)
         {
             var config = new JObject
             {
@@ -140,6 +148,10 @@ namespace RealityLog.Rig
             if (!string.IsNullOrEmpty(questApkBuildId) && rigKeys.Contains("quest_apk_build_id"))
             {
                 config["quest_apk_build_id"] = questApkBuildId;
+            }
+            if (questAppVersion != null && rigKeys.Contains("quest_app_version"))
+            {
+                config["quest_app_version"] = questAppVersion.DeepClone();
             }
             // A rig that takes local_only never contacts the Factory while it is true, even with
             // an enrolled credential and its kept site.json (dropping factory_url alone does not

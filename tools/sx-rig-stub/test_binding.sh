@@ -89,3 +89,15 @@ cp "$newtonsoft" "$out/"
     -out:"$out/list-refresh-harness.exe" "$here/RecordingListRefreshGateHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingListRefreshGate.cs"
 "$mono" "$out/list-refresh-harness.exe"
+
+# AppLogFile: the app's log lines the rig ships, rolled and bounded.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
+    -out:"$out/app-log-harness.exe" "$here/AppLogHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/AppLogFile.cs"
+"$mono" "$out/app-log-harness.exe"
+
+# DevicePresence: worn, focus and input added to the device report.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs"
+"$mono" "$out/device-presence-harness.exe"
