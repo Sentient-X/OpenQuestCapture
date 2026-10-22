@@ -75,6 +75,9 @@ static class RigStartGateHarness
         Expect(storage.Code == "rig_storage_low", "storage -> rig_storage_low");
         var other = RigStartGate.FromError(new SxRigException("sx_rig_start_armed", SxRigError.Internal, "{\"code\":\"internal\"}"), "rig_start_failed");
         Expect(other.Code == "rig_start_failed", "other errors keep the caller's code");
+        var slow = RigStartGate.FromError(new SxRigException("sx_rig_start_armed", SxRigError.Device,
+            "{\"code\":\"device\",\"detail\":\"the Factory did not answer\",\"refusal\":{\"kind\":\"factory_unanswered\"}}"), "rig_start_failed");
+        Expect(slow.Code == "factory_unanswered" && slow.Message.Contains("start again"), "a Factory that did not answer the start in time -> factory_unanswered");
 
         // The seal's operator_id is the signed-in collector, as sx-pod's (Principal.display_name).
         var signedIn = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha Rao\"}}}");

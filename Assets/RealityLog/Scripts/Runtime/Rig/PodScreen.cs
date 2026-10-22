@@ -194,6 +194,13 @@ namespace RealityLog.Rig
             catch (JsonException)
             {
             }
+            return Build(status, lastStart, lastStartSucceeded, liveness, now);
+        }
+
+        /// <summary><see cref="Build(string?, StartRefusal?, bool, StreamLiveness, DateTime)"/> on a status already parsed; it is only read.</summary>
+        public static PodScreen Build(JObject? status, StartRefusal? lastStart, bool lastStartSucceeded,
+            StreamLiveness liveness, DateTime now)
+        {
             var screen = new PodScreen { Recording = Recording(status) };
             var refusal = lastStart;
             if (refusal == null && !lastStartSucceeded && status?["lastRefusal"] is JObject rigRefusal)
@@ -386,9 +393,32 @@ namespace RealityLog.Rig
                 return new PodBlocker("The rig's last check failed: " + Clip(problems, 60),
                     hint.Length > 0 ? hint : "Fix it, then press the menu button to check again", PodTone.Error);
             }
+            if (!localOnly && Unfinished(factory) is { } unfinished)
+            {
+                return unfinished;
+            }
             return localOnly
                 ? new PodBlocker("Ready (Local only)", "Press the menu button to record; nothing goes to the Factory", PodTone.Good)
                 : new PodBlocker("Ready to record", "Press the menu button to start", PodTone.Good);
+        }
+
+        /// <summary>
+        /// The first reason a collection cannot finish (factory.unfinished: a verdict or answer the
+        /// Factory refused, a prompt the headset cannot answer, an attempt it cannot tell), as a
+        /// warning: a start may still go ahead, but this collection waits until it clears. Null
+        /// when nothing holds one back.
+        /// </summary>
+        public static PodBlocker? Unfinished(JObject? factory)
+        {
+            if (factory?["unfinished"] is not JArray reasons) return null;
+            var held = reasons.OfType<JObject>().Where(r => Str(r["reason"]).Length > 0).ToList();
+            if (held.Count == 0) return null;
+            var first = held[0];
+            var more = held.Count > 1 ? " (+" + (held.Count - 1) + " more)" : "";
+            var reason = Str(first["reason"]);
+            return new PodBlocker("A collection cannot finish: " + Clip(reason, 70) + more,
+                reason.Contains("refused") ? "It is sent again once the collection changes; check it in the Console"
+                    : "Check it in the Console", PodTone.Warning);
         }
 
         /// <summary>The Factory's failing blocking checks by their summaries, "" when it named none.</summary>
@@ -662,6 +692,10 @@ namespace RealityLog.Rig
                 return Clip(remediation.Length > 0 ? remediation : Str(check["summary"]), 70);
             }
             if (Str(progress?["registration_error"]).Length > 0) return "Catalog registration (failing: " + Clip(Str(progress?["registration_error"]), 40) + ")";
+            if (factory["unfinished"] is JArray { Count: > 0 } held && held.OfType<JObject>().FirstOrDefault() is JObject reason)
+            {
+                return "a collection to finish (" + Clip(Str(reason["reason"]), 50) + ")";
+            }
             if (Long(progress?["awaiting_review"]) > 0) return "a review verdict on the recorded episode";
             if (Long(progress?["sealing"]) > 0) return "the seal and its upload";
             if (Long(progress?["registering"]) > 0) return "the Catalog to register the collection";

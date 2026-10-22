@@ -138,6 +138,11 @@ namespace RealityLog.Rig
         private float lastOpenAttempt = float.NegativeInfinity;
         private float lastPoll = float.NegativeInfinity;
         private readonly object episodeLock = new();
+        // What holds the rig across native or network work ("check", "start", "stop",
+        // "command"), null when nothing does. Claimed and cleared under episodeLock, which is
+        // released while the work runs: the main thread and the status never wait on a
+        // Factory round trip, and a caller that needs the rig waits on this (Monitor.Wait).
+        private string? rigWork;
         private bool episodeActive;
         private string? reservedSession;
         private string? armedSession;
@@ -363,25 +368,54 @@ namespace RealityLog.Rig
         /// </summary>
         public RigRefusal? CheckAndReserve(string sessionName)
         {
-            // Check and reservation under one lock: no second start can slip between a passing
-            // check and the reservation it allows.
+            // Check and reservation under one claim of the rig: no second start can slip
+            // between a passing check and the reservation it allows. The lock itself is not
+            // held across the check (up to about 16 s on a Factory).
+            var collectorReady = !enrolled || localOnly || CollectorSignedIn(SafeStatus()) != false;
+            RigStartFacts facts;
             lock (episodeLock)
             {
-                var refusal = CheckReadyLocked();
-                lastRefusal = refusal;
-                if (refusal == null)
-                {
-                    reservedSession = sessionName;
-                }
-                return refusal;
+                ClaimRigLocked("check");
+                facts = StartFactsLocked(collectorReady);
             }
+            RigRefusal? refusal = null;
+            try
+            {
+                refusal = CheckReady(facts);
+            }
+            finally
+            {
+                lock (episodeLock)
+                {
+                    lastRefusal = refusal;
+                    if (refusal == null)
+                    {
+                        reservedSession = sessionName;
+                    }
+                    ReleaseRigLocked();
+                }
+            }
+            return refusal;
         }
 
-        private RigRefusal? CheckReadyLocked()
+        /// <summary>Waits (episodeLock held, released while waiting) until nothing holds the rig, then claims it for <paramref name="work"/>.</summary>
+        private void ClaimRigLocked(string work)
         {
+            while (rigWork != null) System.Threading.Monitor.Wait(episodeLock);
+            rigWork = work;
+        }
+
+        /// <summary>The rig is free again (episodeLock held): everyone waiting looks again.</summary>
+        private void ReleaseRigLocked()
+        {
+            rigWork = null;
+            System.Threading.Monitor.PulseAll(episodeLock);
+        }
+
+        private RigStartFacts StartFactsLocked(bool collectorReady) =>
             // No "is the rig expected" test here: the caller decided that once (IsExpected), and
             // re-reading it here once let a start skip sx_rig_check and arm on no passing check.
-            var facts = new RigStartFacts
+            new()
             {
                 EpisodeBusy = episodeActive || reservedSession != null,
                 BusySession = armedSession ?? reservedSession,
@@ -390,8 +424,12 @@ namespace RealityLog.Rig
                 OpenErrorJson = openErrorJson,
                 AwaitingPermission = awaitingPermission,
                 ApkBuildIdKnown = apkBuildId.Length > 0,
-                CollectorReady = !enrolled || localOnly || CollectorSignedIn(SafeStatus()) != false,
+                CollectorReady = collectorReady,
             };
+
+        /// <summary>The start gate on <paramref name="facts"/>, with the rig claimed and episodeLock not held.</summary>
+        private RigRefusal? CheckReady(RigStartFacts facts)
+        {
             var decision = RigStartGate.Evaluate(facts, SxRig.RunCheck, report => lastCheckJson = report);
             // The API is closed to anyone without the pod token once enrolled, so a refused start
             // says why in the log as well (the check's problems name devices, never a secret).
@@ -430,21 +468,45 @@ namespace RealityLog.Rig
         {
             lock (episodeLock)
             {
-                var result = StartArmedLocked(sessionName, operatorId, taskAssignmentId, mode);
-                if (result.refusal != null) lastRefusal = result.refusal;
-                return result;
+                ClaimRigLocked("start");
+                if (reservedSession != sessionName)
+                {
+                    ReleaseRigLocked();
+                    var stopped = new RigRefusal("rig_start_failed",
+                        $"the recording '{sessionName}' stopped before the rig armed");
+                    lastRefusal = stopped;
+                    return (null, stopped);
+                }
+                reservedSession = null;
             }
+            // The rig is claimed, episodeLock is not held: the start asks the Factory for its
+            // collection (bounded by the library) and arms without stalling anyone who reads.
+            (string? start, RigRefusal? refusal) result = (null, null);
+            try
+            {
+                result = StartArmedClaimed(sessionName, operatorId, taskAssignmentId, mode);
+            }
+            finally
+            {
+                lock (episodeLock)
+                {
+                    if (result.start != null)
+                    {
+                        episodeReceiptJson = null;
+                        episodeActive = true;
+                        armedSession = sessionName;
+                        activeEpisodeId = sessionName;
+                    }
+                    if (result.refusal != null) lastRefusal = result.refusal;
+                    ReleaseRigLocked();
+                }
+            }
+            return result;
         }
 
-        private (string? start, RigRefusal? refusal) StartArmedLocked(string sessionName, string operatorId,
+        private (string? start, RigRefusal? refusal) StartArmedClaimed(string sessionName, string operatorId,
             string? taskAssignmentId, string? mode)
         {
-            if (reservedSession != sessionName)
-            {
-                return (null, new RigRefusal("rig_start_failed",
-                    $"the recording '{sessionName}' stopped before the rig armed"));
-            }
-            reservedSession = null;
             var episode = RigStartGate.EpisodeBody(sessionName, operatorId, apkBuildId,
                 Path.Combine(dataPath, sessionName), appVersion, taskAssignmentId, mode);
             string started;
@@ -461,10 +523,6 @@ namespace RealityLog.Rig
                 }
                 return (null, Refusal(ex, "rig_start_failed"));
             }
-            episodeReceiptJson = null;
-            episodeActive = true;
-            armedSession = sessionName;
-            activeEpisodeId = sessionName;
             Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{sessionName}' armed and anchored: {started}");
             return (started, null);
         }
@@ -507,6 +565,7 @@ namespace RealityLog.Rig
             lock (episodeLock)
             {
                 if (episodeActive || reservedSession != null) return "a rig episode is active";
+                if (rigWork != null) return "the rig is busy (" + rigWork + "); try again in a moment";
             }
             try
             {
@@ -566,7 +625,7 @@ namespace RealityLog.Rig
             {
                 lock (episodeLock)
                 {
-                    if (!episodeActive)
+                    if (!episodeActive && rigWork == null)
                     {
                         CloseRig();
                     }
@@ -737,23 +796,29 @@ namespace RealityLog.Rig
             }
             lock (episodeLock)
             {
+                ClaimRigLocked("check");
                 if (episodeActive || reservedSession != null)
                 {
+                    ReleaseRigLocked();
                     return new PodControlResult(PodControl.Check, false, "an episode is recording; check between episodes");
                 }
-                try
-                {
-                    var report = SxRig.RunCheck();
-                    lastCheckJson = report;
-                    var (ready, problems) = RigStatusJson.Check(report);
-                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: check asked by the operator: ready={ready} {problems}");
-                    return new PodControlResult(PodControl.Check, ready, ready ? "Ready to record" : problems);
-                }
-                catch (SxRigException ex)
-                {
-                    lastCheckJson = "{\"ready\":false,\"error\":" + ex.ErrorJson + "}";
-                    return new PodControlResult(PodControl.Check, false, ErrorDetail(ex));
-                }
+            }
+            try
+            {
+                var report = SxRig.RunCheck();
+                lastCheckJson = report;
+                var (ready, problems) = RigStatusJson.Check(report);
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: check asked by the operator: ready={ready} {problems}");
+                return new PodControlResult(PodControl.Check, ready, ready ? "Ready to record" : problems);
+            }
+            catch (SxRigException ex)
+            {
+                lastCheckJson = "{\"ready\":false,\"error\":" + ex.ErrorJson + "}";
+                return new PodControlResult(PodControl.Check, false, ErrorDetail(ex));
+            }
+            finally
+            {
+                lock (episodeLock) ReleaseRigLocked();
             }
         }
 
@@ -763,7 +828,8 @@ namespace RealityLog.Rig
         /// The rig ends the open collection, tells the Factory, and sends what a collection that
         /// filled sends (End collection, reviews, finalize), so its episodes finalize and upload
         /// as at the cap. Refused while an episode records. Calling (worker) thread: it waits on
-        /// the network, holding the episode lock so no start slips in while it ends.
+        /// the network with the rig claimed, so no start slips in while it ends, and without the
+        /// episode lock, so nothing that only reads waits on the Factory.
         /// </summary>
         public PodControlResult EndCollectionNow()
         {
@@ -774,28 +840,34 @@ namespace RealityLog.Rig
             }
             lock (episodeLock)
             {
+                ClaimRigLocked("command");
                 if (episodeActive || reservedSession != null)
                 {
+                    ReleaseRigLocked();
                     return new PodControlResult(PodControl.EndCollection, false, "an episode is recording; stop it first");
                 }
-                try
-                {
-                    var answer = SxRig.Command("{\"command\":\"end_recording\"}");
-                    var heard = JToken.Parse(answer)["answer"]?["heard"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
-                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collection ended by the operator: {answer}");
-                    return new PodControlResult(PodControl.EndCollection, true, heard
-                        ? "Ended; its episodes are reviewed and uploaded"
-                        : "Ended; the Factory is told when it hears the headset again");
-                }
-                catch (SxRigException ex)
-                {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: end collection refused: {ex.Message}");
-                    return new PodControlResult(PodControl.EndCollection, false, ErrorDetail(ex));
-                }
-                catch (JsonException)
-                {
-                    return new PodControlResult(PodControl.EndCollection, true, "Ended");
-                }
+            }
+            try
+            {
+                var answer = SxRig.Command("{\"command\":\"end_recording\"}");
+                var heard = JToken.Parse(answer)["answer"]?["heard"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collection ended by the operator: {answer}");
+                return new PodControlResult(PodControl.EndCollection, true, heard
+                    ? "Ended; its episodes are reviewed and uploaded"
+                    : "Ended; the Factory is told when it hears the headset again");
+            }
+            catch (SxRigException ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: end collection refused: {ex.Message}");
+                return new PodControlResult(PodControl.EndCollection, false, ErrorDetail(ex));
+            }
+            catch (JsonException)
+            {
+                return new PodControlResult(PodControl.EndCollection, true, "Ended");
+            }
+            finally
+            {
+                lock (episodeLock) ReleaseRigLocked();
             }
         }
 
@@ -826,20 +898,32 @@ namespace RealityLog.Rig
         {
             lock (episodeLock)
             {
+                // A check or start under way finishes first, as when it held the lock: then a
+                // reservation it made is cancelled, and an episode it armed is stopped.
+                while (rigWork is "check" or "start" or "stop") System.Threading.Monitor.Wait(episodeLock);
                 reservedSession = null; // a stop before the rig armed cancels the arming
                 if (!episodeActive) return episodeReceiptJson;
-                try
-                {
-                    episodeReceiptJson = SxRig.Stop();
-                }
-                catch (SxRigException ex)
-                {
-                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {ex.Message}");
-                    episodeReceiptJson = "{\"error\":" + ex.ErrorJson + "}";
-                }
+                ClaimRigLocked("stop");
+            }
+            string receipt;
+            try
+            {
+                receipt = SxRig.Stop();
+            }
+            catch (SxRigException ex)
+            {
+                // The library keeps a stop whose receipt it could not write and finishes it on
+                // the next stop or start; this one reports the error.
+                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {ex.Message}");
+                receipt = "{\"error\":" + ex.ErrorJson + "}";
+            }
+            lock (episodeLock)
+            {
+                episodeReceiptJson = receipt;
                 episodeActive = false;
                 armedSession = null;
                 activeEpisodeId = null;
+                ReleaseRigLocked();
                 return episodeReceiptJson;
             }
         }
@@ -1157,8 +1241,8 @@ namespace RealityLog.Rig
             }
 
             var nativeJson = opened ? nativeStatusJson : "null";
-            // A start's check holds episodeLock while it asks the Factory for the rig and
-            // opens each device (up to about 16 s); the main thread never waits on it, it keeps the status it has this poll.
+            // episodeLock is held only briefly now (the rig's work runs under rigWork), but the
+            // main thread still never waits on it: it keeps the status it has this poll.
             if (!System.Threading.Monitor.TryEnter(episodeLock)) return;
             bool episodeIsActive;
             try { episodeIsActive = episodeActive; }

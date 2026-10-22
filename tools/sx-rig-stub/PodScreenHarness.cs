@@ -48,6 +48,18 @@ static class PodScreenHarness
 
         Expect(!ready.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + SignedIn + "}")) == null, "ready: Start offered");
 
+        // A collection that cannot finish (factory.unfinished, from quest-rig) is shown, never
+        // hidden behind "Ready", and goes to the phone as the blocker; Start stays offered.
+        var stuck = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+            + ",\"progress\":{\"target\":2,\"credited\":1},\"unfinished\":["
+            + "{\"collection\":\"cs_1\",\"reason\":\"the Factory refused its verdict on episode 1 (no confirmed recorder stop); sent again once the collection changes\"},"
+            + "{\"collection\":null,\"reason\":\"a7: its record cannot be read\"}]}");
+        Expect(stuck.Blocker.Tone == PodTone.Warning && stuck.Blocker.Headline.StartsWith("A collection cannot finish: the Factory refused its verdict")
+            && stuck.Blocker.Headline.EndsWith("(+1 more)") && !stuck.StartBlocked, "unfinished: " + stuck.Blocker.Headline);
+        Expect(stuck.Next.StartsWith("a collection to finish ("), "unfinished next: " + stuck.Next);
+        var none = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + ",\"unfinished\":[]}");
+        Expect(none.Blocker.Headline == "Ready to record", "nothing unfinished: ready: " + none.Blocker.Headline);
+
         // Start only when the Factory would take it (factory.start_refusal, from quest-rig).
         var full = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[],\"admissible\":0," + Task
             + ",\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[]}}");

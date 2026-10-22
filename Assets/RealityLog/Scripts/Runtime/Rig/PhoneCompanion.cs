@@ -58,6 +58,10 @@ namespace RealityLog.Rig
         private float lastStatusSent = float.NegativeInfinity;
         private float lastStatusCheck = float.NegativeInfinity;
         private bool asking; // waiting for a Bluetooth permission answer
+        // The rig status as last parsed, and the text it was parsed from: parsed again only
+        // when the text changes, never every frame (main thread only).
+        private string parsedStatusJson = "";
+        private JObject? parsedStatus;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -325,9 +329,8 @@ namespace RealityLog.Rig
             var now = Time.unscaledTime;
             if (now - lastStatusCheck < StatusCheckSeconds) return;
             lastStatusCheck = now;
-            var json = RigCoordinator.StatusJsonOrDefault;
-            var status = Parse(json);
-            var screen = PodScreenBoard.Build(json, PodStartLog.Shared.Last, PodStartLog.Shared.Succeeded, liveness, DateTime.UtcNow);
+            var status = Status();
+            var screen = PodScreenBoard.Build(status, PodStartLog.Shared.Last, PodStartLog.Shared.Succeeded, liveness, DateTime.UtcNow);
             var print = new HeadsetStatusFingerprint();
             var podName = PodName();
             var controllers = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown;
@@ -390,7 +393,21 @@ namespace RealityLog.Rig
             RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
         }
 
-        private static JObject? Status() => Parse(RigCoordinator.StatusJsonOrDefault);
+        /// <summary>
+        /// The rig status, parsed once per change of its text: the multi-KB status is read here
+        /// every frame while a phone is connected, and a parse per frame stalls the render.
+        /// Readers never change it. Main thread.
+        /// </summary>
+        private JObject? Status()
+        {
+            var json = RigCoordinator.StatusJsonOrDefault;
+            if (!ReferenceEquals(json, parsedStatusJson) && !string.Equals(json, parsedStatusJson, StringComparison.Ordinal))
+            {
+                parsedStatus = Parse(json);
+            }
+            parsedStatusJson = json;
+            return parsedStatus;
+        }
 
         private static JObject? Parse(string json)
         {
@@ -404,7 +421,7 @@ namespace RealityLog.Rig
             }
         }
 
-        private static string PodId()
+        private string PodId()
         {
             var status = Status();
             return status?["enrolled"] is JValue { Type: JTokenType.Boolean } enrolled && (bool)enrolled
@@ -413,7 +430,7 @@ namespace RealityLog.Rig
 
         private static string PodName() => RigCoordinator.Instance?.PodName ?? "";
 
-        private static string HeadsetId() =>
+        private string HeadsetId() =>
             Status()?["headsetSerial"] is JValue { Type: JTokenType.String } serial ? (string?)serial ?? "" : "";
 
         /// <summary>A library call; a Java exception is logged and reads as the fallback, never thrown into Update.</summary>
