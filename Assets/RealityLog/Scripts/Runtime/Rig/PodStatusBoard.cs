@@ -318,6 +318,7 @@ namespace RealityLog.Rig
                 "rig_not_armed" => Detail("The rig was not armed"),
                 "pod_config_incomplete" => Detail("Pod setup is incomplete"),
                 "rig_start_failed" => Detail("The rig did not start"),
+                "factory_unanswered" => "The Factory did not answer the start in time: start again",
                 "already_recording" => "Already recording",
                 "app_paused" => "The app was paused (headset off the face?)",
                 "main_thread_timeout" => "The app did not start the recording in time",

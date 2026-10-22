@@ -140,6 +140,12 @@ namespace RealityLog.Rig
             {
                 return new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, ex.ErrorJson);
             }
+            if (kind == "factory_unanswered")
+            {
+                // The library bounds a start's Factory exchange; nothing was recorded.
+                return new RigRefusal("factory_unanswered",
+                    "the Factory did not answer the start in time; nothing was recorded, start again", ex.ErrorJson);
+            }
             return new RigRefusal(otherwise, ex.Message, ex.ErrorJson);
         }
     }
