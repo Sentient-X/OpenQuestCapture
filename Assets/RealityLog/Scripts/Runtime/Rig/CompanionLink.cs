@@ -214,6 +214,40 @@ namespace RealityLog.Rig
 
             public void StartBlocked(bool blocked) => Call("setStartBlocked", blocked);
 
+            public void BlockerNotice(OperatorNotice notice, OperatorMessage words) =>
+                Call("setBlockerNotice", notice.Code, Owner(words.Who), Args(notice), words.Headline, words.StillFine, words.Action);
+
+            public void Warning(OperatorNotice notice, OperatorMessage words) =>
+                Call("addWarning", notice.Code, Owner(words.Who), Args(notice), words.Headline, words.StillFine, words.Action);
+
+            public void EpisodeNotice(OperatorNotice notice, OperatorMessage words) =>
+                Call("setEpisodeNotice", notice.Code, Owner(words.Who), Args(notice), words.Headline, words.StillFine, words.Action);
+
+            public void EpisodeSealing(long seconds) => Call("setEpisodeSealingSeconds", Clamp(seconds));
+
+            public void LocalOnly(bool localOnly) => Call("setLocalOnly", localOnly);
+
+            /// <summary>companion.proto's HeadsetNoticeOwner name without its prefix.</summary>
+            private static string Owner(string who) => who switch
+            {
+                "collector" => "COLLECTOR",
+                "floor_manager" => "FLOOR_MANAGER",
+                _ => "TECHNICIAN",
+            };
+
+            /// <summary>The arguments as name, value pairs in one array (a Java String[]).</summary>
+            private static string[] Args(OperatorNotice notice)
+            {
+                var pairs = new string[notice.Args.Count * 2];
+                var i = 0;
+                foreach (var arg in notice.Args)
+                {
+                    pairs[i++] = arg.Key;
+                    pairs[i++] = arg.Value;
+                }
+                return pairs;
+            }
+
             private static int Clamp(long value) => (int)Math.Max(0, Math.Min(value, int.MaxValue));
         }
     }

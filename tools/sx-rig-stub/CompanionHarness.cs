@@ -41,6 +41,17 @@ static class CompanionHarness
         public void Controllers(int? leftPct, int? rightPct) => Pads = (leftPct, rightPct);
         public bool? Blocked;
         public void StartBlocked(bool blocked) => Blocked = blocked;
+        public OperatorNotice? BlockNotice;
+        public OperatorMessage? BlockWords;
+        public void BlockerNotice(OperatorNotice notice, OperatorMessage words) => (BlockNotice, BlockWords) = (notice, words);
+        public readonly List<(OperatorNotice notice, OperatorMessage words)> Warnings = new();
+        public void Warning(OperatorNotice notice, OperatorMessage words) => Warnings.Add((notice, words));
+        public readonly List<OperatorNotice> EpisodeNotices = new();
+        public void EpisodeNotice(OperatorNotice notice, OperatorMessage words) => EpisodeNotices.Add(notice);
+        public long? Sealing;
+        public void EpisodeSealing(long seconds) => Sealing = seconds;
+        public bool? Local;
+        public void LocalOnly(bool localOnly) => Local = localOnly;
     }
 
     static Recorder Map(string body, StreamLiveness? live = null, DateTime? at = null, ControllerCharge pads = default)
@@ -62,6 +73,8 @@ static class CompanionHarness
 
     static int Main()
     {
+        // The operator's words: the shipped table (test_binding.sh names it).
+        RealityLog.Rig.OperatorNotices.Load(System.IO.File.ReadAllText(Environment.GetEnvironmentVariable("SX_OPERATOR_NOTICES")!));
         StatusMapping();
         SignInHandOff();
         Offers();
@@ -76,29 +89,32 @@ static class CompanionHarness
     {
         var roles = "[" + Role("left_hand_camera", true, "1-1.1", "ready") + "," + Role("right_hand_camera", false, "", "") + ","
             + Role("left_hand_encoder", true, "1-1.3", "ready") + "," + Role("right_hand_encoder", true, "1-1.4", "") + "]";
-        var attempts = "[{\"id\":\"ep-2\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right camera: device was detached\"},"
+        var attempts = "[{\"id\":\"ep-2\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right camera: device was detached\","
+            + "\"notice\":{\"code\":\"device_disconnected\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"wrist_camera\"}}},"
             + "{\"id\":\"ep-1\",\"stage\":\"reviewed\",\"outcome\":\"complete\"}]";
         var status = Map(Pod + "," + SignedIn + ",\"deviceReport\":{\"battery_percent\":64,\"charging\":false},\"roles\":" + roles
             + ",\"attempts\":" + attempts + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"progress\":{\"target\":2,\"credited\":1,\"awaiting_review\":1}}");
         Expect(status.Head == (false, 64, "pod_q1", "Bench pod 1", "Asha"), "header: not recording, battery 64, pod, collector " + status.Head);
-        Expect(status.Block is { } b && b.headline.StartsWith("Right camera"), "blocker: the missing camera " + status.Block);
+        Expect(status.Block is { } b && b.headline == "The right wrist camera is not plugged in" && status.BlockNotice?.Code == "device_missing"
+            && status.BlockWords?.Who == "collector", "blocker: the missing camera, by code " + status.Block);
         Expect(status.Devices.Count == 4, "four roles");
         Expect(status.Blocked == false, "a missing device leaves Start offered: the start checks first");
         var allReady = "[" + Role("left_hand_camera", true, "1-1.1", "ready") + "," + Role("right_hand_camera", true, "1-1.2", "ready") + ","
             + Role("left_hand_encoder", true, "1-1.3", "ready") + "," + Role("right_hand_encoder", true, "1-1.4", "ready") + "]";
         var full = Map(Pod + "," + SignedIn + ",\"roles\":" + allReady + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[]}}");
-        Expect(full.Blocked == true && full.Block is { } nb && nb.headline == "No episodes left in this assignment"
-            && nb.action == "Add episodes or assign a task in the Console", "no episodes: start_blocked with its reason " + full.Block);
+        Expect(full.Blocked == true && full.Block is { } nb && nb.headline == "No episodes left in this task"
+            && full.BlockNotice?.Code == "no_episodes" && full.BlockWords?.Who == "floor_manager", "no episodes: start_blocked with its reason " + full.Block);
         Expect(status.Devices[0] == ("left_hand_camera", "left", "1-1.1", PodDeviceState.Ready, "port 1-1.1", ""), "left camera ready on its port: " + status.Devices[0]);
         Expect(status.Devices[1].role == "right_hand_camera" && status.Devices[1].side == "right" && status.Devices[1].state == PodDeviceState.Missing
             && status.Devices[1].port == "" && status.Devices[1].fix.Length > 0, "right camera missing with a fix: " + status.Devices[1]);
         Expect(status.Devices[3].state == PodDeviceState.Starting, "an attached, unchecked encoder is starting: " + status.Devices[3].state);
         Expect(status.Coll == ("fold towel", 1, 2, 1, "a review verdict on the recorded episode", true, 3), "collection numbers: " + status.Coll);
         Expect(status.Episodes.Count == 2 && status.Episodes[0].id == "ep-2" && status.Episodes[0].stage == HeadsetStatusMap.StageFailed
-            && status.Episodes[0].reason == "Failed: right camera: device was detached"
-            && status.Episodes[0].fix == "It dropped off USB: reseat its cable at the hub", "failed episode: reason and fix apart: " + status.Episodes[0]);
+            && status.Episodes[0].reason == "Failed: Last episode stopped: the right wrist camera came unplugged"
+            && status.Episodes[0].fix == "Plug it back in firmly at the hub, then press Check."
+            && status.EpisodeNotices.Count == 1 && status.EpisodeNotices[0].Code == "device_disconnected", "failed episode: words and fix apart, by code: " + status.Episodes[0]);
         Expect(status.Episodes[1] == ("ep-1", 4, "Reviewed", ""), "reviewed episode -> REVIEWED (4): " + status.Episodes[1]);
 
         // Ready: no blocker (nothing stops recording); battery unknown stays absent; nobody signed in.
@@ -108,19 +124,30 @@ static class CompanionHarness
         Expect(ready.Block == null, "ready: no blocker");
         Expect(ready.Head.battery == null, "no device report: battery absent");
         var signedOut = Map(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + readyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(signedOut.Head.collector == "" && signedOut.Block is { headline: "Sign in to record" }, "signed out: no collector, the blocker says so");
+        Expect(signedOut.Head.collector == "" && signedOut.Block is { headline: "Nobody is signed in" } && signedOut.BlockNotice?.Code == "signed_out", "signed out: no collector, the blocker says so");
 
         // Recording: LIVE while counters rise; the header says recording.
         var live = new StreamLiveness();
         string Streaming(long n) => "[" + Role("left_hand_camera", true, "1-1.1", "ready", "{\"source_frames\":" + n + ",\"source_fps\":30}") + "]";
         Map(Pod + "," + SignedIn + ",\"episodeActive\":true,\"roles\":" + Streaming(10), live, T0);
         var recording = Map(Pod + "," + SignedIn + ",\"episodeActive\":true,\"roles\":" + Streaming(40), live, T0.AddSeconds(1));
-        Expect(recording.Head.recording && recording.Block is { headline: "Right camera: missing" }, "recording: header true; a missing role still blocks");
+        Expect(recording.Head.recording && recording.Block is { headline: "The right wrist camera is not plugged in" }, "recording: header true; a missing role still blocks");
         Expect(recording.Devices[0].state == PodDeviceState.Live, "rising frames -> LIVE: " + recording.Devices[0].state);
         var midEpisode = Map(Pod + "," + SignedIn + ",\"episodeActive\":true,\"attempts\":[{\"id\":\"ep-3\",\"stage\":\"recording\"},{\"id\":\"ep-2\",\"stage\":\"sealed\"}]");
         Expect(midEpisode.Episodes.Count == 1 && midEpisode.Episodes[0] == ("ep-2", 2, "Sealed", ""), "the episode still recording has no stage and is left to `recording`");
         Expect(HeadsetStatusMap.StateName(PodDeviceState.Missing) == "MISSING" && HeadsetStatusMap.StageNames[6] == "IN_CATALOG"
             && HeadsetStatusMap.StageNames[HeadsetStatusMap.StageFailed] == "FAILED", "proto names: MISSING, IN_CATALOG, FAILED");
+
+        // Warnings before Start and Local only reach the phone by code.
+        var warned = Map(Pod + "," + SignedIn + ",\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+            + ",\"warnings\":[{\"code\":\"slots_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"3\"}}]},\"headset\":{\"displayHz\":90.0,\"controllers\":[{\"side\":\"left\",\"connected\":true,\"tracked\":false,\"percent\":70}]}");
+        Expect(warned.Block == null && warned.Warnings.Count == 2 && warned.Warnings[0].notice.Code == "controller_not_tracked"
+            && warned.Warnings[1].words.Headline == "3 episodes are held by attempts awaiting review" && warned.Local == false, "warnings to the phone: " + warned.Warnings.Count);
+        var local = Map("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"roles\":" + readyRoles);
+        Expect(local.Local == true, "Local only reaches the phone");
+        var sealing = Map(Pod + "," + SignedIn + ",\"attempts\":[{\"id\":\"ep-4\",\"stage\":\"sealing\",\"seal\":\"pending\",\"sealing_seconds\":130}]");
+        Expect(sealing.Episodes[0].stage == HeadsetStatusMap.StageSealing && sealing.Sealing == 130 && sealing.Episodes[0].reason == "Sealing: Sealing for 2 min",
+            "sealing reaches the phone with its time: " + sealing.Episodes[0]);
 
         // Not enrolled, no rig: kinds before roles; no pod id.
         var bare = Map("\"expected\":false,\"enrolled\":false,\"localOnly\":true");
@@ -283,13 +310,15 @@ static class CompanionHarness
         Expect(PodControlWords.Line(new PodControlResult(PodControl.Stop, false, "")) == "Stop: refused", "an empty refusal still says refused");
         Expect(PodControlWords.HttpWords(200, "{}", true) == "Recording", "a start that worked");
         Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"message\":\"the device check did not pass: right camera missing\"}", true)
-            == "the device check did not pass: right camera missing", "a refused start in the rig's words");
-        Expect(PodControlWords.HttpWords(409, "{\"error\":\"not_recording\"}", false) == "not_recording", "a refusal with no message names its error");
+            == "Recording failed: Tell a technician (code rig_not_ready).", "a refused start with no notice: never the rig's words");
+        Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_check_failed\",\"message\":\"x\",\"notice\":{\"code\":\"device_missing\",\"args\":{\"side\":\"right\",\"part\":\"wrist_camera\"}}}", true)
+            == "The right wrist camera is not plugged in: Plug it into the hub, then press Check.", "a refused start in its notice's words");
+        Expect(PodControlWords.HttpWords(409, "{\"error\":\"not_recording\"}", false) == "The stop was refused (code not_recording)", "a refused stop names its code");
         Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_start_failed\",\"message\":\"sx_rig_start_armed failed: Device {\\\"code\\\":\\\"device\\\",\\\"detail\\\":\\\"start_session: {\\\\\\\"code\\\\\\\":\\\\\\\"http_409\\\\\\\",\\\\\\\"message\\\\\\\":\\\\\\\"no assigned episodes remain available; unfinished attempts reserve demand\\\\\\\"}\\\"}\"}", true)
-            == "No episodes left in this assignment: add episodes or assign a task in the Console", "a Factory 409 reaches the phone in plain words");
+            == "No episodes left in this task: The floor manager adds episodes or assigns a new task in the Console.", "a Factory 409 reaches the phone in plain words");
         Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_start_failed\",\"message\":\"start_session: http_422 required readiness checks are not passing\"}", true)
-            == "Readiness checks are failing: run Check", "a Factory 422 reaches the phone in plain words");
-        Expect(PodControlWords.HttpWords(500, "not json", false) == "the stop was refused (500)", "an unreadable refusal names the status");
+            == "A Factory check is failing: Call a technician. The Console names the check.", "a Factory 422 reaches the phone in plain words");
+        Expect(PodControlWords.HttpWords(500, "not json", false) == "The stop was refused (code http_500)", "an unreadable refusal names the status");
         Expect(PodControlWords.Percent(null) == "not available" && PodControlWords.Percent(7) == "7%", "percent words");
         Expect(ControllerCharge.FromLevel(true, 0.6f) == 60 && ControllerCharge.FromLevel(true, 0f) == null
             && ControllerCharge.FromLevel(false, 0.6f) == null && ControllerCharge.FromLevel(true, 1.5f) == null, "XR batteryLevel 0..1 -> percent, 0 unknown");

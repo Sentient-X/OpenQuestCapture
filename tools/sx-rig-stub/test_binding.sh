@@ -9,6 +9,7 @@ editor="${UNITY_EDITOR_DIR:-$HOME/Unity/Hub/Editor/6000.3.6f1/Editor}"
 mono="$editor/Data/MonoBleedingEdge/bin/mono"
 csc="$editor/Data/MonoBleedingEdge/lib/mono/4.5/csc.exe"
 "$here/build.sh" >/dev/null
+include="${SX_RIG_INCLUDE:?set SX_RIG_INCLUDE to the directory holding sx_rig.h}"
 out="$here/build/harness"
 mkdir -p "$out"
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -define:SX_RIG_HOST_TEST \
@@ -21,6 +22,10 @@ else
     echo "FAIL library missing was not typed" >&2
     exit 1
 fi
+
+# The operator's words: every harness below that draws a screen reads the shipped table.
+export SX_OPERATOR_NOTICES="$repo/Assets/RealityLog/Resources/sx_operator_notices.json"
+notices="$repo/Assets/RealityLog/Scripts/Runtime/Rig/OperatorNotices.cs"
 
 # RigStatusJson against Newtonsoft.Json from the Unity project's package cache.
 newtonsoft="$(ls "$repo"/Library/PackageCache/com.unity.nuget.newtonsoft-json@*/Runtime/Newtonsoft.Json.dll | head -n 1)"
@@ -65,20 +70,27 @@ cp "$newtonsoft" "$out/"
 
 # PodStatusBoard: the recordings menu's Pod status block and the last start's refusal.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
-    -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" \
+    -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/pod-status-harness.exe"
 
 # PodScreenBoard: the Pod card's status screen (blocker, devices, collection, episodes).
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
-    -out:"$out/pod-screen-harness.exe" "$here/PodScreenHarness.cs" \
+    -out:"$out/pod-screen-harness.exe" "$here/PodScreenHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/pod-screen-harness.exe"
 
+# The operator's words: the shipped table is libsx_rig's (SX_RIG_INCLUDE), every code renders, no raw text.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/notices-harness.exe" "$here/OperatorNoticesHarness.cs" "$notices" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+"$mono" "$out/notices-harness.exe" "$SX_OPERATOR_NOTICES" "$include/sx_operator_notices.json"
+
 # The phone companion: HeadsetStatus from the status screen, the sign-in hand-off, the Phone section.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
-    -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" \
+    -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
@@ -98,7 +110,7 @@ cp "$newtonsoft" "$out/"
 
 # DevicePresence: worn, focus and input added to the device report.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
-    -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" \
+    -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \

@@ -1,0 +1,348 @@
+{
+  "schema": 1,
+  "app_name": "OpenQuestCapture",
+  "owners": {
+    "collector": "Collector",
+    "floor_manager": "Floor manager",
+    "technician": "Technician"
+  },
+  "stages": {
+    "recording": "Recording",
+    "recorded": "Recorded",
+    "sealing": "Sealing",
+    "sealed": "Sealed",
+    "seal_refused": "Seal refused",
+    "failed": "Failed",
+    "reported": "Reported",
+    "awaiting_review": "Awaiting review",
+    "reviewed": "Reviewed",
+    "review_failed": "Review failed",
+    "delivered": "Delivered",
+    "in_catalog": "In Catalog"
+  },
+  "phrases": {
+    "sealing_for": "Sealing for {minutes} min",
+    "sealing_stalled": "Sealing for {minutes} min, longer than usual. It waits while you record or while the headset is hot.",
+    "delivered_note": "Freeing space in about 1 h",
+    "still_fine_label": "Still fine",
+    "who_label": "Who",
+    "ready": "Ready to record",
+    "ready_action": "Press the menu button to start",
+    "ready_local": "Ready (Local only)",
+    "ready_local_action": "Press the menu button to record. Nothing is delivered.",
+    "recording": "Recording",
+    "recording_action": "Press the menu button to stop",
+    "local_only": "Local only: nothing is delivered",
+    "phone_linked": "Phone linked"
+  },
+  "tokens": {
+    "side": { "left": "left", "right": "right" },
+    "camera": { "head": "head", "wrist": "wrist" },
+    "part": { "wrist_camera": "wrist camera", "gripper_sensor": "gripper sensor" }
+  },
+  "notices": {
+    "seal_video_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: the {side} {camera} camera skipped frames",
+      "still_fine": "The rig and your earlier episodes are fine.",
+      "action": "Record it again. If it happens twice in a row, call a technician."
+    },
+    "seal_controller_frozen": {
+      "who": "collector",
+      "headline": "Last episode not kept: the {side} controller stopped tracking",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Keep both controllers awake and in view of the headset, then record again."
+    },
+    "seal_head_cameras_out_of_step": {
+      "who": "collector",
+      "headline": "Last episode not kept: the head cameras fell out of step",
+      "still_fine": "The wrist cameras and grippers recorded fine.",
+      "action": "Restart the app so the display runs at 90 Hz, then record again."
+    },
+    "seal_gripper_timing": {
+      "who": "technician",
+      "headline": "Last episode not kept: the {side} gripper sensor's timing was off",
+      "still_fine": "The cameras recorded fine.",
+      "action": "Record again. If it repeats, a technician checks the {side} gripper sensor."
+    },
+    "seal_clock_coverage": {
+      "who": "technician",
+      "headline": "Last episode not kept: the headset's tracking clock had gaps",
+      "still_fine": "The rig is fine.",
+      "action": "Record again. If it repeats, call a technician."
+    },
+    "seal_device_info_missing": {
+      "who": "technician",
+      "headline": "Last episode not kept: the headset's camera details were missing",
+      "still_fine": "The rig is fine.",
+      "action": "Restart the app and record again. If it repeats, call a technician."
+    },
+    "seal_quality": {
+      "who": "technician",
+      "headline": "Last episode not kept: it did not pass the quality check",
+      "still_fine": "The rig is fine.",
+      "action": "Record again. If it repeats, call a technician."
+    },
+    "video_behind": {
+      "who": "collector",
+      "headline": "Last episode stopped: the {side} wrist camera video could not keep up",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Let the headset cool for a few minutes, then record again. If it repeats, call a technician."
+    },
+    "gripper_link_lost": {
+      "who": "collector",
+      "headline": "Last episode stopped: the {side} gripper sensor lost its connection",
+      "still_fine": "The cameras and controllers are fine.",
+      "action": "Reseat the {side} gripper sensor's cable at the hub, then press Check.",
+      "button": "check"
+    },
+    "device_disconnected": {
+      "who": "collector",
+      "headline": "Last episode stopped: the {side} {part} came unplugged",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Plug it back in firmly at the hub, then press Check.",
+      "button": "check"
+    },
+    "usb_bandwidth": {
+      "who": "technician",
+      "headline": "The USB hub ran out of bandwidth",
+      "still_fine": "The devices themselves are fine.",
+      "action": "Put both wrist cameras on one powered hub, then press Check.",
+      "button": "check"
+    },
+    "recording_interrupted": {
+      "who": "collector",
+      "headline": "Last episode stopped: the app closed while recording",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Keep the app open while you record."
+    },
+    "device_missing": {
+      "who": "collector",
+      "headline": "The {side} {part} is not plugged in",
+      "still_fine": "The other devices are ready.",
+      "action": "Plug it into the hub, then press Check.",
+      "button": "check"
+    },
+    "device_silent": {
+      "who": "collector",
+      "headline": "The {side} {part} sends nothing",
+      "still_fine": "The other devices are ready.",
+      "action": "Replug it, then press Check.",
+      "button": "check"
+    },
+    "usb_other_app": {
+      "who": "collector",
+      "headline": "Another app holds the {side} {part}",
+      "still_fine": "The device itself is fine.",
+      "action": "Replug it and choose OpenQuestCapture when Android asks.",
+      "button": "check"
+    },
+    "usb_permission": {
+      "who": "collector",
+      "headline": "A rig device is waiting for USB access",
+      "still_fine": "The other devices are fine.",
+      "action": "Choose OpenQuestCapture when Android asks. If no prompt shows, replug the device."
+    },
+    "rig_check_failed": {
+      "who": "collector",
+      "headline": "The rig's devices did not pass the check",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Press Check and fix the device it names.",
+      "button": "check"
+    },
+    "library_missing": {
+      "who": "technician",
+      "headline": "This app version cannot run the rig",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "A technician installs an approved version."
+    },
+    "rig_open_failed": {
+      "who": "technician",
+      "headline": "The rig did not start",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Restart the app. If it repeats, call a technician."
+    },
+    "app_paused": {
+      "who": "collector",
+      "headline": "The app was paused",
+      "still_fine": "Nothing was recorded or lost.",
+      "action": "Put the headset on, keep the app open, then start again."
+    },
+    "signed_out": {
+      "who": "collector",
+      "headline": "Nobody is signed in",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Tap Sign in and approve the code on your phone.",
+      "button": "sign_in"
+    },
+    "sign_in_pending": {
+      "who": "collector",
+      "headline": "Waiting for you to approve sign-in",
+      "still_fine": "Nothing is lost.",
+      "action": "Approve code {code} on your phone."
+    },
+    "not_enrolled": {
+      "who": "floor_manager",
+      "headline": "This headset is not set up as a pod",
+      "still_fine": "Local only recording still works.",
+      "action": "Scan the setup QR code from the Console."
+    },
+    "no_task": {
+      "who": "floor_manager",
+      "headline": "No task is assigned to this pod",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "The floor manager assigns a task to this pod in the Console."
+    },
+    "no_episodes": {
+      "who": "floor_manager",
+      "headline": "No episodes left in this task",
+      "still_fine": "Everything recorded so far counts.",
+      "action": "The floor manager adds episodes or assigns a new task in the Console."
+    },
+    "no_episodes_held": {
+      "who": "floor_manager",
+      "headline": "No episodes free: {held} held by attempts awaiting review",
+      "still_fine": "They count once reviewed.",
+      "action": "The floor manager reviews them in the Console, or adds episodes."
+    },
+    "build_not_accepted": {
+      "who": "floor_manager",
+      "headline": "App version not approved",
+      "still_fine": "The rig is fine.",
+      "action": "The floor manager approves the trial in the Console, or a technician installs an approved version."
+    },
+    "rig_registration_changed": {
+      "who": "technician",
+      "headline": "The rig's registration changed",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "A technician runs setup again from the Console."
+    },
+    "readiness_clock": {
+      "who": "collector",
+      "headline": "The headset's clock is not synced",
+      "still_fine": "The rig is fine.",
+      "action": "Connect the headset to the floor Wi-Fi. The clock syncs by itself."
+    },
+    "readiness_power": {
+      "who": "collector",
+      "headline": "The headset battery is too low to record",
+      "still_fine": "The rig is fine.",
+      "action": "Plug the headset in to charge."
+    },
+    "readiness_network": {
+      "who": "collector",
+      "headline": "The headset is not on the network",
+      "still_fine": "The rig is fine.",
+      "action": "Connect the headset to the floor Wi-Fi."
+    },
+    "readiness_heartbeat": {
+      "who": "collector",
+      "headline": "The Factory has not heard this headset recently",
+      "still_fine": "The rig is fine.",
+      "action": "Keep the app open and the headset on Wi-Fi."
+    },
+    "readiness_storage": {
+      "who": "collector",
+      "headline": "The headset is short of space",
+      "still_fine": "Delivered episodes free space by themselves.",
+      "action": "Keep the headset on Wi-Fi so uploads finish."
+    },
+    "readiness_devices": {
+      "who": "collector",
+      "headline": "The rig's devices have not passed a check",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Press Check.",
+      "button": "check"
+    },
+    "readiness_rig": {
+      "who": "technician",
+      "headline": "This pod has no registered rig",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "A technician registers the rig for this pod in the Console."
+    },
+    "readiness_task": {
+      "who": "floor_manager",
+      "headline": "This pod's task is not ready to record",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "The floor manager checks the task's setup in the Console."
+    },
+    "readiness_other": {
+      "who": "technician",
+      "headline": "A Factory check is failing",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Call a technician. The Console names the check."
+    },
+    "storage_low": {
+      "who": "collector",
+      "headline": "Not enough space: {free_gb} GB free, {needed_gb} GB needed",
+      "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
+      "action": "Keep the headset on Wi-Fi so uploads finish, or delete exported recordings."
+    },
+    "factory_unanswered": {
+      "who": "collector",
+      "headline": "The Factory did not answer. Nothing was recorded.",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Check the headset's Wi-Fi, then start again."
+    },
+    "factory_unheard_local": {
+      "who": "collector",
+      "headline": "The Factory is not answering. Recording continues on the headset.",
+      "still_fine": "Episodes are kept and sent when it reconnects.",
+      "action": "Check the headset's Wi-Fi."
+    },
+    "factory_unheard": {
+      "who": "collector",
+      "headline": "The Factory is not answering",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Check the headset's Wi-Fi, then start again."
+    },
+    "collection_unfinished": {
+      "who": "floor_manager",
+      "headline": "A collection cannot finish yet",
+      "still_fine": "You can keep recording.",
+      "action": "The floor manager checks it in the Console."
+    },
+    "controller_not_tracked": {
+      "who": "collector",
+      "headline": "The {side} controller is not tracked",
+      "still_fine": "You can still start.",
+      "action": "Pick it up or press a button to wake it."
+    },
+    "controller_disconnected": {
+      "who": "collector",
+      "headline": "The {side} controller is not connected",
+      "still_fine": "You can still start.",
+      "action": "Hold its Meta button to turn it on."
+    },
+    "controller_battery_low": {
+      "who": "collector",
+      "headline": "The {side} controller is at {percent}%",
+      "still_fine": "You can still start.",
+      "action": "Swap its battery before the next episode."
+    },
+    "display_rate": {
+      "who": "collector",
+      "headline": "The display runs at {hz} Hz, not 90 Hz",
+      "still_fine": "You can still start.",
+      "action": "Restart the app so it sets 90 Hz. At this rate the head cameras fall out of step."
+    },
+    "storage_tight": {
+      "who": "collector",
+      "headline": "Space is tight: {free_gb} GB free, {needed_gb} GB needed per episode",
+      "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
+      "action": "Keep the headset on Wi-Fi so uploads finish."
+    },
+    "slots_held": {
+      "who": "floor_manager",
+      "headline": "{held} episodes are held by attempts awaiting review",
+      "still_fine": "They count once reviewed.",
+      "action": "The floor manager reviews them in the Console."
+    },
+    "unknown": {
+      "who": "technician",
+      "headline": "Recording failed",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Tell a technician (code {code})."
+    }
+  }
+}

@@ -60,18 +60,23 @@ namespace RealityLog.Rig
         }
     }
 
-    /// <summary>A refused start: its code, its sentence, and when (null when the rig's status said it).</summary>
+    /// <summary>
+    /// A refused start: its code, its sentence (for the logs), when (null when the rig's status
+    /// said it), and its notice: what the screens show.
+    /// </summary>
     public sealed class StartRefusal
     {
         public string Code { get; }
         public string Message { get; }
         public DateTime? At { get; }
+        public OperatorNotice? Notice { get; }
 
-        public StartRefusal(string code, string message, DateTime? at)
+        public StartRefusal(string code, string message, DateTime? at, OperatorNotice? notice = null)
         {
             Code = code;
             Message = message;
             At = at;
+            Notice = notice;
         }
     }
 
@@ -105,7 +110,7 @@ namespace RealityLog.Rig
                     return;
                 }
                 var (code, message) = PodStatusBoard.ParseError(body, statusCode);
-                last = new StartRefusal(code, message, at);
+                last = new StartRefusal(code, message, at, PodStatusBoard.NoticeOf(body, code, message));
                 succeeded = false;
             }
         }
@@ -228,8 +233,8 @@ namespace RealityLog.Rig
             if (askingForCode) return "Collector: asking the Factory for a sign-in code...";
             if (status?["floor"] is not JObject floor || floor["operator"] is not JObject collector)
             {
-                var floorError = Str((status?["native"] as JObject)?["floor_error"]);
-                return "Collector: waiting for the Factory" + (floorError.Length > 0 ? " (" + Clip(floorError, 60) + ")" : "");
+                // The floor's error stays in the status for the logs, never on the card.
+                return "Collector: waiting for the Factory";
             }
             if (collector["signed_in"] is JValue { Type: JTokenType.Boolean } signedIn && (bool)signedIn)
             {
@@ -290,40 +295,51 @@ namespace RealityLog.Rig
             var refusal = lastStart;
             if (refusal == null && !lastStartSucceeded && status?["lastRefusal"] is JObject rig)
             {
-                refusal = new StartRefusal(Str(rig["code"]), Str(rig["message"]), null);
+                refusal = new StartRefusal(Str(rig["code"]), Str(rig["message"]), null,
+                    OperatorNotices.ForRefusal(Str(rig["code"]), rig["detail"]?.ToString(Formatting.None) ?? ""));
             }
             if (refusal == null) return NoRefusal;
             var at = refusal.At is DateTime time ? " (" + time.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + ")" : "";
-            return "Last refusal" + at + ": " + Clip(Explain(refusal.Code, refusal.Message), 110);
+            return "Last refusal" + at + ": " + Clip(refusal.Notice is { } notice ? Words(notice) : Explain(refusal.Code, refusal.Message), 110);
         }
 
-        /// <summary>A start refusal's code and message in plain words.</summary>
-        public static string Explain(string code, string message)
+        /// <summary>
+        /// A start refusal in the notice table's words, "headline: action": the notice its HTTP
+        /// body carries, else its code's. Never the message it arrived with (start_session: {...},
+        /// os error 32, a file path): that stays in the log.
+        /// </summary>
+        public static string Explain(string code, string message) => Words(NoticeOf(null, code, message));
+
+        /// <summary>A notice as one line: "headline: action".</summary>
+        public static string Words(OperatorNotice notice)
         {
-            var lower = message.ToLowerInvariant();
-            // The Factory's own start refusals, never as the JSON they arrive in (start_session: {...}).
-            if (lower.Contains("readiness checks are not passing")) return "Readiness checks are failing: run Check";
-            if (lower.Contains("no assigned episodes remain")) return "No episodes left in this assignment: add episodes or assign a task in the Console";
-            if (lower.Contains("no assigned task")) return "No task assigned to this pod";
-            string Detail(string prefix) => message.Length > 0 ? prefix + ": " + message : prefix;
-            return code switch
+            var words = OperatorNotices.Render(notice);
+            return words.Action.Length > 0 ? words.Headline + ": " + words.Action : words.Headline;
+        }
+
+        /// <summary>
+        /// A refused start's notice: its HTTP body's "notice", or the rig's under "rig"; else the
+        /// Factory's own refusals by their words; else the refusal code's.
+        /// </summary>
+        public static OperatorNotice NoticeOf(string? body, string code, string message)
+        {
+            try
             {
-                "collector_signed_out" => "Sign in to record",
-                "rig_check_failed" => Detail("The rig's device check failed"),
-                "rig_storage_low" or "storage_full" => "Storage is too low to record",
-                "rig_usb_permission" => "Allow USB access to the rig's devices",
-                "rig_library_missing" => "The rig library is missing from this build",
-                "rig_open_failed" => Detail("The rig did not open"),
-                "rig_identity_pending" => Detail("The rig's identity is not known yet"),
-                "rig_not_armed" => Detail("The rig was not armed"),
-                "pod_config_incomplete" => Detail("Pod setup is incomplete"),
-                "rig_start_failed" => Detail("The rig did not start"),
-                "factory_unanswered" => "The Factory did not answer the start in time: start again",
-                "already_recording" => "Already recording",
-                "app_paused" => "The app was paused (headset off the face?)",
-                "main_thread_timeout" => "The app did not start the recording in time",
-                _ => message.Length > 0 ? message : code.Length > 0 ? code : "the start was refused",
-            };
+                if (!string.IsNullOrEmpty(body) && JToken.Parse(body!) is JObject json
+                    && (OperatorNotice.FromJson(json["notice"]) ?? OperatorNotice.FromJson((json["rig"] as JObject)?["notice"])) is { } carried)
+                {
+                    return carried;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            var lower = message.ToLowerInvariant();
+            if (lower.Contains("rig registration changed")) return OperatorNotice.Of("rig_registration_changed");
+            if (lower.Contains("no assigned episodes remain")) return OperatorNotice.Of("no_episodes");
+            if (lower.Contains("no assigned task") || lower.Contains("shows this pod no task")) return OperatorNotice.Of("no_task");
+            if (lower.Contains("readiness checks are not passing")) return OperatorNotice.Of("readiness_other");
+            return OperatorNotices.ForCode(code);
         }
 
         /// <summary>

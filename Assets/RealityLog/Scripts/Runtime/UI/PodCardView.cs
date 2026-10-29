@@ -83,7 +83,15 @@ namespace RealityLog.UI
         private TextMeshProUGUI chipText = default!;
         // The blocker banner.
         private Image blockerPanel = default!;
-        private TextMeshProUGUI blockerHeadline = default!, blockerAction = default!;
+        private TextMeshProUGUI blockerHeadline = default!, blockerAction = default!, blockerFine = default!;
+        // The blocker's button (Check, Sign in) when its notice names one.
+        private GameObject blockerButton = default!;
+        private TextMeshProUGUI blockerButtonText = default!;
+        private string shownButton = "";
+        // What a start may meet but is not refused for.
+        private GameObject warningsObj = default!;
+        private Image warningsPanel = default!;
+        private TextMeshProUGUI warningsText = default!;
         // Controls.
         private TextMeshProUGUI checkText = default!, toggleText = default!, endText = default!;
         private Image checkImage = default!, toggleImage = default!, endImage = default!;
@@ -296,7 +304,37 @@ namespace RealityLog.UI
             blockerHeadline.color = s.Blocker.Tone == PodTone.Neutral ? TextColor : tone;
             Set(blockerHeadline, s.Blocker.Headline ?? "");
             Set(blockerAction, s.Blocker.Action ?? "");
+            // Who acts, before the action: "Floor manager: The floor manager assigns ...".
+            var who = s.Blocker.Who ?? "";
+            Set(blockerAction, who.Length > 0 ? "<b>" + who + ":</b> " + (s.Blocker.Action ?? "") : s.Blocker.Action ?? "");
             Show(blockerAction.gameObject, !string.IsNullOrEmpty(s.Blocker.Action));
+            var fine = s.Blocker.StillFine ?? "";
+            Set(blockerFine, fine.Length > 0 ? OperatorNotices.Phrase("still_fine_label") + ": " + fine : "");
+            Show(blockerFine.gameObject, fine.Length > 0);
+            shownButton = s.Blocker.Button ?? "";
+            Show(blockerButton.transform.parent.gameObject, shownButton.Length > 0);
+            Set(blockerButtonText, shownButton == "sign_in" ? "Sign in" : "Check");
+
+            Show(warningsObj, s.Warnings.Count > 0 && !s.Recording);
+            if (s.Warnings.Count > 0)
+            {
+                var tint = "#" + ColorUtility.ToHtmlStringRGB(WarningColor);
+                var lines = new System.Text.StringBuilder();
+                foreach (var warning in s.Warnings)
+                {
+                    if (lines.Length > 0) lines.Append('\n');
+                    lines.Append("<color=").Append(tint).Append("><b>").Append(warning.Headline).Append("</b></color>  ")
+                        .Append(warning.Who.Length > 0 ? "<b>" + warning.Who + ":</b> " : "").Append(warning.Action);
+                }
+                Set(warningsText, lines.ToString());
+            }
+        }
+
+        /// <summary>The blocker's button: the control its notice names.</summary>
+        private void PressBlockerButton()
+        {
+            if (shownButton == "sign_in") PodSetupController.Instance?.SignIn();
+            else if (shownButton == "check") PodControls.Instance?.Run(PodControl.Check);
         }
 
         private void ShowControls(PodCardState state)
@@ -561,6 +599,19 @@ namespace RealityLog.UI
             blockerHeadline = Text("Headline", blocker, 24, TextColor, Cell.Wrapping);
             blockerHeadline.fontStyle = FontStyles.Bold;
             blockerAction = Text("Action", blocker, 21, TextColor, Cell.Wrapping);
+            blockerFine = Text("StillFine", blocker, 19, DimTextColor, Cell.Wrapping);
+            var blockerActions = Row("BlockerActions", blocker, PillHeight);
+            blockerButton = Pill(blockerActions, "BlockerButton", PrimaryColor, PressBlockerButton, out blockerButtonText, out _);
+            blockerActions.gameObject.SetActive(false);
+
+            // Before Start: what a start may meet but is not refused for, each with who acts and what to do.
+            warningsObj = Panel("Warnings", transform, out warningsPanel).gameObject;
+            warningsPanel.color = Faint(WarningColor, 0.10f);
+            var warningsTitle = Text("Title", warningsObj.transform, 20, WarningColor, Cell.Wrapping);
+            warningsTitle.fontStyle = FontStyles.Bold;
+            warningsTitle.text = "Before you start";
+            warningsText = Text("Items", warningsObj.transform, 19, TextColor, Cell.Wrapping);
+            warningsObj.SetActive(false);
 
             // Controls: Check · Start/Stop · End collection, their answer, then the battery row.
             var controls = Section(transform, "Controls");

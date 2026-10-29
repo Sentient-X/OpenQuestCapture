@@ -44,6 +44,8 @@ public static class PodCardSnapshot
     {
         var outDir = Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? ".", "p3", "tmp", "shots");
         Directory.CreateDirectory(outDir);
+        // The operator's words, as RigCoordinator loads them on the headset.
+        OperatorNotices.Load(File.ReadAllText("Assets/RealityLog/Resources/sx_operator_notices.json"));
         EditorSceneManager.OpenScene(Scene);
 
         var ui = Object.FindFirstObjectByType<RecordingListUI>(FindObjectsInactive.Include)
@@ -181,7 +183,67 @@ public static class PodCardSnapshot
         yield return ("c-blocked", Blocked());
         yield return ("d-long", LongList());
         yield return ("e-signed-out", SignedOut());
+        yield return ("f-seal-refused-frozen", SealRefusedFrozen());
+        yield return ("g-no-episodes-held", NoEpisodesHeld());
+        yield return ("h-storage-low", StorageLow());
+        yield return ("i-prestart-warnings", PreStartWarnings());
     }
+
+    // ---- The operator's words, through the real board from the status the rig and the app write ----
+
+    private const string LivePod =
+        "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
+        "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha Rao\"}}," +
+        "\"roles\":[" +
+        "{\"role\":\"left_hand_camera\",\"registered\":\"c1\",\"attached\":true,\"port\":\"1-1.3\",\"check\":\"ready\"}," +
+        "{\"role\":\"right_hand_camera\",\"registered\":\"c2\",\"attached\":true,\"port\":\"1-1.4\",\"check\":\"ready\"}," +
+        "{\"role\":\"left_hand_encoder\",\"registered\":\"e1\",\"attached\":true,\"port\":\"1-1.1\",\"check\":\"ready\"}," +
+        "{\"role\":\"right_hand_encoder\",\"registered\":\"e2\",\"attached\":true,\"port\":\"1-1.2\",\"check\":\"ready\"}]";
+
+    private const string LiveFactory =
+        "\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null},\"ready\":true,\"blocking\":[]," +
+        "\"task\":{\"name\":\"Fold towels\",\"status\":\"active\",\"target\":10,\"done\":6}," +
+        "\"progress\":{\"target\":10,\"credited\":6,\"awaiting_review\":2,\"recording\":0,\"processing\":0,\"sealing\":1,\"registering\":0}";
+
+    private static PodCardState Live(string status, PodReadiness readiness, string chip)
+    {
+        var state = Enrolled(PodScreenBoard.Build("{" + status + "}", null, false, new StreamLiveness(), DateTime.UtcNow),
+            Lines(readiness, chip, "Asha Rao (signed in)"));
+        state.RightPct = 12;
+        return state;
+    }
+
+    /// <summary>(f) The newest attempt's seal refused it for a frozen left controller: shown until the next start.</summary>
+    private static PodCardState SealRefusedFrozen() => Live(LivePod + ",\"factory\":{" + LiveFactory + "},\"attempts\":[" +
+        "{\"id\":\"20261029_141502\",\"stage\":\"refused\",\"outcome\":\"complete\",\"seal\":\"refused\"," +
+        "\"detail\":\"left_controller_pose frozen: it moved 0.31 cm over the episode\"," +
+        "\"notice\":{\"code\":\"seal_controller_frozen\",\"who\":\"collector\",\"args\":{\"side\":\"left\"}}}," +
+        "{\"id\":\"20261029_140911\",\"stage\":\"reported\",\"outcome\":\"complete\",\"seal\":\"sealed\",\"integrity\":\"pending\"}," +
+        "{\"id\":\"20261029_135030\",\"stage\":\"finalized\",\"outcome\":\"complete\",\"seal\":\"sealed\"}," +
+        "{\"id\":\"20261029_133012\",\"stage\":\"registered\",\"outcome\":\"complete\",\"seal\":\"sealed\"}]",
+        PodReadiness.Ready, "Ready");
+
+    /// <summary>(g) No episodes free: four held by attempts awaiting review; Start is not offered.</summary>
+    private static PodCardState NoEpisodesHeld() => Live(LivePod + ",\"factory\":{" + LiveFactory + ",\"admissible\":0," +
+        "\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[],\"held\":4," +
+        "\"notice\":{\"code\":\"no_episodes_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"4\"}}}}," +
+        "\"attempts\":[{\"id\":\"20261029_141502\",\"stage\":\"sealing\",\"outcome\":\"complete\",\"seal\":\"pending\",\"sealing_seconds\":190}," +
+        "{\"id\":\"20261029_140911\",\"stage\":\"reported\",\"outcome\":\"complete\",\"seal\":\"sealed\",\"integrity\":\"pending\"}]",
+        PodReadiness.Refused, "Refused");
+
+    /// <summary>(h) Not enough space, with the rig's own numbers and the uploads that will free it.</summary>
+    private static PodCardState StorageLow() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
+        "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":3200000000,\"required_bytes\":7450000000," +
+        "\"held\":{\"unreported\":{\"attempts\":2},\"awaiting_factory\":{\"attempts\":3}}}}",
+        PodReadiness.Refused, "Refused");
+
+    /// <summary>(i) Ready, with the warn-level checks before Start: a controller asleep, one low, 72 Hz, tight storage, held episodes.</summary>
+    private static PodCardState PreStartWarnings() => Live(LivePod + ",\"factory\":{" + LiveFactory + ",\"admissible\":2," +
+        "\"warnings\":[{\"code\":\"slots_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"2\"}}]}," +
+        "\"headset\":{\"displayHz\":72.0,\"controllers\":[{\"side\":\"left\",\"connected\":true,\"tracked\":false,\"percent\":64}," +
+        "{\"side\":\"right\",\"connected\":true,\"tracked\":true,\"percent\":12}]}," +
+        "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":9100000000,\"required_bytes\":7450000000,\"held\":{\"unreported\":{\"attempts\":1}}}}",
+        PodReadiness.Ready, "Ready");
 
     /// <summary>(a) A fresh install: not enrolled, Local only off, nothing plugged in; the real boards' words.</summary>
     private static PodCardState NotEnrolled()
@@ -250,8 +312,8 @@ public static class PodCardSnapshot
         screen.Devices.Add(Device("Left encoder", "port 1-1.1", "Ready", PodTone.Good));
         screen.Devices.Add(Device("Right encoder", "port 1-1.2", "Ready", PodTone.Good));
         screen.Episodes.Add(new PodEpisodeRow("ep-0003", 1, -1, "Sealing", PodTone.Warning, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0002", 3, -1, "In review", PodTone.Neutral, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In catalog", PodTone.Good, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0002", 3, -1, "Awaiting review", PodTone.Neutral, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In Catalog", PodTone.Good, ""));
         return Enrolled(screen, Lines(PodReadiness.Ready, "Ready", "Asha Rao (signed in)"));
     }
 
@@ -280,7 +342,7 @@ public static class PodCardSnapshot
             "Another app holds it: replug it and choose OpenQuestCapture when Android asks"));
         screen.Episodes.Add(new PodEpisodeRow("ep-0002", 1, 1, "Seal refused", PodTone.Error,
             "right encoder: stream ended early (2.1 s of 30 s); replug it before the next start"));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In catalog", PodTone.Good, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In Catalog", PodTone.Good, ""));
         var state = Enrolled(screen, Lines(PodReadiness.Refused, "Refused", "Asha Rao (signed in)"));
         state.PanelTone = PodTone.Error;
         state.PanelHeadline = "Check failed: right encoder sends nothing; left camera is not on USB";
@@ -319,14 +381,14 @@ public static class PodCardSnapshot
         screen.Devices.Add(Device("Left encoder", "port 1-1.1", "Ready", PodTone.Good));
         screen.Devices.Add(Device("Right encoder", "port 1-1.2", "Ready", PodTone.Good));
         screen.Episodes.Add(new PodEpisodeRow("ep-0008", 0, -1, "Recording", PodTone.Warning, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0007", 2, -1, "Reporting", PodTone.Warning, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0006", 3, -1, "In review", PodTone.Neutral, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0005", 3, 3, "Rejected", PodTone.Error,
+        screen.Episodes.Add(new PodEpisodeRow("ep-0007", 2, -1, "Reported", PodTone.Neutral, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0006", 3, -1, "Awaiting review", PodTone.Neutral, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0005", 3, 3, "Review failed", PodTone.Error,
             "Reviewer: the right hand leaves the camera's view for most of the episode"));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0004", 5, -1, "Finalizing", PodTone.Neutral, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0003", 6, -1, "In catalog", PodTone.Good, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0002", 6, -1, "In catalog", PodTone.Good, ""));
-        screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In catalog", PodTone.Good, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0004", 5, -1, "Delivered", PodTone.Good, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0003", 6, -1, "In Catalog", PodTone.Good, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0002", 6, -1, "In Catalog", PodTone.Good, ""));
+        screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In Catalog", PodTone.Good, ""));
         return Enrolled(screen, Lines(PodReadiness.Ready, "Ready", "Asha Rao (signed in)"));
     }
 }

@@ -16,6 +16,8 @@ static class PodStatusBoardHarness
 
     static int Main()
     {
+        // The operator's words: the shipped table (test_binding.sh names it).
+        RealityLog.Rig.OperatorNotices.Load(System.IO.File.ReadAllText(Environment.GetEnvironmentVariable("SX_OPERATOR_NOTICES")!));
         // Nothing parses -> safe defaults, never a throw.
         var empty = PodStatusBoard.Lines("not json", null, false, false);
         Expect(empty.Pod == "Pod: not enrolled · Local only ON" && empty.Rig.StartsWith("Rig: not expected"), "unreadable status -> not enrolled, no rig");
@@ -33,7 +35,7 @@ static class PodStatusBoardHarness
         var expired = Lines(Base + ",\"floor\":{\"operator\":{\"signed_in\":false},\"message\":\"the sign-in code expired\"}");
         Expect(expired.Collector.StartsWith("Collector: signed out (the sign-in code expired)") && !expired.Collector.Contains("WXYZ"), "expired code: signed out with the reason");
         Expect(Lines(Base + ",\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}}", asking: true).Collector.Contains("asking"), "asking for a code says so");
-        Expect(Lines(Base + ",\"floor\":null,\"native\":{\"floor_error\":\"no route to host\"}").Collector == "Collector: waiting for the Factory (no route to host)", "no floor: waiting, with the floor error");
+        Expect(Lines(Base + ",\"floor\":null,\"native\":{\"floor_error\":\"no route to host\"}").Collector == "Collector: waiting for the Factory", "no floor: waiting; the floor error stays in the log");
 
         // The setup line: a step's message for a while, then the current state.
         Expect(PodStatusBoard.SetupStatus("Sign-in code ready", 5, false, true, false) == "Sign-in code ready", "a fresh message shows");
@@ -55,25 +57,25 @@ static class PodStatusBoardHarness
         Expect(Lines("\"expected\":true,\"open\":false,\"openError\":{\"detail\":\"no rig.json\"}").Rig.StartsWith("Rig: not open: no rig.json"), "rig not open, with the reason");
 
         // Refusals in plain words.
-        Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_422 required readiness checks are not passing") == "Readiness checks are failing: run Check", "readiness refusal");
+        Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_422 required readiness checks are not passing") == "A Factory check is failing: Call a technician. The Console names the check.", "readiness refusal");
         Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: {\"code\":\"http_409\",\"message\":\"no assigned episodes remain available; unfinished attempts reserve demand\"}")
-            == "No episodes left in this assignment: add episodes or assign a task in the Console", "no-episodes refusal, never its JSON");
-        Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_404 pod has no assigned task") == "No task assigned to this pod", "no task refusal");
-        Expect(PodStatusBoard.Explain("collector_signed_out", "the collector signed out; POST /api/sign-in") == "Sign in to record", "signed out refusal");
-        Expect(PodStatusBoard.Explain("rig_check_failed", "left camera missing") == "The rig's device check failed: left camera missing", "check refusal");
-        Expect(PodStatusBoard.Explain("storage_full", "Insufficient storage") == "Storage is too low to record", "storage refusal");
+            == "No episodes left in this task: The floor manager adds episodes or assigns a new task in the Console.", "no-episodes refusal, never its JSON");
+        Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_404 pod has no assigned task") == "No task is assigned to this pod: The floor manager assigns a task to this pod in the Console.", "no task refusal");
+        Expect(PodStatusBoard.Explain("collector_signed_out", "the collector signed out; POST /api/sign-in") == "Nobody is signed in: Tap Sign in and approve the code on your phone.", "signed out refusal");
+        Expect(PodStatusBoard.Explain("rig_check_failed", "left camera missing") == "The rig's devices did not pass the check: Press Check and fix the device it names.", "check refusal");
+        Expect(PodStatusBoard.Explain("storage_full", "Insufficient storage") == "Not enough space: GB free, GB needed: Keep the headset on Wi-Fi so uploads finish, or delete exported recordings.", "storage refusal");
 
         // The start log: a refusal with its time, cleared by a successful start.
         var log = new PodStartLog();
         log.Record(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_start_failed\",\"message\":\"start_session: http_422 required readiness checks are not passing\",\"rig\":null}",
             new DateTime(2026, 10, 19, 14, 3, 7));
         var refused = Lines(Base, log.Last, log.Succeeded);
-        Expect(refused.LastRefusal == "Last refusal (14:03:07): Readiness checks are failing: run Check", "refusal with time: " + refused.LastRefusal);
+        Expect(refused.LastRefusal == "Last refusal (14:03:07): " + "A Factory check is failing: Call a technician. The Console names the check.", "refusal with time: " + refused.LastRefusal);
         log.Record(409, "{\"error\":\"rig_not_ready\",\"reason\":\"collector_signed_out\",\"message\":\"x\"}", new DateTime(2026, 10, 19, 14, 4, 0));
-        Expect(Lines(Base, log.Last, log.Succeeded).LastRefusal == "Last refusal (14:04:00): Sign in to record", "the newest refusal wins");
+        Expect(Lines(Base, log.Last, log.Succeeded).LastRefusal == "Last refusal (14:04:00): " + "Nobody is signed in: Tap Sign in and approve the code on your phone.", "the newest refusal wins");
         log.Record(200, "{\"status\":\"recording\"}", new DateTime(2026, 10, 19, 14, 5, 0));
         Expect(log.Last == null && Lines(Base + ",\"lastRefusal\":{\"code\":\"rig_check_failed\",\"message\":\"old\"}", log.Last, log.Succeeded).LastRefusal == "Last refusal: none", "a successful start clears the refusal");
-        Expect(Lines(Base + ",\"lastRefusal\":{\"code\":\"collector_signed_out\",\"message\":\"x\"}").LastRefusal == "Last refusal: Sign in to record", "the rig's own refusal shows (no time) before any start here");
+        Expect(Lines(Base + ",\"lastRefusal\":{\"code\":\"collector_signed_out\",\"message\":\"x\"}").LastRefusal == "Last refusal: " + "Nobody is signed in: Tap Sign in and approve the code on your phone.", "the rig's own refusal shows (no time) before any start here");
         var bare = new PodStartLog();
         bare.Record(500, "not json", DateTime.Now);
         Expect(bare.Last?.Code == "http_500", "an unreadable error body is its status code");
