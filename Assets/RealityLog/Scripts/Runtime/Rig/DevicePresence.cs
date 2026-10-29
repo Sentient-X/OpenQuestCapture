@@ -22,6 +22,8 @@ namespace RealityLog.Rig
         private int paused;
         private long keyPresses;
         private long focusChanges;
+        private readonly object controllersGate = new();
+        private ControllerCharge controllers = ControllerCharge.Unknown;
 
         /// <summary>The runtime's user-present state this frame; null when it could not be read.</summary>
         public void Worn(bool? present) => Volatile.Write(ref worn, present is null ? -1 : present.Value ? 1 : 0);
@@ -38,10 +40,18 @@ namespace RealityLog.Rig
 
         public void Pause(bool isPaused) => Volatile.Write(ref paused, isPaused ? 1 : 0);
 
+        /// <summary>The controllers as <see cref="ControllerBattery"/> last read them; an unknown read sends none.</summary>
+        public void Controllers(ControllerCharge charge)
+        {
+            lock (controllersGate) controllers = charge;
+        }
+
         /// <summary>
         /// The device report: Kotlin's <paramref name="batteryJson"/> with <c>headset_worn</c> (only
-        /// when read), <c>foreground</c> and the <c>inputs</c> totals added; null when Kotlin's report
-        /// is not an object.
+        /// when read), <c>foreground</c>, the <c>inputs</c> totals and, once the controllers have been
+        /// read, <c>controllers</c> added; null when Kotlin's report is not an object. Each controller is
+        /// <c>{"side": "left"|"right", "battery_percent": 0-100 or null, "connected": bool, "charging": null}</c>
+        /// (sx_rig.h): a charge no source read is null, and no source says whether a controller charges.
         /// </summary>
         public string? Report(string batteryJson)
         {
@@ -56,7 +66,25 @@ namespace RealityLog.Rig
                 ["scrolls"] = 0,
                 ["focus_changes"] = Interlocked.Read(ref focusChanges),
             };
+            ControllerCharge read;
+            lock (controllersGate) read = controllers;
+            if (read.Known)
+            {
+                report["controllers"] = new JArray
+                {
+                    Controller("left", read.Left, read.LeftConnected),
+                    Controller("right", read.Right, read.RightConnected),
+                };
+            }
             return report.ToString(Formatting.None);
         }
+
+        private static JObject Controller(string side, int? percent, bool connected) => new()
+        {
+            ["side"] = side,
+            ["battery_percent"] = percent is int value && value >= 0 && value <= 100 ? new JValue(value) : JValue.CreateNull(),
+            ["connected"] = connected,
+            ["charging"] = JValue.CreateNull(),
+        };
     }
 }

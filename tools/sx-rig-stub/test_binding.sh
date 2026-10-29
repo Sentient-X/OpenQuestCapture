@@ -99,7 +99,10 @@ cp "$newtonsoft" "$out/"
 # DevicePresence: worn, focus and input added to the device report.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs"
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/device-presence-harness.exe"
 
 # OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
