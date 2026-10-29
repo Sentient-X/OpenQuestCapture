@@ -26,7 +26,7 @@ namespace RealityLog.Rig
         void StartBlocked(bool blocked);
     }
 
-    /// <summary>The Touch controllers' charge, read on the main thread (OVRInput); null where unknown.</summary>
+    /// <summary>The Touch controllers' charge (<see cref="ControllerBattery"/>); null where unknown.</summary>
     public readonly struct ControllerCharge
     {
         public static readonly ControllerCharge Unknown = default;

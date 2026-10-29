@@ -101,3 +101,9 @@ cp "$newtonsoft" "$out/"
     -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs"
 "$mono" "$out/device-presence-harness.exe"
+
+# OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
+    -out:"$out/os-controller-harness.exe" "$here/OsControllerReportHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/OsControllerReport.cs"
+"$mono" "$out/os-controller-harness.exe"

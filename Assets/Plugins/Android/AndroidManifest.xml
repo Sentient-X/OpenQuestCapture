@@ -4,6 +4,10 @@
   <uses-permission android:name="horizonos.permission.HEADSET_CAMERA"/>
   <!-- Horizon OS grants a USB video-class device (the rig's wrist cameras) only with CAMERA + this. -->
   <uses-permission android:name="horizonos.permission.USB_CAMERA"/>
+  <!-- The controllers' charge: Horizon OS prints it only in OVRRemoteService's dumpsys report,
+       written to a caller holding DUMP. Not grantable at install; provisioning grants it with
+       `adb shell pm grant <package> android.permission.DUMP` (ControllerBattery source (f)). -->
+  <uses-permission android:name="android.permission.DUMP" tools:ignore="ProtectedPermissions" />
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
   <uses-permission android:name="com.oculus.permission.BODY_TRACKING" />
   <uses-permission android:name="android.permission.INTERNET" />
