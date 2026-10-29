@@ -79,8 +79,13 @@ printf '%s\n' "$merged" | q shell "cat > $config"
 echo "pod_config.json:"
 q shell "cat $config"
 
+# DUMP: the controllers' charge is readable only in OVRRemoteService's dumpsys report, which the
+# service writes only for a DUMP holder (every app API answers nothing on Horizon OS 207, and the
+# OS's own READ_CONTROLLER_STATUS is signature-only). DUMP is a development permission: the
+# manifest declares it and only this grant gives it; without it the Pod card reads the
+# controllers' charge as not available.
 for perm in android.permission.CAMERA android.permission.BLUETOOTH_SCAN android.permission.BLUETOOTH_CONNECT \
-  horizonos.permission.HEADSET_CAMERA horizonos.permission.USB_CAMERA; do
+  horizonos.permission.HEADSET_CAMERA horizonos.permission.USB_CAMERA android.permission.DUMP; do
   q shell pm grant "$pkg" "$perm" 2>/dev/null || echo "note: could not grant $perm"
 done
 

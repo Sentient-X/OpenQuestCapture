@@ -168,8 +168,8 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The controllers' charge (<see cref="ControllerBattery"/>: Unity XR's batteryLevel, else
-        /// OVRInput, which answers 0 under OpenXR); a controller no source reads is unknown.
+        /// The controllers' charge (<see cref="ControllerBattery"/>: the OS remote-service report,
+        /// else Unity XR's batteryLevel, else OVRInput); a controller no source reads is unknown.
         /// </summary>
         private void ReadControllers()
         {

@@ -10,21 +10,24 @@ using RealityLog.Common;
 namespace RealityLog.Rig
 {
     /// <summary>
-    /// The Touch controllers' charge. Under OpenXR (Meta XR SDK 81) OVRInput's controller battery
-    /// answers 0, so each read asks Unity XR's <c>CommonUsages.batteryLevel</c> first and falls
-    /// back to OVRInput. Once at startup and each time a controller wakes, every source this
-    /// build can reach is probed and its answer logged once under
-    /// <c>[RealityLog] ControllerBattery:</c>: (e) Unity XR batteryLevel and the device's feature
-    /// usages, (a) Android's InputDevice.getBatteryState (API 31+), (b) OVRInput and OVRPlugin's
-    /// controller state for each mask, and (c) the OpenXR runtime's extensions naming a battery or
-    /// power. (d) No public Meta broadcast or content provider for controller charge is documented;
-    /// none is probed. Main thread only.
+    /// The Touch controllers' charge. On Horizon OS 207 under OpenXR (Meta XR SDK 81) every app
+    /// API answers nothing, so each read takes (f) the OS remote-service report first
+    /// (<see cref="OsRemoteServiceBattery"/>: <c>dumpsys OVRRemoteService</c>'s text, read off the
+    /// main thread once a minute and on a wake, needing the DUMP grant), then Unity XR's
+    /// <c>CommonUsages.batteryLevel</c>, then OVRInput. Once at startup and each time a controller
+    /// wakes, every app-level source this build can reach is also probed and its answer logged once
+    /// under <c>[RealityLog] ControllerBattery:</c>: (e) Unity XR batteryLevel and the device's
+    /// feature usages, (a) Android's InputDevice.getBatteryState (API 31+), (b) OVRInput and
+    /// OVRPlugin's controller state for each mask, and (c) the OpenXR runtime's extensions naming
+    /// a battery or power. (d) No public Meta broadcast or content provider for controller charge
+    /// is documented; none is probed. Main thread only.
     /// </summary>
     public sealed class ControllerBattery
     {
         private const float FirstProbeSeconds = 5f;
 
         private readonly List<UnityEngine.XR.InputDevice> devices = new();
+        private readonly OsRemoteServiceBattery os = new();
         private bool startupProbed;
         private bool leftAwake;
         private bool rightAwake;
@@ -32,6 +35,7 @@ namespace RealityLog.Rig
         /// <summary>Reads both controllers now; probes and logs every source at startup and on a wake.</summary>
         public ControllerCharge Read()
         {
+            var fromOs = os.Read();
             var left = XrController(InputDeviceCharacteristics.Left);
             var right = XrController(InputDeviceCharacteristics.Right);
 #pragma warning disable CS0618 // marked obsolete for OpenXR, where it may answer 0: the fallback only
@@ -41,8 +45,8 @@ namespace RealityLog.Rig
             var leftConnected = OVRInput.IsControllerConnected(OVRInput.Controller.LTouch);
             var rightConnected = OVRInput.IsControllerConnected(OVRInput.Controller.RTouch);
             var charge = new ControllerCharge(
-                ControllerCharge.First(ControllerCharge.FromLevel(left.ok, left.level), ControllerCharge.Reading(leftConnected, ovrLeft)),
-                ControllerCharge.First(ControllerCharge.FromLevel(right.ok, right.level), ControllerCharge.Reading(rightConnected, ovrRight)));
+                ControllerCharge.First(fromOs.Left, ControllerCharge.First(ControllerCharge.FromLevel(left.ok, left.level), ControllerCharge.Reading(leftConnected, ovrLeft))),
+                ControllerCharge.First(fromOs.Right, ControllerCharge.First(ControllerCharge.FromLevel(right.ok, right.level), ControllerCharge.Reading(rightConnected, ovrRight))));
 
             var leftNow = left.found && (left.tracked || leftConnected);
             var rightNow = right.found && (right.tracked || rightConnected);
@@ -53,6 +57,7 @@ namespace RealityLog.Rig
             }
             else if ((leftNow && !leftAwake) || (rightNow && !rightAwake))
             {
+                os.Wake();
                 Probe(leftNow && !leftAwake ? "left controller woke" : "right controller woke");
             }
             leftAwake = leftNow;
