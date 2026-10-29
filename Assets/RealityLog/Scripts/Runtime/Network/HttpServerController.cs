@@ -1900,9 +1900,11 @@ namespace RealityLog.Network
         {
             // file: the OQC session a refused arming left behind (stopped), when there is one.
             var file = session == null ? "" : $",\"file\":\"{EscapeJson(session)}\"";
+            // notice: what the operator is told (sx_operator_notices.json), the rig's own or the code's.
+            var notice = OperatorNotices.ForRefusal(refusal.Code, refusal.DetailJson).ToJson().ToString(Formatting.None);
             var response = HttpResponse.Json(status,
                 $"{{\"error\":\"rig_not_ready\",\"reason\":\"{EscapeJson(refusal.Code)}\"," +
-                $"\"message\":\"{EscapeJson(refusal.Message)}\",\"rig\":{refusal.DetailJson}{file}}}");
+                $"\"message\":\"{EscapeJson(refusal.Message)}\",\"notice\":{notice},\"rig\":{refusal.DetailJson}{file}}}");
             if (status == 503) response.StatusText = "Service Unavailable";
             return response;
         }

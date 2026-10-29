@@ -18,19 +18,52 @@ namespace RealityLog.Rig
         Neutral,
     }
 
-    /// <summary>The one thing in the way, and the action that clears it.</summary>
+    /// <summary>
+    /// The one thing in the way, in the notice table's words: what prevents it (the headline),
+    /// what is still fine, who acts, the next action and its button. Ready and Recording carry no
+    /// notice.
+    /// </summary>
     public readonly struct PodBlocker
     {
         public string Headline { get; }
         public string Action { get; }
         public PodTone Tone { get; }
+        /// <summary>What still works; "" when nothing needs saying (Ready, Recording).</summary>
+        public string StillFine { get; }
+        /// <summary>"Collector", "Floor manager" or "Technician"; "" without a notice.</summary>
+        public string Who { get; }
+        /// <summary>"check", "sign_in" or "": the control that clears it.</summary>
+        public string Button { get; }
+        /// <summary>The notice it words; null for Ready and Recording.</summary>
+        public OperatorNotice? Notice { get; }
 
         public PodBlocker(string headline, string action, PodTone tone)
         {
             Headline = headline;
             Action = action;
             Tone = tone;
+            StillFine = "";
+            Who = "";
+            Button = "";
+            Notice = null;
         }
+
+        private PodBlocker(OperatorNotice notice, OperatorMessage words, PodTone tone)
+        {
+            Headline = words.Headline;
+            Action = words.Action;
+            Tone = tone;
+            StillFine = words.StillFine;
+            Who = words.WhoLabel;
+            Button = words.Button;
+            Notice = new OperatorNotice(words.Code, words.Who, words.Args);
+        }
+
+        /// <summary>A notice in the table's words.</summary>
+        public static PodBlocker Of(OperatorNotice notice, PodTone tone) => new(notice, OperatorNotices.Render(notice), tone);
+
+        public static PodBlocker Of(string code, PodTone tone, params (string name, string value)[] args) =>
+            Of(OperatorNotice.Of(code, args), tone);
     }
 
     /// <summary>
@@ -66,10 +99,13 @@ namespace RealityLog.Rig
         /// <summary>The USB port, "" when not attached or unknown.</summary>
         public string Port { get; }
         public PodDeviceState State { get; }
+        /// <summary>The failure's own words, for the logs and to place its notice; never shown.</summary>
+        public string Failure { get; }
 
         public PodDeviceRow(string name, string value, string pill, PodTone tone, string hint,
-            string role, string side, string port, PodDeviceState state)
+            string role, string side, string port, PodDeviceState state, string failure = "")
         {
+            Failure = failure;
             Name = name;
             Value = value;
             Pill = pill;
@@ -97,8 +133,15 @@ namespace RealityLog.Rig
         public string Detail { get; }
         /// <summary>The action that clears a failure we know; "" when none.</summary>
         public string Fix { get; }
+        /// <summary>The stage's key in the notice table (sealing, seal_refused, awaiting_review, delivered, ...).</summary>
+        public string StageKey { get; }
+        /// <summary>Why it failed or was refused; null otherwise.</summary>
+        public OperatorNotice? Notice { get; }
+        /// <summary>How long it has waited for its seal, while sealing; null otherwise.</summary>
+        public long? SealingSeconds { get; }
 
-        public PodEpisodeRow(string id, int reached, int failedAt, string stage, PodTone tone, string detail, string fix = "")
+        public PodEpisodeRow(string id, int reached, int failedAt, string stage, PodTone tone, string detail, string fix = "",
+            string stageKey = "", OperatorNotice? notice = null, long? sealingSeconds = null)
         {
             Id = id;
             Reached = reached;
@@ -107,6 +150,9 @@ namespace RealityLog.Rig
             Tone = tone;
             Detail = detail;
             Fix = fix;
+            StageKey = stageKey;
+            Notice = notice;
+            SealingSeconds = sealingSeconds;
         }
     }
 
@@ -138,6 +184,39 @@ namespace RealityLog.Rig
         /// card and the phone offer no Start, and the menu button buzzes with the reason.
         /// </summary>
         public bool StartBlocked { get; set; }
+        /// <summary>
+        /// What a start may meet but is not refused for, checked before Start: each controller
+        /// tracked, connected and charged, the display at 90 Hz, room for the episode, and episodes
+        /// held by unfinished attempts. Empty while recording.
+        /// </summary>
+        public List<PodBlocker> Warnings { get; } = new();
+        /// <summary>Local only: nothing recorded is delivered.</summary>
+        public bool LocalOnly { get; set; }
+        /// <summary>The blocker is the newest episode's failure, shown until the next start.</summary>
+        public bool LastFailed { get; set; }
+    }
+
+    /// <summary>The rig's storage figures (<see cref="PodScreenBoard.Storage"/>), in bytes.</summary>
+    public readonly struct StorageFigures
+    {
+        public long Free { get; }
+        /// <summary>required_bytes: what a start needs, all of it (require_storage).</summary>
+        public long Needed { get; }
+        /// <summary>The sealed copies the episodes still waiting for their seal will write.</summary>
+        public long Backlog { get; }
+        public long BacklogEpisodes { get; }
+        public long Uploads { get; }
+        /// <summary>What the next episode itself needs: required_bytes less the seals' backlog.</summary>
+        public long NextEpisode => Math.Max(0, Needed - Backlog);
+
+        public StorageFigures(long free, long needed, long backlog, long backlogEpisodes, long uploads)
+        {
+            Free = free;
+            Needed = needed;
+            Backlog = backlog;
+            BacklogEpisodes = backlogEpisodes;
+            Uploads = uploads;
+        }
     }
 
     /// <summary>
@@ -180,8 +259,8 @@ namespace RealityLog.Rig
     /// </summary>
     public static class PodScreenBoard
     {
-        /// <summary>The pipeline's steps, as the episode rows draw them.</summary>
-        public static readonly string[] Steps = { "Recorded", "Sealed", "Reported", "Reviewed", "Finalized", "In Catalog" };
+        /// <summary>The pipeline's steps, as the episode rows draw them (the notice table's stage words).</summary>
+        public static readonly string[] Steps = { "Recorded", "Sealed", "Reported", "Reviewed", "Delivered", "In Catalog" };
 
         public static PodScreen Build(string? rigStatusJson, StartRefusal? lastStart, bool lastStartSucceeded,
             StreamLiveness liveness, DateTime now)
@@ -201,11 +280,12 @@ namespace RealityLog.Rig
         public static PodScreen Build(JObject? status, StartRefusal? lastStart, bool lastStartSucceeded,
             StreamLiveness liveness, DateTime now)
         {
-            var screen = new PodScreen { Recording = Recording(status) };
+            var screen = new PodScreen { Recording = Recording(status), LocalOnly = Bool(status, "localOnly") ?? true };
             var refusal = lastStart;
             if (refusal == null && !lastStartSucceeded && status?["lastRefusal"] is JObject rigRefusal)
             {
-                refusal = new StartRefusal(Str(rigRefusal["code"]), Str(rigRefusal["message"]), null);
+                refusal = new StartRefusal(Str(rigRefusal["code"]), Str(rigRefusal["message"]), null,
+                    OperatorNotices.ForRefusal(Str(rigRefusal["code"]), rigRefusal["detail"]?.ToString(Formatting.None) ?? ""));
             }
             var failures = FailureTexts(status, refusal);
             Devices(screen, status, failures, liveness, now);
@@ -213,19 +293,22 @@ namespace RealityLog.Rig
             Episodes(screen, status);
             screen.Blocker = Blocker(status, refusal, screen);
             screen.StartBlocked = StartBlocker(status) != null;
+            if (!screen.Recording) Warnings(screen, status);
             return screen;
         }
 
         // ---- Start ----
 
         /// <summary>
-        /// What makes a start now certainly refused, as a blocker with its plain-words reason and
-        /// action; null when a start may go ahead (or while recording, when the button stops). The
-        /// refusals named here are the ones the start itself would meet: a rig that cannot run,
-        /// no collector, a device without USB access, and the Factory's own refusals as quest-rig
-        /// reads them from its capture workspace (factory.start_refusal: no task, a readiness check
-        /// the start's device check cannot fix, no episodes left). Anything less certain (a device
-        /// the start's check may find again, an unheard Factory) leaves Start offered.
+        /// What makes a start now certainly refused, as a blocker in the notice table's words; null
+        /// when a start may go ahead (or while recording, when the button stops). The refusals named
+        /// here are the ones the start itself would meet: a rig that cannot run, no collector, a
+        /// device without USB access, too little room for the episode (the rig's own estimate), and
+        /// the Factory's own refusals as libsx_rig reads them from its capture workspace
+        /// (factory.start_refusal: no task, a readiness check the start's device check cannot fix,
+        /// no episodes left, with how many unfinished attempts hold). Anything less certain (a
+        /// device the start's check may find again, an unheard Factory, a controller asleep) leaves
+        /// Start offered and shows as a warning.
         /// </summary>
         public static PodBlocker? StartBlocker(string? rigStatusJson)
         {
@@ -242,100 +325,193 @@ namespace RealityLog.Rig
         public static PodBlocker? StartBlocker(JObject? status)
         {
             if (Bool(status, "expected") != true || Recording(status)) return null;
-            if (Str(status?["library"]) == "missing")
-            {
-                return new PodBlocker("This build has no rig library", "Install a build that carries libsx_rig", PodTone.Error);
-            }
-            if (Bool(status, "open") != true && status?["openError"] is JObject openError)
-            {
-                return new PodBlocker("The rig did not open: " + Clip(Str(openError["detail"]), 70), "Fix what it names, then restart the app", PodTone.Error);
-            }
+            if (Str(status?["library"]) == "missing") return PodBlocker.Of("library_missing", PodTone.Error);
+            if (Bool(status, "open") != true && status?["openError"] is JObject) return PodBlocker.Of("rig_open_failed", PodTone.Error);
             var localOnly = Bool(status, "localOnly") ?? true;
-            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false)
-            {
-                var (code, _) = PodStatusBoard.PendingSignIn(status, false);
-                return code.Length > 0
-                    ? new PodBlocker("Collector sign-in pending", "Approve code " + code + " on your phone", PodTone.Warning)
-                    : new PodBlocker("Sign in to record", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
-            }
+            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false) return SignIn(status);
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
-                return new PodBlocker("A rig device waits for USB access", "Choose OpenQuestCapture when Android asks (replug it if no prompt shows)", PodTone.Warning);
+                return PodBlocker.Of("usb_permission", PodTone.Warning);
             }
+            // Exactly what the rig's require_storage refuses on: free below required_bytes.
+            if (Storage(status) is { } space && space.Free < space.Needed) return PodBlocker.Of(StorageNotice(space, low: true), PodTone.Error);
             if (localOnly || Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
-            switch (Str(refused["reason"]))
+            if (OperatorNotice.FromJson(refused["notice"]) is { } notice) return PodBlocker.Of(notice, PodTone.Error);
+            // A runtime older than its notices: the reason alone.
+            return Str(refused["reason"]) switch
             {
-                case "no_task":
-                    return NoTask();
-                case "no_episodes":
-                    return NoEpisodes();
-                case "readiness":
-                    var checks = refused["checks"] is JArray named
-                        ? string.Join(", ", named.Select(c => Str(c)).Where(c => c.Length > 0))
-                        : "";
-                    return Readiness(checks);
-                default:
-                    return null;
+                "no_task" => PodBlocker.Of("no_task", PodTone.Error),
+                "no_episodes" => PodBlocker.Of("no_episodes", PodTone.Error),
+                "readiness" => PodBlocker.Of("readiness_other", PodTone.Error),
+                _ => null,
+            };
+        }
+
+        private static PodBlocker SignIn(JObject? status)
+        {
+            var (code, _) = PodStatusBoard.PendingSignIn(status, false);
+            return code.Length > 0
+                ? PodBlocker.Of("sign_in_pending", PodTone.Warning, ("code", code))
+                : PodBlocker.Of("signed_out", PodTone.Warning);
+        }
+
+        // ---- Before a start ----
+
+        /// <summary>A controller below this charge warns before a start.</summary>
+        public const int ControllerLowPercent = 15;
+        /// <summary>The display rate the head cameras pair at (CaptureDisplayRate).</summary>
+        public const double CaptureHz = 90;
+
+        /// <summary>
+        /// The warn-level checks before Start, each a notice: the controllers (the app's
+        /// "headset.controllers": tracked, connected, charge), the display rate
+        /// ("headset.displayHz"), storage within twice the rig's own estimate of one episode
+        /// (native "storage"), and the episodes unfinished attempts hold (factory.warnings).
+        /// </summary>
+        private static void Warnings(PodScreen screen, JObject? status)
+        {
+            if (Bool(status, "expected") != true && Bool(status, "enrolled") != true) return;
+            if (status?["headset"] is JObject headset)
+            {
+                foreach (var controller in (headset["controllers"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var side = Str(controller["side"]);
+                    if (side != "left" && side != "right") continue;
+                    if (Bool(controller, "connected") == false)
+                    {
+                        screen.Warnings.Add(PodBlocker.Of("controller_disconnected", PodTone.Warning, ("side", side)));
+                    }
+                    else if (Bool(controller, "tracked") == false)
+                    {
+                        screen.Warnings.Add(PodBlocker.Of("controller_not_tracked", PodTone.Warning, ("side", side)));
+                    }
+                    else if (controller["percent"] is JValue { Type: JTokenType.Integer } pct && (long)pct <= ControllerLowPercent)
+                    {
+                        screen.Warnings.Add(PodBlocker.Of("controller_battery_low", PodTone.Warning, ("side", side),
+                            ("percent", ((long)pct).ToString(CultureInfo.InvariantCulture))));
+                    }
+                }
+                if (headset["displayHz"] is JValue { Type: JTokenType.Float or JTokenType.Integer } hz && (double)hz > 0
+                    && Math.Abs((double)hz - CaptureHz) > 1)
+                {
+                    screen.Warnings.Add(PodBlocker.Of("display_rate", PodTone.Warning, ("hz", ((double)hz).ToString("F0", CultureInfo.InvariantCulture))));
+                }
+            }
+            // Room for this episode, but not for the one after it.
+            if (Storage(status) is { } space && space.Free >= space.Needed && space.Free < space.Needed + space.NextEpisode)
+            {
+                screen.Warnings.Add(PodBlocker.Of(StorageNotice(space, low: false), PodTone.Warning));
+            }
+            var localOnly = Bool(status, "localOnly") ?? true;
+            if (!localOnly && Lifted(status, "factory") is JObject factory && factory["warnings"] is JArray held)
+            {
+                foreach (var warning in held)
+                {
+                    if (OperatorNotice.FromJson(warning) is { } notice) screen.Warnings.Add(PodBlocker.Of(notice, PodTone.Warning));
+                }
             }
         }
 
-        /// <summary>The Factory refuses a start while its readiness checks fail ("required readiness checks are not passing").</summary>
-        public static PodBlocker Readiness(string checks) =>
-            new(checks.Length > 0 ? "Readiness checks are failing: " + Clip(checks, 70) : "Readiness checks are failing",
-                "Run Check, then fix what it names", PodTone.Error);
+        /// <summary>
+        /// The rig's storage numbers (native "storage", the figures its require_storage refuses
+        /// on): free_bytes; required_bytes, all a start needs; backlog_bytes, the sealed copies the
+        /// episodes still waiting for their seal will write (backlog_episodes of them), part of
+        /// required_bytes; and how many attempts wait to upload (they free space once delivered,
+        /// but are not counted on). Null when the rig has not said.
+        /// </summary>
+        public static StorageFigures? Storage(JObject? status)
+        {
+            if (Native(status)?["storage"] is not JObject storage) return null;
+            if (storage["free_bytes"] is not JValue { Type: JTokenType.Integer } free || storage["required_bytes"] is not JValue { Type: JTokenType.Integer } needed) return null;
+            var held = storage["held"] as JObject;
+            var uploads = Long(held?["unreported"]?["attempts"]) + Long(held?["awaiting_factory"]?["attempts"]);
+            return new StorageFigures((long)free, (long)needed, Long(storage["backlog_bytes"]), Long(storage["backlog_episodes"]), uploads);
+        }
 
-        /// <summary>The Factory refuses a start once no assigned episode remains ("no assigned episodes remain available").</summary>
-        public static PodBlocker NoEpisodes() =>
-            new("No episodes left in this assignment", "Add episodes or assign a task in the Console", PodTone.Error);
+        /// <summary>
+        /// The storage notice, as libsx_rig's notice.rs::of_storage words it: the needed figure is
+        /// exactly required_bytes; with episodes still to seal it is split into the next episode
+        /// and their sealed copies, so the numbers add up.
+        /// </summary>
+        public static OperatorNotice StorageNotice(StorageFigures space, bool low)
+        {
+            var split = space.Backlog > 0 && space.BacklogEpisodes > 0;
+            var code = (low ? "storage_low" : "storage_tight") + (split ? "_backlog" : "");
+            var args = new List<(string, string)>
+            {
+                ("free_gb", Gigabytes(space.Free)), ("needed_gb", Gigabytes(space.Needed)),
+                ("uploads", space.Uploads.ToString(CultureInfo.InvariantCulture)),
+            };
+            if (split)
+            {
+                args.Add(("next_gb", Gigabytes(space.NextEpisode)));
+                args.Add(("backlog_gb", Gigabytes(space.Backlog)));
+                args.Add(("backlog", space.BacklogEpisodes.ToString(CultureInfo.InvariantCulture)));
+            }
+            return OperatorNotice.Of(code, args.ToArray());
+        }
+
+        /// <summary>
+        /// The header chip, following the banner: "Last failed" (red) while the newest episode's
+        /// failure shows, until the next start; "Warnings" (amber) when the card is ready but
+        /// pre-Start warnings stand; "Not ready" when anything else blocks; else the pod's own
+        /// chip (<paramref name="readiness"/>, <paramref name="text"/>).
+        /// </summary>
+        public static (PodTone tone, string text) Chip(PodScreen screen, PodReadiness readiness, string text)
+        {
+            if (screen.LastFailed) return (PodTone.Error, OperatorNotices.Phrase("pill_last_failed"));
+            var tone = readiness switch
+            {
+                PodReadiness.Ready => PodTone.Good,
+                PodReadiness.NotReady => PodTone.Warning,
+                PodReadiness.Refused => PodTone.Error,
+                _ => PodTone.Neutral,
+            };
+            if (screen.Blocker.Tone != PodTone.Good)
+            {
+                return tone == PodTone.Good || readiness == PodReadiness.LocalOnly
+                    ? (screen.Blocker.Tone == PodTone.Error ? PodTone.Error : PodTone.Warning, "Not ready")
+                    : (tone, text);
+            }
+            if (!screen.Recording && screen.Warnings.Count > 0) return (PodTone.Warning, OperatorNotices.Phrase("pill_warnings"));
+            return (tone, text);
+        }
+
+        /// <summary>Bytes as gigabytes with one decimal ("3.2"), as the rig words them.</summary>
+        public static string Gigabytes(long bytes) => (bytes / 1e9).ToString("F1", CultureInfo.InvariantCulture);
 
         // ---- The blocker ----
 
-        /// <summary>The first thing in the way, in the order a person clears them, else ready.</summary>
+        /// <summary>
+        /// The first thing in the way, in the order a person clears them; the newest attempt's
+        /// failure until the next start; else ready. Every headline is the notice table's, never a
+        /// raw string (a cause no code names reads "Recording failed", its code in the action).
+        /// </summary>
         public static PodBlocker Blocker(JObject? status, StartRefusal? refusal, PodScreen screen)
         {
             var recording = Recording(status);
-            if (Bool(status, "expected") != true && Bool(status, "enrolled") != true)
-            {
-                return new PodBlocker("No rig and not enrolled", "Scan the Console's QR code below to set up this headset", PodTone.Neutral);
-            }
-            if (Str(status?["library"]) == "missing")
-            {
-                return new PodBlocker("This build has no rig library", "Install a build that carries libsx_rig", PodTone.Error);
-            }
-            if (Bool(status, "open") != true && status?["openError"] is JObject openError)
-            {
-                return new PodBlocker("The rig did not open: " + Clip(Str(openError["detail"]), 70), "Fix what it names, then restart the app", PodTone.Error);
-            }
+            if (Bool(status, "expected") != true && Bool(status, "enrolled") != true) return PodBlocker.Of("not_enrolled", PodTone.Neutral);
+            if (Str(status?["library"]) == "missing") return PodBlocker.Of("library_missing", PodTone.Error);
+            if (Bool(status, "open") != true && status?["openError"] is JObject) return PodBlocker.Of("rig_open_failed", PodTone.Error);
             var localOnly = Bool(status, "localOnly") ?? true;
             var enrolled = Bool(status, "enrolled") == true;
-            if (!localOnly && !enrolled)
-            {
-                return new PodBlocker("Not enrolled", "Scan the Console's QR code below, or set up manually", PodTone.Warning);
-            }
+            if (!localOnly && !enrolled) return PodBlocker.Of("not_enrolled", PodTone.Warning);
             var factory = Lifted(status, "factory") as JObject;
             if (!localOnly && factory?["link"] is JObject link && Bool(link, "ok") != true && Str(link["error"]).Length > 0)
             {
-                return new PodBlocker("The Factory does not hear this headset", "Check Wi-Fi and the tailnet: " + Clip(Str(link["error"]), 60), PodTone.Error);
+                // Recording goes on on the headset; idle, a start may not open a collection.
+                return recording ? PodBlocker.Of("factory_unheard_local", PodTone.Warning) : PodBlocker.Of("factory_unheard", PodTone.Error);
             }
-            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false)
-            {
-                var (code, _) = PodStatusBoard.PendingSignIn(status, false);
-                return code.Length > 0
-                    ? new PodBlocker("Collector sign-in pending", "Approve code " + code + " on your phone", PodTone.Warning)
-                    : new PodBlocker("Sign in to record", "Tap Sign in below and approve the code on your phone", PodTone.Warning);
-            }
+            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false) return SignIn(status);
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
-                return new PodBlocker("A rig device waits for USB access", "Choose OpenQuestCapture when Android asks (replug it if no prompt shows)", PodTone.Warning);
+                return PodBlocker.Of("usb_permission", PodTone.Warning);
             }
             foreach (var device in screen.Devices)
             {
-                if (device.Tone == PodTone.Error)
-                {
-                    return new PodBlocker(device.Name + ": " + device.Pill.ToLowerInvariant(),
-                        device.Hint.Length > 0 ? device.Hint : "Replug it, then check it with a start", PodTone.Error);
-                }
+                if (device.Tone == PodTone.Error) return PodBlocker.Of(DeviceNotice(device), PodTone.Error);
             }
+            if (StartBlocker(status) is { } certain) return certain;
             if (!localOnly && factory != null)
             {
                 if (factory["blocking"] is JArray blocking)
@@ -344,117 +520,90 @@ namespace RealityLog.Rig
                     {
                         var id = Str(check["id"]);
                         if (id == "operator") continue; // the collector, above
-                        // A failing hardware check alone never refuses a start (its own check
-                        // runs first); while the Factory would refuse for something else, that shows.
-                        if (Str(check["category"]) == "hardware" && factory["start_refusal"] is JObject) continue;
-                        if (id == "recorder_build")
-                        {
-                            return new PodBlocker("This build's trial is not admitted",
-                                "Admit the HIL trial for build " + ShortBuild(Str(status?["apkBuildId"])) + " in the Console", PodTone.Error);
-                        }
-                        if (id == "task_contract" && factory["task"] is not JObject)
-                        {
-                            return NoTask();
-                        }
-                        var remediation = Str(check["remediation"]);
-                        return new PodBlocker(Clip(Str(check["summary"]), 80),
-                            remediation.Length > 0 ? Clip(remediation, 90) : Clip(Str(check["detail"]), 90), PodTone.Error);
+                        // A failing hardware check alone never refuses a start (its own check runs first).
+                        if (Str(check["category"]) == "hardware") continue;
+                        if (id == "recorder_build") return PodBlocker.Of("build_not_accepted", PodTone.Error);
+                        if (id == "task_contract" && factory["task"] is not JObject) return PodBlocker.Of("no_task", PodTone.Error);
                     }
                 }
-                if (factory.ContainsKey("task") && factory["task"] is not JObject) return NoTask();
-                if (factory["start_refusal"] is JObject refused && Str(refused["reason"]) == "no_episodes") return NoEpisodes();
+                if (factory.ContainsKey("task") && factory["task"] is not JObject) return PodBlocker.Of("no_task", PodTone.Error);
             }
-            if (refusal != null)
+            if (refusal != null) return PodBlocker.Of(refusal.Notice ?? PodStatusBoard.NoticeOf(null, refusal.Code, refusal.Message), PodTone.Error);
+            if (recording) return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
+            // The newest attempt failed or its seal refused it: shown until the next start.
+            if (LastFailure(status) is { } failed)
             {
-                var text = PodStatusBoard.Explain(refusal.Code, refusal.Message);
-                var said = refusal.Message.ToLowerInvariant();
-                if (said.Contains("no assigned task")) return NoTask();
-                if (said.Contains("no assigned episodes remain")) return NoEpisodes();
-                if (said.Contains("readiness checks are not passing")) return Readiness(FailingChecks(factory));
-                var hint = Hint(refusal.Message);
-                return new PodBlocker("Last start refused: " + Clip(text, 70),
-                    hint.Length > 0 ? hint : "Fix it, then press the menu button to start again", PodTone.Error);
-            }
-            if (recording)
-            {
-                return new PodBlocker("Recording", "Press the menu button to stop", PodTone.Good);
-            }
-            if (LastFailedAttempt(status) is { Length: > 0 } failed)
-            {
-                var hint = Hint(failed);
-                return new PodBlocker("Last episode failed: " + Clip(failed, 70),
-                    hint.Length > 0 ? hint : "Check the devices, then press the menu button to record again", PodTone.Warning);
+                screen.LastFailed = true;
+                return PodBlocker.Of(failed, PodTone.Error);
             }
             if (Bool(status, "expected") == true && status?["lastCheck"] is JObject lastCheck
                 && RigStatusJson.Check(lastCheck.ToString(Formatting.None)) is { ready: false } failedCheck)
             {
-                var problems = failedCheck.problems;
-                var hint = Hint(problems);
-                return new PodBlocker("The rig's last check failed: " + Clip(problems, 60),
-                    hint.Length > 0 ? hint : "Fix it, then press the menu button to check again", PodTone.Error);
+                return PodBlocker.Of(OperatorNotice.FromJson(lastCheck["notice"]) ?? CheckNotice(failedCheck.problems), PodTone.Error);
             }
-            if (!localOnly && Unfinished(factory) is { } unfinished)
-            {
-                return unfinished;
-            }
+            if (!localOnly && Unfinished(factory) is { } unfinished) return unfinished;
             return localOnly
-                ? new PodBlocker("Ready (Local only)", "Press the menu button to record; nothing goes to the Factory", PodTone.Good)
-                : new PodBlocker("Ready to record", "Press the menu button to start", PodTone.Good);
+                ? new PodBlocker(OperatorNotices.Phrase("ready_local"), OperatorNotices.Phrase("ready_local_action"), PodTone.Good)
+                : new PodBlocker(OperatorNotices.Phrase("ready"), OperatorNotices.Phrase("ready_action"), PodTone.Good);
         }
 
         /// <summary>
-        /// The first reason a collection cannot finish (factory.unfinished: a verdict or answer the
-        /// Factory refused, a prompt the headset cannot answer, an attempt it cannot tell), as a
-        /// warning: a start may still go ahead, but this collection waits until it clears. Null
+        /// A collection that cannot finish (factory.unfinished: a verdict or answer the Factory
+        /// refused, a prompt the headset cannot answer, an attempt it cannot tell), as a warning: a
+        /// start may still go ahead. The reasons themselves stay in the status for the logs. Null
         /// when nothing holds one back.
         /// </summary>
         public static PodBlocker? Unfinished(JObject? factory)
         {
             if (factory?["unfinished"] is not JArray reasons) return null;
-            var held = reasons.OfType<JObject>().Where(r => Str(r["reason"]).Length > 0).ToList();
-            if (held.Count == 0) return null;
-            var first = held[0];
-            var more = held.Count > 1 ? " (+" + (held.Count - 1) + " more)" : "";
-            var reason = Str(first["reason"]);
-            return new PodBlocker("A collection cannot finish: " + Clip(reason, 70) + more,
-                reason.Contains("refused") ? "It is sent again once the collection changes; check it in the Console"
-                    : "Check it in the Console", PodTone.Warning);
+            return reasons.OfType<JObject>().Any(r => Str(r["reason"]).Length > 0) ? PodBlocker.Of("collection_unfinished", PodTone.Warning) : (PodBlocker?)null;
         }
 
-        /// <summary>The Factory's failing blocking checks by their summaries, "" when it named none.</summary>
-        private static string FailingChecks(JObject? factory) =>
-            factory?["blocking"] is JArray blocking
-                ? string.Join(", ", blocking.OfType<JObject>().Where(c => Str(c["id"]) != "operator")
-                    .Select(c => Str(c["summary"]).Length > 0 ? Str(c["summary"]) : Str(c["id"])).Where(c => c.Length > 0))
-                : "";
+        /// <summary>A failing device row as its notice: missing, silent, or what its failure says.</summary>
+        private static OperatorNotice DeviceNotice(PodDeviceRow device)
+        {
+            var part = device.Role.Contains("camera") ? "wrist_camera" : "gripper_sensor";
+            var side = device.Side;
+            return device.State switch
+            {
+                PodDeviceState.Missing => OperatorNotice.Of("device_missing", ("side", side), ("part", part)),
+                PodDeviceState.Silent => OperatorNotice.Of("device_silent", ("side", side), ("part", part)),
+                _ => FailureNotice(device.Failure, side, part) ?? OperatorNotice.Of("rig_check_failed"),
+            };
+        }
 
-        private static PodBlocker NoTask() =>
-            new("The Factory shows this pod no task", "Assign a task to this pod in the Console", PodTone.Error);
+        /// <summary>A device check's problems as a notice (a runtime older than its notices).</summary>
+        private static OperatorNotice CheckNotice(string problems)
+        {
+            var side = problems.ToLowerInvariant().Contains("right") && !problems.ToLowerInvariant().Contains("left") ? "right" : problems.ToLowerInvariant().Contains("left") ? "left" : "";
+            var part = problems.ToLowerInvariant().Contains("camera") ? "wrist_camera" : "gripper_sensor";
+            return FailureNotice(problems, side, part) ?? OperatorNotice.Of("rig_check_failed");
+        }
+
+        /// <summary>The notice a device failure's words name, for a device row; null when none is known.</summary>
+        public static OperatorNotice? FailureNotice(string detail, string side, string part)
+        {
+            var lower = detail.ToLowerInvariant();
+            if (lower.Contains("sends nothing") || lower.Contains("0 bytes received") || lower.Contains("another app"))
+                return OperatorNotice.Of("usb_other_app", ("side", side), ("part", part));
+            if (lower.Contains("os error 12") || lower.Contains("out of memory")) return OperatorNotice.Of("usb_bandwidth");
+            if (lower.Contains("was detached") || lower.Contains("device_disconnected") || lower.Contains("disconnected"))
+                return OperatorNotice.Of("device_disconnected", ("side", side), ("part", part));
+            if (lower.Contains("no device fills this role") || lower.Contains("no device on"))
+                return OperatorNotice.Of("device_missing", ("side", side), ("part", part));
+            if (lower.Contains("permission")) return OperatorNotice.Of("usb_permission");
+            return null;
+        }
+
+        /// <summary>The action that clears a failure we know, in the table's words; "" when none is known.</summary>
+        public static string Hint(string detail, string side = "", string part = "") =>
+            FailureNotice(detail, side, part) is { } notice ? OperatorNotices.Render(notice).Action : "";
 
         /// <summary>sha256:abcdef... -> the first 12 hex digits; "this build" when unknown.</summary>
         public static string ShortBuild(string buildId)
         {
             var hex = buildId.StartsWith("sha256:", StringComparison.Ordinal) ? buildId.Substring(7) : buildId;
             return hex.Length == 0 ? "this build" : hex.Length > 12 ? hex.Substring(0, 12) : hex;
-        }
-
-        /// <summary>The action that clears a failure we know, from its words; "" when none is known.</summary>
-        public static string Hint(string detail)
-        {
-            var lower = detail.ToLowerInvariant();
-            if (lower.Contains("sends nothing") || lower.Contains("0 bytes received") || lower.Contains("another app"))
-                return "Another app holds it: replug it and choose OpenQuestCapture when Android asks";
-            if (lower.Contains("os error 12") || lower.Contains("out of memory"))
-                return "Not enough USB bandwidth: put both cameras on one hub";
-            if (lower.Contains("was detached") || lower.Contains("device_disconnected") || lower.Contains("disconnected"))
-                return "It dropped off USB: reseat its cable at the hub";
-            if (lower.Contains("no device fills this role") || lower.Contains("no device on"))
-                return "Plug it into the hub";
-            if (lower.Contains("permission"))
-                return "Choose OpenQuestCapture when Android asks for USB access";
-            if (lower.Contains("storage") || lower.Contains("free space"))
-                return "Free space on the headset: let sealed episodes upload, or delete old recordings";
-            return "";
         }
 
         // ---- Devices ----
@@ -544,16 +693,16 @@ namespace RealityLog.Rig
                     var earlier = lastFailed.Length > 0 ? FailureFor(new[] { lastFailed }, side, part) : "";
                     if (row.Tone is PodTone.Good or PodTone.Neutral && !recording && earlier.Length > 0)
                     {
-                        var hint = Hint(earlier);
-                        row = new PodDeviceRow(name, row.Value, "Failed last episode", PodTone.Warning, hint.Length > 0 ? hint : "Replug it before the next start",
-                            role, side, row.Port, PodDeviceState.Failed);
+                        var hint = Hint(earlier, side, NoticePart(part));
+                        row = new PodDeviceRow(name, row.Value, "Failed last episode", PodTone.Warning, hint.Length > 0 ? hint : Action("device_silent"),
+                            role, side, row.Port, PodDeviceState.Failed, earlier);
                     }
                     screen.Devices.Add(row);
                 }
             }
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
-                screen.DevicesNote = waiting.Count + " device(s) wait for USB access: choose OpenQuestCapture when Android asks";
+                screen.DevicesNote = OperatorNotices.Render(OperatorNotice.Of("usb_permission")).Action;
             }
         }
 
@@ -565,12 +714,14 @@ namespace RealityLog.Rig
             var where = port.Length > 0 ? "port " + port : attached ? "attached" : "";
             var check = Str(entry?["check"]);
             var checkDetail = Str(entry?["check_detail"]);
-            PodDeviceRow Row(string value, string pill, PodTone tone, string hint, PodDeviceState state) =>
-                new(name, value, pill, tone, hint, role, side, port, state);
+            var noticePart = NoticePart(part);
+            // The fix in the table's words: what the failure names, else the state's own.
+            string Fix(string words, string otherwise) => Hint(words, side, noticePart) is { Length: > 0 } hint ? hint : Action(otherwise);
+            PodDeviceRow Row(string value, string pill, PodTone tone, string hint, PodDeviceState state, string said = "") =>
+                new(name, value, pill, tone, hint, role, side, port, state, said);
             if (!attached)
             {
-                return Row("not on USB", "Missing", PodTone.Error, failure.Length > 0 && Hint(failure).Length > 0 ? Hint(failure) : "Plug it into the hub",
-                    PodDeviceState.Missing);
+                return Row("not on USB", "Missing", PodTone.Error, Fix(failure, "device_missing"), PodDeviceState.Missing, failure);
             }
             if (recording && entry?["stream"] is JObject stream)
             {
@@ -582,22 +733,42 @@ namespace RealityLog.Rig
                 return liveness.Starting(key, now)
                     ? Row(where + " · arming", "Starting", PodTone.Warning, "", PodDeviceState.Starting)
                     : Row(where + " · nothing for " + StreamLiveness.SilentAfterSeconds.ToString("F0", CultureInfo.InvariantCulture) + " s",
-                        "Silent", PodTone.Error, failure.Length > 0 && Hint(failure).Length > 0 ? Hint(failure) : "Replug it; if it stays silent, choose OpenQuestCapture when Android asks",
-                        PodDeviceState.Silent);
+                        "Silent", PodTone.Error, Fix(failure, "device_silent"), PodDeviceState.Silent, failure);
             }
             if (failure.Length > 0)
             {
-                var hint = Hint(failure);
-                return Row(where + " · " + Clip(failure.Substring(Math.Min(failure.Length, failure.IndexOf(':') + 1)).Trim(), 50),
-                    "Failed", PodTone.Error, hint.Length > 0 ? hint : "Replug it, then start again", PodDeviceState.Failed);
+                return Row(where, "Failed", PodTone.Error, Fix(failure, "device_silent"), PodDeviceState.Failed, failure);
             }
             return check switch
             {
                 "ready" => Row(where, "Ready", PodTone.Good, "", PodDeviceState.Ready),
-                "error" or "unavailable" => Row(where + " · " + Clip(checkDetail, 50), "Check failed", PodTone.Warning, Hint(checkDetail), PodDeviceState.Failed),
+                "error" or "unavailable" => Row(where, "Check failed", PodTone.Warning, Fix(checkDetail, "rig_check_failed"), PodDeviceState.Failed, checkDetail),
                 // Attached, not checked yet: the next start checks it.
                 _ => Row(where, "Attached", PodTone.Neutral, "", PodDeviceState.Starting),
             };
+        }
+
+        /// <summary>A role's part as the notice table names it.</summary>
+        private static string NoticePart(string part) => part == "camera" ? "wrist_camera" : "gripper_sensor";
+
+        /// <summary>A code's next action in the table's words.</summary>
+        private static string Action(string code) => OperatorNotices.Render(OperatorNotice.Of(code)).Action;
+
+        /// <summary>
+        /// The newest attempt's notice when it failed or its seal refused it (libsx_rig's
+        /// attempts[0].notice; the unknown code for one that carries none): what the blocker shows
+        /// until the next start makes a newer attempt. Null otherwise.
+        /// </summary>
+        public static OperatorNotice? LastFailure(JObject? status)
+        {
+            if (Attempts(status).FirstOrDefault() is not JObject newest) return null;
+            var stage = Str(newest["stage"]);
+            if (stage is "recording" or "unsettled") return null;
+            var outcome = Str(newest["outcome"]);
+            var failed = stage is "failed" or "refused" || (outcome.Length > 0 && outcome != "complete") || Str(newest["seal"]) == "refused";
+            if (!failed) return null;
+            return OperatorNotice.FromJson(newest["notice"])
+                ?? (Str(newest["seal"]) == "refused" || stage == "refused" ? OperatorNotice.Of("seal_quality") : OperatorNotice.Of("unknown", ("code", outcome.Length > 0 ? outcome : "failed")));
         }
 
         /// <summary>The newest attempt's failure sentence when the newest attempt failed while recording; else "".</summary>
@@ -636,7 +807,8 @@ namespace RealityLog.Rig
                 }
                 else if (Str(link["error"]).Length > 0)
                 {
-                    screen.Link = "not heard: " + Clip(Str(link["error"]), 60);
+                    // The error itself stays in the status for the logs.
+                    screen.Link = ago >= 0 ? "not heard for " + ago.ToString(CultureInfo.InvariantCulture) + " s" : "not heard yet";
                     screen.LinkTone = PodTone.Error;
                 }
                 else
@@ -686,16 +858,13 @@ namespace RealityLog.Rig
             if (task == null) return "a task assigned to this pod in the Console";
             if (factory["blocking"] is JArray blocking && blocking.OfType<JObject>().FirstOrDefault() is JObject check)
             {
-                if (Str(check["id"]) == "recorder_build") return "the HIL trial admitted for build " + ShortBuild(Str(status?["apkBuildId"]));
+                if (Str(check["id"]) == "recorder_build") return "this app version approved in the Console (build " + ShortBuild(Str(status?["apkBuildId"])) + ")";
                 if (Str(check["id"]) == "operator") return "a collector signed in";
                 var remediation = Str(check["remediation"]);
                 return Clip(remediation.Length > 0 ? remediation : Str(check["summary"]), 70);
             }
-            if (Str(progress?["registration_error"]).Length > 0) return "Catalog registration (failing: " + Clip(Str(progress?["registration_error"]), 40) + ")";
-            if (factory["unfinished"] is JArray { Count: > 0 } held && held.OfType<JObject>().FirstOrDefault() is JObject reason)
-            {
-                return "a collection to finish (" + Clip(Str(reason["reason"]), 50) + ")";
-            }
+            if (Str(progress?["registration_error"]).Length > 0) return "Catalog registration, which is failing: a technician checks it in the Console";
+            if (factory["unfinished"] is JArray { Count: > 0 }) return "a collection to finish: the floor manager checks it in the Console";
             if (Long(progress?["awaiting_review"]) > 0) return "a review verdict on the recorded episode";
             if (Long(progress?["sealing"]) > 0) return "the seal and its upload";
             if (Long(progress?["registering"]) > 0) return "the Catalog to register the collection";
@@ -711,60 +880,64 @@ namespace RealityLog.Rig
 
         private static void Episodes(PodScreen screen, JObject? status)
         {
-            foreach (var attempt in Attempts(status))
-            {
-                var row = EpisodeRow(attempt);
-                var hint = row.Tone == PodTone.Error ? Hint(row.Detail) : "";
-                screen.Episodes.Add(hint.Length > 0
-                    ? new PodEpisodeRow(row.Id, row.Reached, row.FailedAt, row.Stage, row.Tone, Clip(row.Detail, 60) + " · " + hint, hint)
-                    : row);
-            }
+            foreach (var attempt in Attempts(status)) screen.Episodes.Add(EpisodeRow(attempt));
         }
 
-        /// <summary>One attempt's row: the steps it completed, where it failed, its word and its detail.</summary>
+        /// <summary>Sealing longer than this reads as stalled.</summary>
+        public const long SealingStalledSeconds = 10 * 60;
+
+        /// <summary>
+        /// One attempt's row: the steps it completed, where it failed, its stage word (the notice
+        /// table's: Recorded, Sealing, Sealed or Seal refused, Reported, Awaiting review, Delivered,
+        /// In Catalog) and its detail: a failure's headline and its fix as the table words them,
+        /// how long it has been sealing, or delivered's note. Never the raw detail.
+        /// </summary>
         public static PodEpisodeRow EpisodeRow(JObject attempt)
         {
             var id = Str(attempt["id"]);
             var stage = Str(attempt["stage"]);
-            var detail = Str(attempt["detail"]);
             var outcome = Str(attempt["outcome"]);
             var failedRecording = outcome.Length > 0 && outcome != "complete";
             var refusedSeal = Str(attempt["seal"]) == "refused";
             var integrity = Str(attempt["integrity"]);
+            var notice = OperatorNotice.FromJson(attempt["notice"]);
+            if (notice == null && (failedRecording || refusedSeal || stage is "failed" or "refused"))
+            {
+                notice = refusedSeal || stage == "refused" ? OperatorNotice.Of("seal_quality") : OperatorNotice.Of("unknown", ("code", failedRecording ? outcome : "failed"));
+            }
+            var words = notice is { } n ? OperatorNotices.Render(n) : (OperatorMessage?)null;
+            var detail = words?.Headline ?? "";
+            var fix = words?.Action ?? "";
+            PodEpisodeRow Row(int reached, int failedAt, string key, PodTone tone, string text = "", string action = "", long? sealing = null) =>
+                new(id, reached, failedAt, OperatorNotices.Stage(key), tone, text, action, key, notice, sealing);
             switch (stage)
             {
-                case "recording": return new PodEpisodeRow(id, 0, -1, "Recording", PodTone.Good, "");
-                case "unsettled": return new PodEpisodeRow(id, 0, -1, "Stopping", PodTone.Warning, "");
-                case "failed": return new PodEpisodeRow(id, 0, 0, outcome == "interrupted" ? "Interrupted" : "Failed", PodTone.Error, detail);
-                case "sealing": return new PodEpisodeRow(id, 1, -1, "Sealing", PodTone.Warning, detail);
-                case "refused": return new PodEpisodeRow(id, 1, 1, "Seal refused", PodTone.Error, detail);
-                case "sealed": return new PodEpisodeRow(id, 2, -1, "Sealed", PodTone.Neutral, "");
+                case "recording": return Row(0, -1, "recording", PodTone.Good);
+                case "unsettled": return new PodEpisodeRow(id, 0, -1, "Stopping", PodTone.Warning, "", "", "recording");
+                case "failed": return Row(0, 0, "failed", PodTone.Error, detail, fix);
+                case "sealing":
+                    var seconds = attempt["sealing_seconds"] is JValue { Type: JTokenType.Integer } s ? (long)s : (long?)null;
+                    var minutes = seconds is long sec ? Math.Max(1, (sec + 30) / 60).ToString(CultureInfo.InvariantCulture) : "";
+                    var note = seconds is long waited
+                        ? OperatorNotices.Phrase(waited >= SealingStalledSeconds ? "sealing_stalled" : "sealing_for", ("minutes", minutes))
+                        : "";
+                    return Row(1, -1, "sealing", seconds >= SealingStalledSeconds ? PodTone.Warning : PodTone.Neutral, note, "", seconds);
+                case "refused": return Row(1, 1, "seal_refused", PodTone.Error, detail, fix);
+                case "sealed": return Row(2, -1, "sealed", PodTone.Neutral);
             }
             // Reported onward: a failed recording or refused seal reported to the Factory stays failed.
             var failedAt = failedRecording ? 0 : refusedSeal ? 1 : -1;
-            var reached = stage switch
-            {
-                "reported" => 3,
-                "reviewed" => 4,
-                "finalized" => 5,
-                "registered" => 6,
-                _ => 0,
-            };
-            if (failedAt >= 0)
-            {
-                return new PodEpisodeRow(id, failedAt, failedAt, (failedRecording ? "Failed" : "Seal refused") + ", reported", PodTone.Error, detail);
-            }
-            if (stage == "reviewed" && integrity == "failed")
-            {
-                return new PodEpisodeRow(id, 3, 3, "Review failed", PodTone.Error, detail);
-            }
+            if (failedAt >= 0) return Row(failedAt, failedAt, failedRecording ? "failed" : "seal_refused", PodTone.Error, detail, fix);
+            if (stage == "reviewed" && integrity == "failed") return Row(3, 3, "review_failed", PodTone.Error);
             return stage switch
             {
-                "reported" => new PodEpisodeRow(id, reached, -1, "Awaiting review", PodTone.Neutral, ""),
-                "reviewed" => new PodEpisodeRow(id, reached, -1, "Reviewed", PodTone.Good, ""),
-                "finalized" => new PodEpisodeRow(id, reached, -1, "Uploading", PodTone.Good, ""),
-                "registered" => new PodEpisodeRow(id, reached, -1, "In Catalog", PodTone.Good, ""),
-                _ => new PodEpisodeRow(id, 0, -1, stage.Length > 0 ? stage : "unknown", PodTone.Neutral, detail),
+                // Reported: the Factory took it; with its episode in the workspace it waits for review.
+                "reported" => Row(3, -1, integrity.Length > 0 ? "awaiting_review" : "reported", PodTone.Neutral),
+                "reviewed" => Row(4, -1, "reviewed", PodTone.Good),
+                // Its receipt is here: delivered, and its bytes leave the headset within the hour. Never "Uploading".
+                "finalized" => Row(5, -1, "delivered", PodTone.Good, OperatorNotices.Phrase("delivered_note")),
+                "registered" => Row(6, -1, "in_catalog", PodTone.Good),
+                _ => new PodEpisodeRow(id, 0, -1, OperatorNotices.Stage("recorded"), PodTone.Neutral, ""),
             };
         }
 

@@ -19,6 +19,8 @@ internal static class DevicePresenceHarness
 
     private static int Main()
     {
+        // The operator's words: the shipped table (test_binding.sh names it).
+        RealityLog.Rig.OperatorNotices.Load(System.IO.File.ReadAllText(Environment.GetEnvironmentVariable("SX_OPERATOR_NOTICES")!));
         const string battery = "{\"battery_percent\":64,\"charging\":false,\"network_time_synchronized\":true}";
         var presence = new DevicePresence();
         var first = JObject.Parse(presence.Report(battery)!);

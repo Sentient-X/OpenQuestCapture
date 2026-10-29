@@ -241,6 +241,18 @@ namespace RealityLog.Rig
             credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
             localOnly = ReadLocalOnly(); // before the first open
+            // The operator's words (sx_operator_notices.json, shipped with the library). Without
+            // them every notice reads as its code, never raw text; the failure is reported.
+            try
+            {
+                var notices = Resources.Load<TextAsset>("sx_operator_notices")
+                    ?? throw new InvalidOperationException("Resources/sx_operator_notices.json is missing from this build");
+                OperatorNotices.Load(notices.text);
+            }
+            catch (InvalidOperationException ex)
+            {
+                RecordStartupError("operator_notices", ex);
+            }
             try
             {
                 var keysAsset = Resources.Load<TextAsset>("sx_rig_config_keys")
@@ -386,8 +398,46 @@ namespace RealityLog.Rig
             Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {what} failed at startup: {ex}");
         }
 
+        /// <summary>
+        /// What only the app sees before a start, for the Pod card's warnings (PodScreenBoard): the
+        /// display rate and each controller's connection, tracking and charge. Main thread writes,
+        /// the status builder reads.
+        /// </summary>
+        private volatile string headsetJson = "null";
+
+        private void ReadHeadset()
+        {
+            try
+            {
+                var charge = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown;
+                string Controller(string side, OVRInput.Controller touch, int? pct, bool connected)
+                {
+                    var tracked = OVRInput.GetControllerPositionTracked(touch) || OVRInput.GetControllerOrientationTracked(touch);
+                    // The OS read, when there was one; else whether OVRInput sees it.
+                    var linked = charge.Known ? connected : OVRInput.IsControllerConnected(touch);
+                    return "{\"side\":\"" + side + "\",\"connected\":" + (linked ? "true" : "false") + ",\"tracked\":" + (tracked ? "true" : "false")
+                        + ",\"percent\":" + (pct is int p ? p.ToString(CultureInfo.InvariantCulture) : "null") + "}";
+                }
+                headsetJson = "{\"displayHz\":" + OVRPlugin.systemDisplayFrequency.ToString("F1", CultureInfo.InvariantCulture)
+                    + ",\"controllers\":[" + Controller("left", OVRInput.Controller.LTouch, charge.Left, charge.LeftConnected) + ","
+                    + Controller("right", OVRInput.Controller.RTouch, charge.Right, charge.RightConnected) + "]}";
+            }
+            catch (Exception ex)
+            {
+                headsetJson = "null";
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: headset read: {ex.Message}");
+            }
+        }
+
+        private float lastHeadsetRead = float.NegativeInfinity;
+
         private void Update()
         {
+            if (Time.unscaledTime - lastHeadsetRead >= 1f)
+            {
+                lastHeadsetRead = Time.unscaledTime;
+                ReadHeadset();
+            }
             presence.Worn(ReadUserPresent());
             presence.Controllers(PodControls.Instance?.Controllers ?? ControllerCharge.Unknown);
             if (OVRInput.GetDown(OVRInput.Button.Any))
@@ -1373,6 +1423,7 @@ namespace RealityLog.Rig
             // The last battery/charging/network-time report the heartbeat sees, and its error.
             json.Append(",\"startupErrors\":").Append(JsonConvert.SerializeObject(startupErrors));
             json.Append(",\"lastCheck\":").Append(lastCheckJson);
+            json.Append(",\"headset\":").Append(headsetJson);
             json.Append(",\"deviceReport\":").Append(deviceReportJson)
                 .Append(",\"deviceReportError\":").Append(deviceReportError is string error ? JsonString(error) : "null");
             // The app's install of the meshes into filesDir: state, assets, copied, error.

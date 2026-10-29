@@ -83,7 +83,15 @@ namespace RealityLog.UI
         private TextMeshProUGUI chipText = default!;
         // The blocker banner.
         private Image blockerPanel = default!;
-        private TextMeshProUGUI blockerHeadline = default!, blockerAction = default!;
+        private TextMeshProUGUI blockerHeadline = default!, blockerAction = default!, blockerFine = default!;
+        // The blocker's button (Check, Sign in) when its notice names one.
+        private GameObject blockerButton = default!;
+        private TextMeshProUGUI blockerButtonText = default!;
+        private string shownButton = "";
+        // What a start may meet but is not refused for.
+        private GameObject warningsObj = default!;
+        private const int WarningRows = 8;
+        private readonly FactRow[] warnings = new FactRow[WarningRows];
         // Controls.
         private TextMeshProUGUI checkText = default!, toggleText = default!, endText = default!;
         private Image checkImage = default!, toggleImage = default!, endImage = default!;
@@ -277,16 +285,12 @@ namespace RealityLog.UI
         {
             var name = state.Lines.PodName ?? "";
             Set(title, name.Length > 0 ? "<color=#FFFFFF><b>Pod</b></color>   " + name : "<color=#FFFFFF><b>Pod</b></color>");
-            var tint = state.Lines.Readiness switch
-            {
-                PodReadiness.Ready => GoodColor,
-                PodReadiness.NotReady => WarningColor,
-                PodReadiness.Refused => ErrorColor,
-                _ => DimTextColor,
-            };
+            // The chip follows the banner (PodScreenBoard.Chip): Last failed, Warnings, Not ready.
+            var (tone, word) = PodScreenBoard.Chip(state.Screen, state.Lines.Readiness, state.Lines.ReadinessText ?? "");
+            var tint = tone == PodTone.Neutral ? DimTextColor : Tint(tone);
             chip.color = Faint(tint, 0.18f);
             chipText.color = tint;
-            Set(chipText, state.Lines.ReadinessText ?? "");
+            Set(chipText, word);
         }
 
         private void ShowBlocker(PodScreen s)
@@ -296,7 +300,38 @@ namespace RealityLog.UI
             blockerHeadline.color = s.Blocker.Tone == PodTone.Neutral ? TextColor : tone;
             Set(blockerHeadline, s.Blocker.Headline ?? "");
             Set(blockerAction, s.Blocker.Action ?? "");
+            // Who acts, before the action: "Floor manager: The floor manager assigns ...".
+            var who = s.Blocker.Who ?? "";
+            Set(blockerAction, who.Length > 0 ? "<b>" + who + ":</b> " + (s.Blocker.Action ?? "") : s.Blocker.Action ?? "");
             Show(blockerAction.gameObject, !string.IsNullOrEmpty(s.Blocker.Action));
+            var fine = s.Blocker.StillFine ?? "";
+            Set(blockerFine, fine.Length > 0 ? OperatorNotices.Phrase("still_fine_label") + ": " + fine : "");
+            Show(blockerFine.gameObject, fine.Length > 0);
+            shownButton = s.Blocker.Button ?? "";
+            Show(blockerButton.transform.parent.gameObject, shownButton.Length > 0);
+            Set(blockerButtonText, shownButton == "sign_in" ? "Sign in" : "Check");
+
+            // Before Start: one warning per row, as the device rows: who acts on the left, what
+            // and the action beside it, wrapped in its cell, never clipped.
+            Show(warningsObj, s.Warnings.Count > 0 && !s.Recording);
+            var amber = "#" + ColorUtility.ToHtmlStringRGB(WarningColor);
+            for (var i = 0; i < WarningRows; i++)
+            {
+                var row = warnings[i];
+                var on = i < s.Warnings.Count;
+                Show(row.Row, on);
+                if (!on) continue;
+                var warning = s.Warnings[i];
+                Set(row.Label, warning.Who ?? "");
+                Set(row.Value, "<color=" + amber + ">" + (warning.Headline ?? "") + "</color>\n<size=88%>" + (warning.Action ?? "") + "</size>");
+            }
+        }
+
+        /// <summary>The blocker's button: the control its notice names.</summary>
+        private void PressBlockerButton()
+        {
+            if (shownButton == "sign_in") PodSetupController.Instance?.SignIn();
+            else if (shownButton == "check") PodControls.Instance?.Run(PodControl.Check);
         }
 
         private void ShowControls(PodCardState state)
@@ -561,6 +596,16 @@ namespace RealityLog.UI
             blockerHeadline = Text("Headline", blocker, 24, TextColor, Cell.Wrapping);
             blockerHeadline.fontStyle = FontStyles.Bold;
             blockerAction = Text("Action", blocker, 21, TextColor, Cell.Wrapping);
+            blockerFine = Text("StillFine", blocker, 19, DimTextColor, Cell.Wrapping);
+            var blockerActions = Row("BlockerActions", blocker, PillHeight);
+            blockerButton = Pill(blockerActions, "BlockerButton", PrimaryColor, PressBlockerButton, out blockerButtonText, out _);
+            blockerActions.gameObject.SetActive(false);
+
+            // Before Start: what a start may meet but is not refused for, each with who acts and what to do.
+            var warningsSection = Section(transform, "Before you start");
+            warningsObj = warningsSection.gameObject;
+            for (var i = 0; i < WarningRows; i++) warnings[i] = Fact(warningsSection, "Warning", withPill: false);
+            warningsObj.SetActive(false);
 
             // Controls: Check · Start/Stop · End collection, their answer, then the battery row.
             var controls = Section(transform, "Controls");

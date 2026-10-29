@@ -2,6 +2,7 @@
 
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json.Linq;
 
@@ -24,6 +25,16 @@ namespace RealityLog.Rig
         void Controllers(int? leftPct, int? rightPct);
         /// <summary>A start now would certainly be refused; the blocker says why. The phone then offers no Start.</summary>
         void StartBlocked(bool blocked);
+        /// <summary>The blocker's notice (after <see cref="Blocker"/>): its code, who acts (collector, floor_manager, technician), its arguments and words.</summary>
+        void BlockerNotice(OperatorNotice notice, OperatorMessage words);
+        /// <summary>One warning before a start that may still go ahead.</summary>
+        void Warning(OperatorNotice notice, OperatorMessage words);
+        /// <summary>The last episode's notice (after <see cref="Episode"/>): why it failed or was refused.</summary>
+        void EpisodeNotice(OperatorNotice notice, OperatorMessage words);
+        /// <summary>How long the last episode has waited for its seal.</summary>
+        void EpisodeSealing(long seconds);
+        /// <summary>Local only: nothing recorded is delivered.</summary>
+        void LocalOnly(bool localOnly);
     }
 
     /// <summary>The Touch controllers' charge (<see cref="ControllerBattery"/>); null where unknown.</summary>
@@ -141,28 +152,11 @@ namespace RealityLog.Rig
         public static string HttpWords(int statusCode, string? body, bool start)
         {
             if (statusCode is >= 200 and < 300) return start ? "Recording" : "Stopped; the episode seals next";
-            try
-            {
-                if (body != null && JToken.Parse(body) is JObject json)
-                {
-                    if (json["message"] is JValue { Type: JTokenType.String } message && ((string?)message)?.Length > 0)
-                    {
-                        // The Factory's own refusals arrive as JSON inside the rig's words: never pass that on.
-                        var said = (string)message!;
-                        var lower = said.ToLowerInvariant();
-                        if (lower.Contains("readiness checks are not passing") || lower.Contains("no assigned episodes remain") || lower.Contains("no assigned task"))
-                        {
-                            return PodStatusBoard.Explain(json["reason"] is JValue { Type: JTokenType.String } r ? (string?)r ?? "" : "", said);
-                        }
-                        return said;
-                    }
-                    if (json["error"] is JValue { Type: JTokenType.String } error && ((string?)error)?.Length > 0) return (string)error!;
-                }
-            }
-            catch (Newtonsoft.Json.JsonException)
-            {
-            }
-            return (start ? "the start" : "the stop") + " was refused (" + statusCode + ")";
+            // The notice table's words for it: never the message it carries (start_session: {...},
+            // os error 32, a path), which stays in the log.
+            var (code, message) = PodStatusBoard.ParseError(body, statusCode);
+            if (!start) return "The stop was refused (code " + (code.Length > 0 ? code : statusCode.ToString(CultureInfo.InvariantCulture)) + ")";
+            return PodStatusBoard.Words(PodStatusBoard.NoticeOf(body, code, message));
         }
 
         /// <summary>A controller's charge on the strip: "64%", or "not available" when no source reads it.</summary>
@@ -178,9 +172,14 @@ namespace RealityLog.Rig
     {
         /// <summary>The episode stages, by PodEpisodeRow.Reached (companion.proto HeadsetEpisodeStage numbers).</summary>
         public const int StageFailed = 7;
+        public const int StageSealing = 8;
+        public const int StageSealRefused = 9;
+        public const int StageAwaitingReview = 10;
+        public const int StageReviewFailed = 11;
 
         /// <summary>companion.proto's HeadsetEpisodeStage names without their prefix, by number (0 has none).</summary>
-        public static readonly string[] StageNames = { "", "RECORDED", "SEALED", "REPORTED", "REVIEWED", "FINALIZED", "IN_CATALOG", "FAILED" };
+        public static readonly string[] StageNames =
+            { "", "RECORDED", "SEALED", "REPORTED", "REVIEWED", "FINALIZED", "IN_CATALOG", "FAILED", "SEALING", "SEAL_REFUSED", "AWAITING_REVIEW", "REVIEW_FAILED" };
 
         /// <summary>companion.proto's HeadsetDeviceState name without its prefix ("READY", "LIVE", ...).</summary>
         public static string StateName(PodDeviceState state) => state.ToString().ToUpperInvariant();
@@ -193,8 +192,17 @@ namespace RealityLog.Rig
             // Ready and Recording stop nothing: the phone shows the headset as ready from that.
             var blocker = screen.Blocker;
             if (screen.StartBlocked && blocker.Tone == PodTone.Good && PodScreenBoard.StartBlocker(status) is { } start) blocker = start;
-            if (blocker.Tone != PodTone.Good) writer.Blocker(blocker.Headline, blocker.Action);
+            if (blocker.Tone != PodTone.Good)
+            {
+                writer.Blocker(blocker.Headline, blocker.Action);
+                if (blocker.Notice is { } notice) writer.BlockerNotice(notice, OperatorNotices.Render(notice));
+            }
             writer.StartBlocked(screen.StartBlocked);
+            writer.LocalOnly(screen.LocalOnly);
+            foreach (var warning in screen.Warnings)
+            {
+                if (warning.Notice is { } notice) writer.Warning(notice, OperatorNotices.Render(notice));
+            }
             foreach (var device in screen.Devices)
             {
                 writer.Device(device.Role, device.Side, device.Port, device.State, device.Value, device.Hint);
@@ -205,16 +213,27 @@ namespace RealityLog.Rig
                 // An episode not recorded yet (recording, stopping) has no stage: `recording` tells it.
                 var stage = Stage(episode);
                 if (stage == 0) continue;
-                var reason = episode.Fix.Length > 0 && episode.Detail.EndsWith(" · " + episode.Fix, StringComparison.Ordinal)
-                    ? episode.Detail.Substring(0, episode.Detail.Length - episode.Fix.Length - 3)
-                    : episode.Detail;
-                writer.Episode(episode.Id, stage, reason.Length > 0 ? episode.Stage + ": " + reason : episode.Stage, episode.Fix);
+                writer.Episode(episode.Id, stage, episode.Detail.Length > 0 ? episode.Stage + ": " + episode.Detail : episode.Stage, episode.Fix);
+                if (episode.Notice is { } why) writer.EpisodeNotice(why, OperatorNotices.Render(why));
+                if (episode.SealingSeconds is long seconds) writer.EpisodeSealing(seconds);
             }
         }
 
-        /// <summary>RECORDED (1) .. IN_CATALOG (6) by the steps completed; FAILED (7) at a failed step; 0 before it is recorded.</summary>
-        public static int Stage(PodEpisodeRow episode) =>
-            episode.FailedAt >= 0 ? StageFailed : Math.Max(0, Math.Min(episode.Reached, 6));
+        /// <summary>
+        /// The row's stage on the wire, by its key: SEALING, SEAL_REFUSED, AWAITING_REVIEW,
+        /// REVIEW_FAILED and FAILED by name; else RECORDED (1) .. IN_CATALOG (6) by the steps
+        /// completed; 0 before it is recorded (recording, stopping).
+        /// </summary>
+        public static int Stage(PodEpisodeRow episode) => episode.StageKey switch
+        {
+            "recording" => 0,
+            "sealing" => StageSealing,
+            "seal_refused" => StageSealRefused,
+            "awaiting_review" => StageAwaitingReview,
+            "review_failed" => StageReviewFailed,
+            "failed" => StageFailed,
+            _ => episode.FailedAt >= 0 ? StageFailed : Math.Max(0, Math.Min(episode.Reached, 6)),
+        };
 
         /// <summary>The signed-in collector's name; "" when nobody is signed in.</summary>
         public static string Collector(JObject? status) =>
@@ -268,6 +287,24 @@ namespace RealityLog.Rig
         public void Controllers(int? leftPct, int? rightPct) =>
             text.Append("K|").Append(leftPct?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('|')
                 .Append(rightPct?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('\n');
+
+        public void BlockerNotice(OperatorNotice notice, OperatorMessage words) => Notice("BN", notice);
+
+        public void Warning(OperatorNotice notice, OperatorMessage words) => Notice("W", notice);
+
+        public void EpisodeNotice(OperatorNotice notice, OperatorMessage words) => Notice("EN", notice);
+
+        // The minutes, not the seconds: a sealing episode's age moves every second.
+        public void EpisodeSealing(long seconds) => text.Append("ES|").Append(seconds / 60).Append('\n');
+
+        public void LocalOnly(bool localOnly) => text.Append("L|").Append(localOnly).Append('\n');
+
+        private void Notice(string tag, OperatorNotice notice)
+        {
+            text.Append(tag).Append('|').Append(notice.Code);
+            foreach (var arg in notice.Args.OrderBy(a => a.Key, StringComparer.Ordinal)) text.Append('|').Append(arg.Key).Append('=').Append(arg.Value);
+            text.Append('\n');
+        }
     }
 
     /// <summary>What the sign-in hand-off sends the phone next.</summary>
