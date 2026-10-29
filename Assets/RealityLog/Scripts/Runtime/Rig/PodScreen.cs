@@ -192,6 +192,31 @@ namespace RealityLog.Rig
         public List<PodBlocker> Warnings { get; } = new();
         /// <summary>Local only: nothing recorded is delivered.</summary>
         public bool LocalOnly { get; set; }
+        /// <summary>The blocker is the newest episode's failure, shown until the next start.</summary>
+        public bool LastFailed { get; set; }
+    }
+
+    /// <summary>The rig's storage figures (<see cref="PodScreenBoard.Storage"/>), in bytes.</summary>
+    public readonly struct StorageFigures
+    {
+        public long Free { get; }
+        /// <summary>required_bytes: what a start needs, all of it (require_storage).</summary>
+        public long Needed { get; }
+        /// <summary>The sealed copies the episodes still waiting for their seal will write.</summary>
+        public long Backlog { get; }
+        public long BacklogEpisodes { get; }
+        public long Uploads { get; }
+        /// <summary>What the next episode itself needs: required_bytes less the seals' backlog.</summary>
+        public long NextEpisode => Math.Max(0, Needed - Backlog);
+
+        public StorageFigures(long free, long needed, long backlog, long backlogEpisodes, long uploads)
+        {
+            Free = free;
+            Needed = needed;
+            Backlog = backlog;
+            BacklogEpisodes = backlogEpisodes;
+            Uploads = uploads;
+        }
     }
 
     /// <summary>
@@ -308,11 +333,8 @@ namespace RealityLog.Rig
             {
                 return PodBlocker.Of("usb_permission", PodTone.Warning);
             }
-            if (Storage(status) is { } space && space.free < space.needed)
-            {
-                return PodBlocker.Of("storage_low", PodTone.Error, ("free_gb", Gigabytes(space.free)), ("needed_gb", Gigabytes(space.needed)),
-                    ("uploads", space.uploads.ToString(CultureInfo.InvariantCulture)));
-            }
+            // Exactly what the rig's require_storage refuses on: free below required_bytes.
+            if (Storage(status) is { } space && space.Free < space.Needed) return PodBlocker.Of(StorageNotice(space, low: true), PodTone.Error);
             if (localOnly || Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
             if (OperatorNotice.FromJson(refused["notice"]) is { } notice) return PodBlocker.Of(notice, PodTone.Error);
             // A runtime older than its notices: the reason alone.
@@ -375,10 +397,10 @@ namespace RealityLog.Rig
                     screen.Warnings.Add(PodBlocker.Of("display_rate", PodTone.Warning, ("hz", ((double)hz).ToString("F0", CultureInfo.InvariantCulture))));
                 }
             }
-            if (Storage(status) is { } space && space.free >= space.needed && space.free < 2 * space.needed)
+            // Room for this episode, but not for the one after it.
+            if (Storage(status) is { } space && space.Free >= space.Needed && space.Free < space.Needed + space.NextEpisode)
             {
-                screen.Warnings.Add(PodBlocker.Of("storage_tight", PodTone.Warning, ("free_gb", Gigabytes(space.free)),
-                    ("needed_gb", Gigabytes(space.needed)), ("uploads", space.uploads.ToString(CultureInfo.InvariantCulture))));
+                screen.Warnings.Add(PodBlocker.Of(StorageNotice(space, low: false), PodTone.Warning));
             }
             var localOnly = Bool(status, "localOnly") ?? true;
             if (!localOnly && Lifted(status, "factory") is JObject factory && factory["warnings"] is JArray held)
@@ -391,17 +413,68 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The rig's storage numbers (native "storage": free_bytes, required_bytes, the rig's own
-        /// worst-case estimate for one more episode and the seals still due) and how many attempts
-        /// wait to upload; null when the rig has not said.
+        /// The rig's storage numbers (native "storage", the figures its require_storage refuses
+        /// on): free_bytes; required_bytes, all a start needs; backlog_bytes, the sealed copies the
+        /// episodes still waiting for their seal will write (backlog_episodes of them), part of
+        /// required_bytes; and how many attempts wait to upload (they free space once delivered,
+        /// but are not counted on). Null when the rig has not said.
         /// </summary>
-        public static (long free, long needed, long uploads)? Storage(JObject? status)
+        public static StorageFigures? Storage(JObject? status)
         {
             if (Native(status)?["storage"] is not JObject storage) return null;
             if (storage["free_bytes"] is not JValue { Type: JTokenType.Integer } free || storage["required_bytes"] is not JValue { Type: JTokenType.Integer } needed) return null;
             var held = storage["held"] as JObject;
             var uploads = Long(held?["unreported"]?["attempts"]) + Long(held?["awaiting_factory"]?["attempts"]);
-            return ((long)free, (long)needed, uploads);
+            return new StorageFigures((long)free, (long)needed, Long(storage["backlog_bytes"]), Long(storage["backlog_episodes"]), uploads);
+        }
+
+        /// <summary>
+        /// The storage notice, as libsx_rig's notice.rs::of_storage words it: the needed figure is
+        /// exactly required_bytes; with episodes still to seal it is split into the next episode
+        /// and their sealed copies, so the numbers add up.
+        /// </summary>
+        public static OperatorNotice StorageNotice(StorageFigures space, bool low)
+        {
+            var split = space.Backlog > 0 && space.BacklogEpisodes > 0;
+            var code = (low ? "storage_low" : "storage_tight") + (split ? "_backlog" : "");
+            var args = new List<(string, string)>
+            {
+                ("free_gb", Gigabytes(space.Free)), ("needed_gb", Gigabytes(space.Needed)),
+                ("uploads", space.Uploads.ToString(CultureInfo.InvariantCulture)),
+            };
+            if (split)
+            {
+                args.Add(("next_gb", Gigabytes(space.NextEpisode)));
+                args.Add(("backlog_gb", Gigabytes(space.Backlog)));
+                args.Add(("backlog", space.BacklogEpisodes.ToString(CultureInfo.InvariantCulture)));
+            }
+            return OperatorNotice.Of(code, args.ToArray());
+        }
+
+        /// <summary>
+        /// The header chip, following the banner: "Last failed" (red) while the newest episode's
+        /// failure shows, until the next start; "Warnings" (amber) when the card is ready but
+        /// pre-Start warnings stand; "Not ready" when anything else blocks; else the pod's own
+        /// chip (<paramref name="readiness"/>, <paramref name="text"/>).
+        /// </summary>
+        public static (PodTone tone, string text) Chip(PodScreen screen, PodReadiness readiness, string text)
+        {
+            if (screen.LastFailed) return (PodTone.Error, OperatorNotices.Phrase("pill_last_failed"));
+            var tone = readiness switch
+            {
+                PodReadiness.Ready => PodTone.Good,
+                PodReadiness.NotReady => PodTone.Warning,
+                PodReadiness.Refused => PodTone.Error,
+                _ => PodTone.Neutral,
+            };
+            if (screen.Blocker.Tone != PodTone.Good)
+            {
+                return tone == PodTone.Good || readiness == PodReadiness.LocalOnly
+                    ? (screen.Blocker.Tone == PodTone.Error ? PodTone.Error : PodTone.Warning, "Not ready")
+                    : (tone, text);
+            }
+            if (!screen.Recording && screen.Warnings.Count > 0) return (PodTone.Warning, OperatorNotices.Phrase("pill_warnings"));
+            return (tone, text);
         }
 
         /// <summary>Bytes as gigabytes with one decimal ("3.2"), as the rig words them.</summary>
@@ -458,7 +531,11 @@ namespace RealityLog.Rig
             if (refusal != null) return PodBlocker.Of(refusal.Notice ?? PodStatusBoard.NoticeOf(null, refusal.Code, refusal.Message), PodTone.Error);
             if (recording) return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
             // The newest attempt failed or its seal refused it: shown until the next start.
-            if (LastFailure(status) is { } failed) return PodBlocker.Of(failed, PodTone.Error);
+            if (LastFailure(status) is { } failed)
+            {
+                screen.LastFailed = true;
+                return PodBlocker.Of(failed, PodTone.Error);
+            }
             if (Bool(status, "expected") == true && status?["lastCheck"] is JObject lastCheck
                 && RigStatusJson.Check(lastCheck.ToString(Formatting.None)) is { ready: false } failedCheck)
             {

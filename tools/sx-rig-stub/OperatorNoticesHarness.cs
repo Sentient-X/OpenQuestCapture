@@ -104,10 +104,26 @@ static class OperatorNoticesHarness
         var registration = new StartRefusal("rig_start_failed", "start_session: {\"detail\":\"rig registration changed; run setup again\"}", DateTime.UtcNow);
         var reg = PodScreenBoard.Build("{" + Pod + "," + SignedIn + "," + Factory + "}", registration, false, new StreamLiveness(), DateTime.UtcNow);
         Expect(reg.Blocker.Headline == "The rig's registration changed" && !reg.Blocker.Headline.Contains("start_session"), "registration changed, never clipped raw: " + reg.Blocker.Headline);
-        var storage = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":3200000000,\"required_bytes\":7450000000,"
-            + "\"held\":{\"unreported\":{\"attempts\":2},\"awaiting_factory\":{\"attempts\":3}}}}");
-        Expect(storage.StartBlocked && storage.Blocker.Headline == "Not enough space: 3.2 GB free, 7.5 GB needed"
+        // The real defaults (rig.rs): 600 s x worst bytes/s = 1.32 GB, OQC's session 0.9288 GB: 2.2488 GB, above min_free (2 GiB).
+        const long Defaults = 1_320_000_000L + 928_800_000L;
+        var storage = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":1900000000,\"required_bytes\":" + Defaults
+            + ",\"backlog_bytes\":0,\"backlog_episodes\":0,\"held\":{\"unreported\":{\"attempts\":2},\"awaiting_factory\":{\"attempts\":3}}}}");
+        Expect(storage.StartBlocked && storage.Blocker.Headline == "Not enough space: 1.9 GB free, 2.2 GB needed for the next episode"
             && storage.Blocker.StillFine.StartsWith("5 episodes are waiting to upload"), "storage with numbers: " + storage.Blocker.Headline + " / " + storage.Blocker.StillFine);
+        // Episodes still to seal are part of what the rig refuses on: shown apart, adding up.
+        var sealing = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":3000000000,\"required_bytes\":" + (Defaults + 2_200_000_000)
+            + ",\"backlog_bytes\":2200000000,\"backlog_episodes\":2,\"held\":{}}}");
+        Expect(sealing.StartBlocked && sealing.Blocker.Headline == "Not enough space: 3.0 GB free, 4.4 GB needed (2.2 GB for the next episode, 2.2 GB for 2 episodes still to seal)",
+            "storage split: " + sealing.Blocker.Headline);
+        // At exactly required_bytes the rig starts, so the card does too (a warning, room for one more only).
+        var exact = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":" + Defaults + ",\"required_bytes\":" + Defaults + ",\"held\":{}}}");
+        Expect(!exact.StartBlocked && exact.Warnings.Any(w => w.Headline == "Space is tight: 2.2 GB free, 2.2 GB needed for the next episode"), "at the rig's own figure Start is offered, with a warning");
+        var roomy = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":" + 2 * Defaults + ",\"required_bytes\":" + Defaults + ",\"held\":{}}}");
+        Expect(!roomy.StartBlocked && roomy.Warnings.Count == 0, "room for two episodes: no storage warning");
+
+        // The chip follows the banner.
+        var failedChip = PodScreenBoard.Chip(Screen(Attempt("refused", "refused", "complete", "{\"code\":\"seal_video_gap\",\"args\":{}}")), PodReadiness.Ready, "Ready");
+        Expect(failedChip == (PodTone.Error, "Last failed"), "after a failed episode the chip says Last failed: " + failedChip);
 
         // Warnings before Start: they never block it.
         var warn = Screen(Pod + "," + SignedIn + "," + Factory + ",\"headset\":{\"displayHz\":72.0,\"controllers\":["
@@ -115,8 +131,10 @@ static class OperatorNoticesHarness
             + "\"native\":{\"storage\":{\"free_bytes\":9000000000,\"required_bytes\":7450000000,\"held\":{}}}");
         var words = warn.Warnings.Select(w => w.Headline).ToList();
         Expect(!warn.StartBlocked && warn.Blocker.Headline == "Ready to record", "warnings leave Start offered");
+        Expect(PodScreenBoard.Chip(warn, PodReadiness.Ready, "Ready") == (PodTone.Warning, "Warnings"), "only warnings: the chip says Warnings");
+        Expect(PodScreenBoard.Chip(next, PodReadiness.Ready, "Ready") == (PodTone.Good, "Ready"), "ready: the pod's own chip");
         Expect(words.Contains("The left controller is not tracked") && words.Contains("The right controller is at 12%")
-            && words.Contains("The display runs at 72 Hz, not 90 Hz") && words.Any(w => w.StartsWith("Space is tight: 9.0 GB free")), "pre-start warnings: " + string.Join(" | ", words));
+            && words.Contains("The display runs at 72 Hz, not 90 Hz") && words.Any(w => w == "Space is tight: 9.0 GB free, 7.5 GB needed for the next episode"), "pre-start warnings: " + string.Join(" | ", words));
         var recording = Screen(Pod + "," + SignedIn + "," + Factory + ",\"episodeActive\":true,\"headset\":{\"displayHz\":72.0}");
         Expect(recording.Warnings.Count == 0, "no warnings while recording");
 

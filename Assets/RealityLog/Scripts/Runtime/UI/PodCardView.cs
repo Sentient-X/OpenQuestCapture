@@ -90,8 +90,8 @@ namespace RealityLog.UI
         private string shownButton = "";
         // What a start may meet but is not refused for.
         private GameObject warningsObj = default!;
-        private Image warningsPanel = default!;
-        private TextMeshProUGUI warningsText = default!;
+        private const int WarningRows = 8;
+        private readonly FactRow[] warnings = new FactRow[WarningRows];
         // Controls.
         private TextMeshProUGUI checkText = default!, toggleText = default!, endText = default!;
         private Image checkImage = default!, toggleImage = default!, endImage = default!;
@@ -285,16 +285,12 @@ namespace RealityLog.UI
         {
             var name = state.Lines.PodName ?? "";
             Set(title, name.Length > 0 ? "<color=#FFFFFF><b>Pod</b></color>   " + name : "<color=#FFFFFF><b>Pod</b></color>");
-            var tint = state.Lines.Readiness switch
-            {
-                PodReadiness.Ready => GoodColor,
-                PodReadiness.NotReady => WarningColor,
-                PodReadiness.Refused => ErrorColor,
-                _ => DimTextColor,
-            };
+            // The chip follows the banner (PodScreenBoard.Chip): Last failed, Warnings, Not ready.
+            var (tone, word) = PodScreenBoard.Chip(state.Screen, state.Lines.Readiness, state.Lines.ReadinessText ?? "");
+            var tint = tone == PodTone.Neutral ? DimTextColor : Tint(tone);
             chip.color = Faint(tint, 0.18f);
             chipText.color = tint;
-            Set(chipText, state.Lines.ReadinessText ?? "");
+            Set(chipText, word);
         }
 
         private void ShowBlocker(PodScreen s)
@@ -315,18 +311,19 @@ namespace RealityLog.UI
             Show(blockerButton.transform.parent.gameObject, shownButton.Length > 0);
             Set(blockerButtonText, shownButton == "sign_in" ? "Sign in" : "Check");
 
+            // Before Start: one warning per row, as the device rows: who acts on the left, what
+            // and the action beside it, wrapped in its cell, never clipped.
             Show(warningsObj, s.Warnings.Count > 0 && !s.Recording);
-            if (s.Warnings.Count > 0)
+            var amber = "#" + ColorUtility.ToHtmlStringRGB(WarningColor);
+            for (var i = 0; i < WarningRows; i++)
             {
-                var tint = "#" + ColorUtility.ToHtmlStringRGB(WarningColor);
-                var lines = new System.Text.StringBuilder();
-                foreach (var warning in s.Warnings)
-                {
-                    if (lines.Length > 0) lines.Append('\n');
-                    lines.Append("<color=").Append(tint).Append("><b>").Append(warning.Headline).Append("</b></color>  ")
-                        .Append(warning.Who.Length > 0 ? "<b>" + warning.Who + ":</b> " : "").Append(warning.Action);
-                }
-                Set(warningsText, lines.ToString());
+                var row = warnings[i];
+                var on = i < s.Warnings.Count;
+                Show(row.Row, on);
+                if (!on) continue;
+                var warning = s.Warnings[i];
+                Set(row.Label, warning.Who ?? "");
+                Set(row.Value, "<color=" + amber + ">" + (warning.Headline ?? "") + "</color>\n<size=88%>" + (warning.Action ?? "") + "</size>");
             }
         }
 
@@ -605,12 +602,9 @@ namespace RealityLog.UI
             blockerActions.gameObject.SetActive(false);
 
             // Before Start: what a start may meet but is not refused for, each with who acts and what to do.
-            warningsObj = Panel("Warnings", transform, out warningsPanel).gameObject;
-            warningsPanel.color = Faint(WarningColor, 0.10f);
-            var warningsTitle = Text("Title", warningsObj.transform, 20, WarningColor, Cell.Wrapping);
-            warningsTitle.fontStyle = FontStyles.Bold;
-            warningsTitle.text = "Before you start";
-            warningsText = Text("Items", warningsObj.transform, 19, TextColor, Cell.Wrapping);
+            var warningsSection = Section(transform, "Before you start");
+            warningsObj = warningsSection.gameObject;
+            for (var i = 0; i < WarningRows; i++) warnings[i] = Fact(warningsSection, "Warning", withPill: false);
             warningsObj.SetActive(false);
 
             // Controls: Check · Start/Stop · End collection, their answer, then the battery row.

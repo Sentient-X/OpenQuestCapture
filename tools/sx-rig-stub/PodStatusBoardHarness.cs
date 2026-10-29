@@ -63,7 +63,7 @@ static class PodStatusBoardHarness
         Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_404 pod has no assigned task") == "No task is assigned to this pod: The floor manager assigns a task to this pod in the Console.", "no task refusal");
         Expect(PodStatusBoard.Explain("collector_signed_out", "the collector signed out; POST /api/sign-in") == "Nobody is signed in: Tap Sign in and approve the code on your phone.", "signed out refusal");
         Expect(PodStatusBoard.Explain("rig_check_failed", "left camera missing") == "The rig's devices did not pass the check: Press Check and fix the device it names.", "check refusal");
-        Expect(PodStatusBoard.Explain("storage_full", "Insufficient storage") == "Not enough space: GB free, GB needed: Keep the headset on Wi-Fi so uploads finish, or delete exported recordings.", "storage refusal");
+        Expect(PodStatusBoard.Explain("storage_full", "Insufficient storage") == "Not enough space: GB free, GB needed for the next episode: Keep the headset on Wi-Fi so uploads finish, or delete exported recordings.", "storage refusal");
 
         // The start log: a refusal with its time, cleared by a successful start.
         var log = new PodStartLog();

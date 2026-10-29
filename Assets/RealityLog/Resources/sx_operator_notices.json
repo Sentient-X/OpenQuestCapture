@@ -26,6 +26,8 @@
     "delivered_note": "Freeing space in about 1 h",
     "still_fine_label": "Still fine",
     "who_label": "Who",
+    "pill_last_failed": "Last failed",
+    "pill_warnings": "Warnings",
     "ready": "Ready to record",
     "ready_action": "Press the menu button to start",
     "ready_local": "Ready (Local only)",
@@ -274,9 +276,15 @@
     },
     "storage_low": {
       "who": "collector",
-      "headline": "Not enough space: {free_gb} GB free, {needed_gb} GB needed",
+      "headline": "Not enough space: {free_gb} GB free, {needed_gb} GB needed for the next episode",
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi so uploads finish, or delete exported recordings."
+    },
+    "storage_low_backlog": {
+      "who": "collector",
+      "headline": "Not enough space: {free_gb} GB free, {needed_gb} GB needed ({next_gb} GB for the next episode, {backlog_gb} GB for {backlog} episodes still to seal)",
+      "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
+      "action": "Keep the headset on Wi-Fi and idle so the seals finish and uploads free space, or delete exported recordings."
     },
     "factory_unanswered": {
       "who": "collector",
@@ -328,9 +336,15 @@
     },
     "storage_tight": {
       "who": "collector",
-      "headline": "Space is tight: {free_gb} GB free, {needed_gb} GB needed per episode",
+      "headline": "Space is tight: {free_gb} GB free, {needed_gb} GB needed for the next episode",
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi so uploads finish."
+    },
+    "storage_tight_backlog": {
+      "who": "collector",
+      "headline": "Space is tight: {free_gb} GB free, {needed_gb} GB needed ({next_gb} GB for the next episode, {backlog_gb} GB for {backlog} episodes still to seal)",
+      "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
+      "action": "Keep the headset on Wi-Fi and idle so the seals finish and uploads free space."
     },
     "slots_held": {
       "who": "floor_manager",

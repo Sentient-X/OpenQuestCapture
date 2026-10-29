@@ -233,7 +233,10 @@ public static class PodCardSnapshot
 
     /// <summary>(h) Not enough space, with the rig's own numbers and the uploads that will free it.</summary>
     private static PodCardState StorageLow() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
-        "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":3200000000,\"required_bytes\":7450000000," +
+        // The real defaults: 600 s at the worst case, 1.32 GB episode + 0.93 GB OpenQuestCapture session,
+        // plus two episodes still waiting for their seal (1.1 GB each).
+        "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":3000000000,\"required_bytes\":4448800000," +
+        "\"episode_bytes\":1320000000,\"session_bytes\":928800000,\"backlog_bytes\":2200000000,\"backlog_episodes\":2," +
         "\"held\":{\"unreported\":{\"attempts\":2},\"awaiting_factory\":{\"attempts\":3}}}}",
         PodReadiness.Refused, "Refused");
 
@@ -242,7 +245,8 @@ public static class PodCardSnapshot
         "\"warnings\":[{\"code\":\"slots_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"2\"}}]}," +
         "\"headset\":{\"displayHz\":72.0,\"controllers\":[{\"side\":\"left\",\"connected\":true,\"tracked\":false,\"percent\":64}," +
         "{\"side\":\"right\",\"connected\":true,\"tracked\":true,\"percent\":12}]}," +
-        "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":9100000000,\"required_bytes\":7450000000,\"held\":{\"unreported\":{\"attempts\":1}}}}",
+        "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":3600000000,\"required_bytes\":2248800000,\"backlog_bytes\":0,\"backlog_episodes\":0," +
+        "\"held\":{\"unreported\":{\"attempts\":1}}}}",
         PodReadiness.Ready, "Ready");
 
     /// <summary>(a) A fresh install: not enrolled, Local only off, nothing plugged in; the real boards' words.</summary>
