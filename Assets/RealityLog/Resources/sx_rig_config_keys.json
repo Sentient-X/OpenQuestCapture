@@ -16,6 +16,8 @@
     "rig_type_id",
     "upload_limit_mib_s",
     "quest_apk_build_id",
+    "headset_apk_build_id",
+    "headset_source",
     "quest_app_version",
     "local_only"
   ],

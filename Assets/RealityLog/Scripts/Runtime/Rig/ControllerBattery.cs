@@ -44,9 +44,12 @@ namespace RealityLog.Rig
 #pragma warning restore CS0618
             var leftConnected = OVRInput.IsControllerConnected(OVRInput.Controller.LTouch);
             var rightConnected = OVRInput.IsControllerConnected(OVRInput.Controller.RTouch);
+            // The OS report holds a charge only for a controller it lists connected.
             var charge = new ControllerCharge(
                 ControllerCharge.First(fromOs.Left, ControllerCharge.First(ControllerCharge.FromLevel(left.ok, left.level), ControllerCharge.Reading(leftConnected, ovrLeft))),
-                ControllerCharge.First(fromOs.Right, ControllerCharge.First(ControllerCharge.FromLevel(right.ok, right.level), ControllerCharge.Reading(rightConnected, ovrRight))));
+                ControllerCharge.First(fromOs.Right, ControllerCharge.First(ControllerCharge.FromLevel(right.ok, right.level), ControllerCharge.Reading(rightConnected, ovrRight))),
+                leftConnected || fromOs.Left != null,
+                rightConnected || fromOs.Right != null);
 
             var leftNow = left.found && (left.tracked || leftConnected);
             var rightNow = right.found && (right.tracked || rightConnected);

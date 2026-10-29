@@ -33,11 +33,29 @@ namespace RealityLog.Rig
 
         public int? Left { get; }
         public int? Right { get; }
+        /// <summary>Whether each controller is connected to the headset now, as a read said it.</summary>
+        public bool LeftConnected { get; }
+        public bool RightConnected { get; }
+        /// <summary>A read made this value; <see cref="Unknown"/> and a failed read are not one.</summary>
+        public bool Known { get; }
 
         public ControllerCharge(int? left, int? right)
         {
             Left = left;
             Right = right;
+            LeftConnected = false;
+            RightConnected = false;
+            Known = false;
+        }
+
+        /// <summary>A read of both controllers: each charge (null where no source read it) and connection.</summary>
+        public ControllerCharge(int? left, int? right, bool leftConnected, bool rightConnected)
+        {
+            Left = left;
+            Right = right;
+            LeftConnected = leftConnected;
+            RightConnected = rightConnected;
+            Known = true;
         }
 
         /// <summary>

@@ -389,6 +389,7 @@ namespace RealityLog.Rig
         private void Update()
         {
             presence.Worn(ReadUserPresent());
+            presence.Controllers(PodControls.Instance?.Controllers ?? ControllerCharge.Unknown);
             if (OVRInput.GetDown(OVRInput.Button.Any))
             {
                 presence.KeyPressed();
