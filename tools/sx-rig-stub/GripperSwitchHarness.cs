@@ -34,6 +34,15 @@ static class GripperSwitchHarness
         Expect(notice != null && notice.Code == "gripper_switch_mismatch" && notice.Args["side"] == "right",
             "the mismatch notice is read from the block");
 
+        Expect(GripperSwitch.Act(GripperSwitchPress.Toggle, false) == GripperSwitchAction.StartOrStop,
+            "a hold while idle or recording runs the menu button's start or stop");
+        Expect(GripperSwitch.Act(GripperSwitchPress.Toggle, true) == GripperSwitchAction.Ignore,
+            "a hold while a start is arming is ignored silently, as the menu button is then");
+        Expect(GripperSwitch.Act(GripperSwitchPress.Refused, false) == GripperSwitchAction.Refuse,
+            "a refused hold pulses long and buzzes");
+        Expect(GripperSwitch.Act(GripperSwitchPress.Refused, true) == GripperSwitchAction.Ignore,
+            "and is ignored too while a start or stop runs");
+
         Console.WriteLine(failures == 0 ? "gripper switch: all passed" : $"gripper switch: {failures} FAILED");
         return failures == 0 ? 0 : 1;
     }

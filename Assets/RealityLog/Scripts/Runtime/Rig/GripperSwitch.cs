@@ -13,6 +13,17 @@ namespace RealityLog.Rig
         Refused,
     }
 
+    /// <summary>What the app does with one <see cref="GripperSwitchPress"/>.</summary>
+    public enum GripperSwitchAction
+    {
+        /// <summary>Pulse the right Touch controller and run the menu button's start or stop.</summary>
+        StartOrStop,
+        /// <summary>Pulse long and buzz: the rig refused the hold.</summary>
+        Refuse,
+        /// <summary>Nothing at all, no pulse and no cue: a start or stop is already running.</summary>
+        Ignore,
+    }
+
     /// <summary>
     /// Reads libsx_rig's <c>gripper_switch</c> status block (any thread) and says, once per new
     /// hold, what to do. The rig counts only holds of the right gripper (the one leader for
@@ -44,6 +55,16 @@ namespace RealityLog.Rig
             if (refused) return GripperSwitchPress.Refused;
             return null;
         }
+
+        /// <summary>
+        /// What one hold does. While a start or stop is in progress (a start arming the rig, a
+        /// stop sealing) a hold is ignored silently, exactly as the left menu button is then: no
+        /// pulse, no cue, so the collector never feels a hold that did nothing.
+        /// </summary>
+        public static GripperSwitchAction Act(GripperSwitchPress press, bool startOrStopInProgress) =>
+            startOrStopInProgress ? GripperSwitchAction.Ignore
+            : press == GripperSwitchPress.Refused ? GripperSwitchAction.Refuse
+            : GripperSwitchAction.StartOrStop;
 
         /// <summary>The notice the rig shows while a role's encoder names the other gripper, or null.</summary>
         public static OperatorNotice? Notice(JObject? block) => OperatorNotice.FromJson(block?["notice"]);

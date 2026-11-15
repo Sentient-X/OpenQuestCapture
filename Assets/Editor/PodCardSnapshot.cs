@@ -324,7 +324,7 @@ public static class PodCardSnapshot
     {
         var screen = new PodScreen
         {
-            Blocker = new PodBlocker("Ready to record", "Press the menu button to start", PodTone.Good),
+            Blocker = new PodBlocker("Ready to record", "Press the menu button, or hold the right gripper button for 2 s, to start", PodTone.Good),
             Task = "Fold towels (bimanual, 2 episodes)",
             Progress = "1 of 2 credited",
             Next = "Record episode 2",
@@ -393,7 +393,7 @@ public static class PodCardSnapshot
     {
         var screen = new PodScreen
         {
-            Blocker = new PodBlocker("Ready to record", "Press the menu button to start", PodTone.Good),
+            Blocker = new PodBlocker("Ready to record", "Press the menu button, or hold the right gripper button for 2 s, to start", PodTone.Good),
             Task = "Stack cups (right hand, 12 episodes)",
             Progress = "7 of 12 credited, 1 awaiting review",
             Next = "Record episode 9",

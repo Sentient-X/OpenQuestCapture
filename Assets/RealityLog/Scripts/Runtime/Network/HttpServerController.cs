@@ -74,6 +74,7 @@ namespace RealityLog.Network
             Instance = this;
             // The Pod card's and the phone's Start and Stop run the menu button's path.
             PodControls.StartOrStop = StartOrStop;
+            PodControls.StartOrStopInProgress = () => StartOrStopInProgress;
             appStartTime = Time.realtimeSinceStartup;
             cachedAppVersion = Application.version;
 
@@ -169,6 +170,7 @@ namespace RealityLog.Network
             {
                 Instance = null;
                 PodControls.StartOrStop = null;
+                PodControls.StartOrStopInProgress = null;
             }
             server?.Stop();
 
@@ -286,6 +288,10 @@ namespace RealityLog.Network
         public static HttpServerController? Instance { get; private set; }
 
         private void OnMenuButton() => StartOrStop(null, null);
+
+        /// <summary>A start or stop runs now, so a press is ignored (any thread).</summary>
+        public bool StartOrStopInProgress =>
+            Volatile.Read(ref menuBusy) != 0 || recordingManager?.State == RecordingState.Stopping;
 
         /// <summary>
         /// Starts or stops a recording exactly as POST /api/start-recording (rig check, OQC

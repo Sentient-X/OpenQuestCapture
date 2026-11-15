@@ -30,6 +30,12 @@ namespace RealityLog.Rig
         /// </summary>
         public static Func<bool?, Action<bool, string>?, string?>? StartOrStop;
 
+        /// <summary>
+        /// Whether a menu-button start or stop is running now (a start arming the rig, a stop),
+        /// registered with <see cref="StartOrStop"/>; a press meanwhile is ignored.
+        /// </summary>
+        public static Func<bool>? StartOrStopInProgress;
+
         /// <summary>The control running now, if any.</summary>
         public PodControl? Running { get; private set; }
 

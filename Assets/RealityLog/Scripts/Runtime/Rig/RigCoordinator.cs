@@ -1938,11 +1938,19 @@ namespace RealityLog.Rig
         /// the armed start, the stop, seal and review) and its cues: start rises, stop falls,
         /// a refusal buzzes and the Pod card shows why. The right Touch controller pulses at
         /// once so the collector feels the hold was taken: short for a hold, long for one the
-        /// rig refused (its sensor names the wrong side; the card shows that notice).
+        /// rig refused (its sensor names the wrong side; the card shows that notice). While a
+        /// start or stop is in progress (arming) a hold is ignored silently, as the menu button
+        /// is then: no pulse, no cue.
         /// </summary>
         private void OnGripperSwitch(GripperSwitchPress press)
         {
-            if (press == GripperSwitchPress.Refused)
+            var action = GripperSwitch.Act(press, PodControls.StartOrStopInProgress?.Invoke() == true);
+            if (action == GripperSwitchAction.Ignore)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold ignored: a start or stop is in progress");
+                return;
+            }
+            if (action == GripperSwitchAction.Refuse)
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold refused by the rig (its sensor names the wrong side)");
                 Pulse(0.45f, 1f);
