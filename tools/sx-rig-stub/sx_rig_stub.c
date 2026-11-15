@@ -77,6 +77,12 @@ int32_t sx_rig_report_device(const char *device_json) {
     return SX_RIG_OK;
 }
 
+int32_t sx_rig_observe_tracking(const char *tracking_json) {
+    if (tracking_json == NULL || tracking_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "tracking_json must be the capture app's controllers object");
+    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
+    return SX_RIG_OK;
+}
+
 int32_t sx_rig_attach_usb(int32_t fd, uint16_t vendor_id, uint16_t product_id, const char *device_name) {
     (void)fd; (void)vendor_id; (void)product_id; (void)device_name;
     if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");

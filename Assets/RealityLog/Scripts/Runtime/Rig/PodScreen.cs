@@ -691,7 +691,14 @@ namespace RealityLog.Rig
                 if (factory.ContainsKey("task") && factory["task"] is not JObject) return PodBlocker.Of("no_task", PodTone.Error);
             }
             if (refusal != null) return PodBlocker.Of(refusal.Notice ?? PodStatusBoard.NoticeOf(null, refusal.Code, refusal.Message), PodTone.Error);
-            if (recording) return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
+            if (recording)
+            {
+                // The rig's 3 s controller-lost watch (status tracking.controllers_lost): while a
+                // controller is out of hand its poses freeze, so the collector hears it now, not at
+                // the seal (sx#4210). Recording goes on.
+                if (ControllerLost(status) is { } lost) return PodBlocker.Of(lost, PodTone.Warning);
+                return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
+            }
             // The newest attempt failed or its seal refused it: shown until the next start.
             if (LastFailure(status) is { } failed)
             {
@@ -1102,6 +1109,12 @@ namespace RealityLog.Rig
                 _ => new PodEpisodeRow(id, 0, -1, OperatorNotices.Stage("recorded"), PodTone.Neutral, ""),
             };
         }
+
+        /// <summary>The first notice of the rig's <c>tracking.controllers_lost</c>; null when none is lost.</summary>
+        public static OperatorNotice? ControllerLost(JObject? status) =>
+            (Lifted(status, "tracking") as JObject)?["controllers_lost"] is JArray lost
+                ? lost.Select(OperatorNotice.FromJson).FirstOrDefault(notice => notice != null)
+                : null;
 
         // ---- Readers ----
 

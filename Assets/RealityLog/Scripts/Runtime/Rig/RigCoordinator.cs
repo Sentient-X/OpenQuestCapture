@@ -166,6 +166,15 @@ namespace RealityLog.Rig
         private long nativeStatusGeneration;
         private System.Threading.Timer? nativeStatusTimer;
         private int nativeStatusBusy;
+        // sx_rig_observe_tracking every TrackingIntervalMs (sx_rig.h): the rig judges a Quest
+        // start and the controller-lost watch on the newest controllers block. Off the main
+        // thread; a tick that finds the last one still inside the library (a start holds the rig
+        // for seconds) is skipped, never queued.
+        private const int TrackingIntervalMs = 250;
+        private System.Threading.Timer? trackingTimer;
+        private int trackingBusy;
+        private volatile bool noTrackingObserver;
+        private volatile string? trackingObserveError;
         private const string DeviceReportClassName = "com.samusynth.questcamera.pod.DeviceReport";
         private const int DeviceReportIntervalMs = 15000;
         // How often worn, focus and input are looked at for a change worth reporting at once.
@@ -192,6 +201,8 @@ namespace RealityLog.Rig
         // after the first observation queues a cue for the main thread.
         private readonly Dictionary<string, string> sealStates = new();
         private bool sealsObserved;
+        // The episode a seal is writing now (a seal state "sealing"), null when none is.
+        private volatile string? sealingNow;
         private readonly System.Collections.Concurrent.ConcurrentQueue<RigCues.Cue> cues = new();
         private bool floorObserved; // native-status timer thread only
         private bool collectorRestored; // native-status timer thread only
@@ -419,9 +430,13 @@ namespace RealityLog.Rig
             try
             {
                 var charge = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown;
+                bool Tracked(OVRInput.Controller touch) =>
+                    OVRInput.GetControllerPositionTracked(touch) && OVRInput.GetControllerOrientationTracked(touch);
+                // The same read the panel warns on goes to the Factory (PodController.tracked).
+                presence.Tracked(Tracked(OVRInput.Controller.LTouch), Tracked(OVRInput.Controller.RTouch));
                 string Controller(string side, OVRInput.Controller touch, int? pct, bool connected)
                 {
-                    var tracked = OVRInput.GetControllerPositionTracked(touch) && OVRInput.GetControllerOrientationTracked(touch);
+                    var tracked = Tracked(touch);
                     // The OS read, when there was one; else whether OVRInput sees it.
                     var linked = charge.Known ? connected : OVRInput.IsControllerConnected(touch);
                     return "{\"side\":\"" + side + "\",\"connected\":" + (linked ? "true" : "false") + ",\"tracked\":" + (tracked ? "true" : "false")
@@ -498,6 +513,8 @@ namespace RealityLog.Rig
                 ClaimRigLocked("check");
                 facts = StartFactsLocked(collectorReady);
             }
+            // Read with the rig claimed and episodeLock released: it waits on the library.
+            facts.TrackingRefusalJson = facts.Opened ? TrackingRefusalNow() : null;
             RigRefusal? refusal = null;
             try
             {
@@ -630,6 +647,9 @@ namespace RealityLog.Rig
             var episode = RigStartGate.EpisodeBody(sessionName, operatorId, apkBuildId,
                 Path.Combine(dataPath, sessionName), appVersion, taskAssignmentId, mode);
             string started;
+            // The start is judged by the newest controllers block (sx_rig.h), not one up to
+            // 250 ms old.
+            ObserveTracking();
             try
             {
                 started = SxRig.StartArmed(episode.ToString(Formatting.None));
@@ -1257,6 +1277,7 @@ namespace RealityLog.Rig
                 opened = true;
                 openErrorJson = null;
                 nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
+                trackingTimer ??= new System.Threading.Timer(_ => ObserveTrackingTick(), null, 0, TrackingIntervalMs);
                 RefreshApiToken();
                 StartDeviceReports();
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
@@ -1557,6 +1578,7 @@ namespace RealityLog.Rig
             var reportError = deviceReportError;
             var embodiment = embodimentStateJson;
             var refusal = lastRefusal;
+            var trackingError = trackingObserveError;
             parsedStatus.Offer(() =>
             {
                 using var assemblyTrace = RigTrace.Enter("OQC.Rig.StatusAssemblyWorker");
@@ -1569,7 +1591,7 @@ namespace RealityLog.Rig
                 else
                 {
                     result.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null")
-                        .Append(",\"devices\":null,\"roles\":null,\"attempts\":null,\"factory\":null")
+                        .Append(",\"devices\":null,\"roles\":null,\"attempts\":null,\"factory\":null,\"tracking\":null")
                         .Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
                 }
                 result.Append(",\"startupErrors\":").Append(JsonConvert.SerializeObject(errors))
@@ -1580,6 +1602,7 @@ namespace RealityLog.Rig
                     .Append(",\"embodimentInstall\":").Append(embodiment)
                     .Append(",\"native\":").Append(native.Json)
                     .Append(",\"lastRefusal\":").Append(refusal?.ToJson() ?? "null")
+                    .Append(",\"trackingObserveError\":").Append(trackingError ?? "null")
                     .Append('}');
                 return result.ToString();
             });
@@ -1660,6 +1683,68 @@ namespace RealityLog.Rig
 #endif
         }
 
+        private void ObserveTrackingTick()
+        {
+            if (!opened || noTrackingObserver || System.Threading.Interlocked.Exchange(ref trackingBusy, 1) == 1) return;
+            try
+            {
+                ObserveTracking();
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref trackingBusy, 0);
+            }
+        }
+
+        /// <summary>
+        /// Hands the rig the app's controllers block now (any thread but Unity's: the library
+        /// may hold the rig for a start). True when the rig took it.
+        /// </summary>
+        private bool ObserveTracking()
+        {
+            if (!opened || noTrackingObserver) return false;
+            try
+            {
+                SxRig.ObserveTracking(HeadTrackingMonitor.ControllersJson(""));
+                trackingObserveError = null;
+                return true;
+            }
+            catch (SxRigLibraryMissingException ex)
+            {
+                // A libsx_rig before sx#4210 judges no tracking: say so once and stop asking.
+                noTrackingObserver = true;
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: this libsx_rig takes no tracking ({ex.Message})");
+            }
+            catch (SxRigException ex)
+            {
+                if (trackingObserveError != ex.ErrorJson)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: sx_rig_observe_tracking: {ex.ErrorJson}");
+                }
+                trackingObserveError = ex.ErrorJson;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The rig's <c>tracking.start_refusal</c> on a block handed over just now, as JSON; null
+        /// when it lets a start go ahead or cannot say (the rig busy, an older library).
+        /// </summary>
+        private string? TrackingRefusalNow()
+        {
+            if (!ObserveTracking()) return null;
+            try
+            {
+                return JToken.Parse(SxRig.Status()) is JObject status
+                    && status["tracking"] is JObject tracking && tracking["start_refusal"] is JObject refusal
+                    ? refusal.ToString(Formatting.None) : null;
+            }
+            catch (Exception ex) when (ex is SxRigException || ex is JsonException)
+            {
+                return null;
+            }
+        }
+
         private void PollNativeStatus()
         {
             if (!opened || System.Threading.Interlocked.Exchange(ref nativeStatusBusy, 1) == 1) return;
@@ -1698,6 +1783,7 @@ namespace RealityLog.Rig
                     collectorName = RigStatusJson.CollectorName(status);
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
+                    sealingNow = Sealing(status["seals"] as JObject);
                     var episodeId = activeEpisodeId;
                     if (episodeId != null && failureHandledFor != episodeId
                         && RigStatusJson.EpisodeFailure(status, episodeId) is JObject failure)
@@ -1719,6 +1805,39 @@ namespace RealityLog.Rig
             {
                 System.Threading.Volatile.Write(ref nativeStatusBusy, 0);
             }
+        }
+
+        /// <summary>The episode whose seal is being written now (state "sealing"); null when none is.</summary>
+        private static string? Sealing(JObject? seals)
+        {
+            if (seals == null) return null;
+            foreach (var entry in seals)
+            {
+                if (entry.Value is JObject seal && (string?)(seal["state"] as JValue) == "sealing") return entry.Key;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// What the rig is doing that a relaunch would cut short (any thread): an episode
+        /// recording, a reservation or an arming, the rig held for a check, start, stop or
+        /// command, or a seal being written. Null when nothing is.
+        /// </summary>
+        public string? BusyForRelaunch()
+        {
+            // Never wait on the lock (the main thread asks): a held lock is work in progress.
+            if (!System.Threading.Monitor.TryEnter(episodeLock)) return "the rig is busy";
+            try
+            {
+                if (episodeActive) return "episode " + (armedSession ?? "?") + " is recording";
+                if (reservedSession != null) return "episode " + reservedSession + " is arming";
+                if (rigWork != null) return "the rig is busy (" + rigWork + ")";
+            }
+            finally
+            {
+                System.Threading.Monitor.Exit(episodeLock);
+            }
+            return sealingNow is string sealing ? "the seal of " + sealing + " is being written" : null;
         }
 
         /// <summary>
@@ -1765,9 +1884,19 @@ namespace RealityLog.Rig
         private static string JsonString(string value) =>
             value.Length == 0 ? "null" : "\"" + RigJson.Escape(value) + "\"";
 
-        private void OnDestroy()
+        private void OnDestroy() => ShutDown();
+
+        private bool shutDown;
+
+        /// <summary>
+        /// Main thread: what a quit does to the rig (the episode stopped, USB detached, the rig
+        /// closed, logs flushed), once. A self relaunch (FrozenHeadRecovery) calls it before the
+        /// process ends, since OnDestroy never runs then.
+        /// </summary>
+        public void ShutDown()
         {
-            if (!ReferenceEquals(Instance, this)) return;
+            if (!ReferenceEquals(Instance, this) || shutDown) return;
+            shutDown = true;
             StopEpisode();
             foreach (var entry in attached)
             {
@@ -1782,6 +1911,8 @@ namespace RealityLog.Rig
             attached.Clear();
             nativeStatusTimer?.Dispose();
             nativeStatusTimer = null;
+            trackingTimer?.Dispose();
+            trackingTimer = null;
             deviceReportStop.Set();
             deviceReportThread?.Join(1000);
             if (opened)

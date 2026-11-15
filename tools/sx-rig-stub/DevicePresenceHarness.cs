@@ -54,7 +54,18 @@ internal static class DevicePresenceHarness
             && !(bool)controllers[1]["connected"]!, "the right controller: not connected, no charge");
         Expect(controllers.Children<JObject>().All(c => c.Properties().Select(p => p.Name).OrderBy(n => n)
                 .SequenceEqual(new[] { "battery_percent", "charging", "connected", "side" })),
-            "each controller carries exactly the rig's four keys");
+            "each controller carries exactly the rig's four keys until tracking was read");
+        // tracked (PodController.tracked, sx#4210): a connected controller set down reads false.
+        presence.Tracked(true, false);
+        controllers = (JArray)JObject.Parse(presence.Report(battery)!)["controllers"]!;
+        Expect((bool)controllers[0]["tracked"]! && !(bool)controllers[1]["tracked"]!,
+            "each controller says whether the runtime tracks it");
+        Expect(controllers.Children<JObject>().All(c => c.Properties().Select(p => p.Name).OrderBy(n => n)
+                .SequenceEqual(new[] { "battery_percent", "charging", "connected", "side", "tracked" })),
+            "once read, each controller carries the rig's five keys");
+        presence.Tracked(null, null);
+        Expect(((JArray)JObject.Parse(presence.Report(battery)!)["controllers"]!).Children<JObject>().All(c => c["tracked"] == null),
+            "tracking that could not be read is absent, never false");
         presence.Controllers(new ControllerCharge(140, null, true, true));
         Expect(((JArray)JObject.Parse(presence.Report(battery)!)["controllers"]!)[0]["battery_percent"]!.Type == JTokenType.Null,
             "a charge past 100 is not sent");

@@ -144,6 +144,8 @@ namespace RealityLog.Rig
                 ["uplink"] = status["uplink"], ["floor"] = status["floor"],
                 ["embodiment_assets"] = status["embodiment_assets"], ["devices"] = status["devices"],
                 ["roles"] = status["roles"], ["attempts"] = status["attempts"], ["factory"] = status["factory"],
+                // sx_rig_observe_tracking's verdict: {"start_refusal", "controllers_lost"} (sx#4210).
+                ["tracking"] = status["tracking"],
             }.ToString(Formatting.None);
             readable = status;
             return new RigNativeStatusSnapshot(json, summary);

@@ -128,6 +128,12 @@ bash "$here/test_tracking_readiness.sh"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/device-presence-harness.exe"
 
+# SelfRelaunch: the app relaunches itself for a frozen head pose only when nothing records or seals.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/self-relaunch-harness.exe" "$here/SelfRelaunchHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SelfRelaunch.cs"
+"$mono" "$out/self-relaunch-harness.exe"
+
 # OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/os-controller-harness.exe" "$here/OsControllerReportHarness.cs" \

@@ -24,6 +24,9 @@ namespace RealityLog.Rig
         private long focusChanges;
         private readonly object controllersGate = new();
         private ControllerCharge controllers = ControllerCharge.Unknown;
+        // Whether the runtime tracks each controller's pose: -1 unread, 0 not tracked, 1 tracked.
+        private int leftTracked = -1;
+        private int rightTracked = -1;
 
         /// <summary>The runtime's user-present state this frame; null when it could not be read.</summary>
         public void Worn(bool? present) => Volatile.Write(ref worn, present is null ? -1 : present.Value ? 1 : 0);
@@ -47,11 +50,22 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
+        /// Whether the runtime tracks each controller's pose now (position and orientation both
+        /// valid); null where it was not read. Sent as each controller's <c>tracked</c>.
+        /// </summary>
+        public void Tracked(bool? left, bool? right)
+        {
+            Volatile.Write(ref leftTracked, left is null ? -1 : left.Value ? 1 : 0);
+            Volatile.Write(ref rightTracked, right is null ? -1 : right.Value ? 1 : 0);
+        }
+
+        /// <summary>
         /// The device report: Kotlin's <paramref name="batteryJson"/> with <c>headset_worn</c> (only
         /// when read), <c>foreground</c>, the <c>inputs</c> totals and, once the controllers have been
         /// read, <c>controllers</c> added; null when Kotlin's report is not an object. Each controller is
-        /// <c>{"side": "left"|"right", "battery_percent": 0-100 or null, "connected": bool, "charging": null}</c>
-        /// (sx_rig.h): a charge no source read is null, and no source says whether a controller charges.
+        /// <c>{"side": "left"|"right", "battery_percent": 0-100 or null, "connected": bool, "charging": null,
+        /// "tracked": bool}</c> (sx_rig.h, PodController): a charge no source read is null, no source says
+        /// whether a controller charges, and <c>tracked</c> is left out until the runtime was read.
         /// </summary>
         public string? Report(string batteryJson)
         {
@@ -72,19 +86,24 @@ namespace RealityLog.Rig
             {
                 report["controllers"] = new JArray
                 {
-                    Controller("left", read.Left, read.LeftConnected),
-                    Controller("right", read.Right, read.RightConnected),
+                    Controller("left", read.Left, read.LeftConnected, Volatile.Read(ref leftTracked)),
+                    Controller("right", read.Right, read.RightConnected, Volatile.Read(ref rightTracked)),
                 };
             }
             return report.ToString(Formatting.None);
         }
 
-        private static JObject Controller(string side, int? percent, bool connected) => new()
+        private static JObject Controller(string side, int? percent, bool connected, int tracked)
         {
-            ["side"] = side,
-            ["battery_percent"] = percent is int value && value >= 0 && value <= 100 ? new JValue(value) : JValue.CreateNull(),
-            ["connected"] = connected,
-            ["charging"] = JValue.CreateNull(),
-        };
+            var controller = new JObject
+            {
+                ["side"] = side,
+                ["battery_percent"] = percent is int value && value >= 0 && value <= 100 ? new JValue(value) : JValue.CreateNull(),
+                ["connected"] = connected,
+                ["charging"] = JValue.CreateNull(),
+            };
+            if (tracked >= 0) controller["tracked"] = tracked == 1;
+            return controller;
+        }
     }
 }

@@ -410,6 +410,9 @@ namespace RealityLog
             }
         }
 
+        /// <summary>True between <see cref="BeginRecording"/> and <see cref="EndRecording"/>. Any thread.</summary>
+        public static bool Recording => recording;
+
         /// <summary>Milliseconds since the OVR runtime last delivered a new head pose; null if it never has.</summary>
         public static double? HeadPoseAgeMs
         {
@@ -519,6 +522,7 @@ namespace RealityLog
                 $"{indent}  \"bodyRecordingGaps\": {Number(BodyGapCounter.Current?.Gaps)},\n" +
                 $"{indent}  \"bodyLongestGapMs\": {Number(BodyGapCounter.Current?.LongestGapMs)},\n" +
                 $"{indent}  \"bodyTrackerRestarts\": {BodyHealth.Restarts},\n" +
+
                 $"{indent}  \"recordingStalls\": {Interlocked.CompareExchange(ref recordingStalls, 0, 0)},\n" +
                 $"{indent}  \"longestStallMs\": {TicksToMs(Interlocked.Read(ref longestStallTicks)):F0},\n" +
                 $"{indent}  \"lastEvent\": {Str(evt)},\n" +

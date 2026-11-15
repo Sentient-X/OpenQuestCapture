@@ -167,6 +167,17 @@ static class PodScreenHarness
         Expect(again.Devices[0].Pill == "Live" && again.Devices[2].Pill == "Live", "rising again is live");
         Expect(again.Blocker.Headline == "The right gripper sensor sends nothing", "a silent stream while recording blocks: " + again.Blocker.Headline);
 
+        // The rig's controller-lost watch while recording (sx#4210): the collector hears it now.
+        var lostLive = new StreamLiveness();
+        var inHand = Screen(Recording(30, 100) + ",\"tracking\":{\"start_refusal\":null,\"controllers_lost\":[]}", live: lostLive, at: T0);
+        Expect(inHand.Blocker.Tone == PodTone.Good && inHand.Blocker.Notice == null, "both controllers in hand while recording: recording");
+        var lostLeft = Screen(Recording(31, 101) + ",\"tracking\":{\"start_refusal\":null,\"controllers_lost\":["
+            + "{\"code\":\"controller_lost\",\"args\":{\"side\":\"left\"}}]}", live: lostLive, at: T0.AddSeconds(1));
+        Expect(lostLeft.Blocker.Headline == "The left controller is out of hand" && lostLeft.Blocker.Tone == PodTone.Warning
+            && lostLeft.Recording, "a controller lost while recording -> its notice, amber, recording goes on: " + lostLeft.Blocker.Headline);
+        Expect(PodScreenBoard.ControllerLost(JObject.Parse("{\"native\":{\"tracking\":{\"controllers_lost\":[{\"code\":\"controller_lost\",\"args\":{\"side\":\"right\"}}]}}}"))?.Code
+            == "controller_lost", "controllers_lost is read from the native status when not lifted");
+
         // No rig resolved yet: devices by kind, the missing ones named.
         var unresolved = Screen(Pod + "," + SignedIn + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"},{\"kind\":\"encoder\",\"port\":\"1-1.3\"}],\"roles\":["
             + "{\"role\":\"left_hand_camera\",\"registered\":null}]");

@@ -148,6 +148,9 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_report_device")]
         private static extern int NativeReportDevice(byte[] deviceJson);
 
+        [DllImport(Library, EntryPoint = "sx_rig_observe_tracking")]
+        private static extern int NativeObserveTracking(byte[] trackingJson);
+
         [DllImport(Library, EntryPoint = "sx_rig_attach_usb")]
         private static extern int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName);
 
@@ -194,6 +197,7 @@ namespace RealityLog.Rig
         private static int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeReportDevice(byte[] deviceJson) => throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeObserveTracking(byte[] trackingJson) => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeDetachUsb(byte[] deviceName) => throw new DllNotFoundException(NotOnThisPlatform);
@@ -287,6 +291,16 @@ namespace RealityLog.Rig
         /// </summary>
         public static void ReportDevice(string deviceJson) =>
             Check("sx_rig_report_device", () => NativeReportDevice(Utf8(deviceJson)));
+
+        /// <summary>
+        /// <c>sx_rig_observe_tracking</c>: the app's <c>controllers</c> block, exactly as
+        /// <c>/api/status</c> carries it (<c>HeadTrackingMonitor.ControllersJson</c>). Every 250 ms
+        /// or so from any thread and once more right before <see cref="StartArmed"/>: a Quest start
+        /// is judged by the latest one (controllers in hand, on their sides, the body placed), and
+        /// while recording it feeds the 3 s controller-lost watch (status <c>tracking</c>).
+        /// </summary>
+        public static void ObserveTracking(string trackingJson) =>
+            Check("sx_rig_observe_tracking", () => NativeObserveTracking(Utf8(trackingJson)));
 
         /// <summary>
         /// <c>sx_rig_attach_usb</c>. The fd stays owned by the caller (Kotlin's

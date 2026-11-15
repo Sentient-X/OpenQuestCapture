@@ -212,6 +212,9 @@ namespace RealityLog.Rig
             "rig_storage_low" or "storage_full" => OperatorNotice.Of("storage_low"),
             "factory_unanswered" => OperatorNotice.Of("factory_unanswered"),
             "app_paused" => OperatorNotice.Of("app_paused"),
+            // The rig's tracking refusals are coded by the notice they word (RigStartGate.TrackingKinds).
+            "controllers_not_in_hand" or "controllers_wrong_side" or "body_tracking_unavailable" or "head_tracking_stopped"
+                => OperatorNotice.Of(code),
             _ => OperatorNotice.Of("unknown", ("code", code.Length > 0 ? code : "none")),
         };
 

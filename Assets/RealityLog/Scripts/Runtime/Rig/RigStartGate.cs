@@ -17,6 +17,12 @@ namespace RealityLog.Rig
         public bool ApkBuildIdKnown;
         /// <summary>False only when a Factory floor says no collector is signed in.</summary>
         public bool CollectorReady;
+        /// <summary>
+        /// The rig's <c>tracking.start_refusal</c> (<c>{"kind", "detail", "notice"}</c>) judged on
+        /// the controllers block handed over right before the check; null when the tracking lets
+        /// a start go ahead or the rig does not judge it (PICO, an older library).
+        /// </summary>
+        public string? TrackingRefusalJson;
     }
 
     /// <summary>
@@ -63,6 +69,12 @@ namespace RealityLog.Rig
             {
                 return SignInToRecord();
             }
+            // Before the check (seconds) and before OQC's session exists: a start the rig's
+            // tracking law refuses leaves no stopped session behind (sx#4210).
+            if (Tracking(facts.TrackingRefusalJson) is { } tracking)
+            {
+                return tracking;
+            }
             string report;
             try
             {
@@ -77,6 +89,32 @@ namespace RealityLog.Rig
             // A check that answers is not a check that passed.
             var (ready, problems) = RigStatusJson.Check(report);
             return ready ? null : new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, report);
+        }
+
+        /// <summary>
+        /// The refusal kinds of the rig's tracking law (sx_pod_core::tracking, sx_rig.h
+        /// sx_rig_observe_tracking), each also its refusal code and its notice's code.
+        /// </summary>
+        public static readonly string[] TrackingKinds =
+        {
+            "controllers_not_in_hand", "controllers_wrong_side", "body_tracking_unavailable", "head_tracking_stopped",
+        };
+
+        /// <summary>
+        /// A rig <c>tracking.start_refusal</c> (or an error's <c>refusal</c>) of one of
+        /// <see cref="TrackingKinds"/> as a refusal coded by its kind, carrying the JSON (with the
+        /// rig's notice, when it has one); null for anything else.
+        /// </summary>
+        public static RigRefusal? Tracking(string? startRefusalJson)
+        {
+            if (string.IsNullOrEmpty(startRefusalJson)) return null;
+            JObject? refusal;
+            try { refusal = JToken.Parse(startRefusalJson!) as JObject; }
+            catch (Newtonsoft.Json.JsonException) { return null; }
+            var kind = refusal?["kind"] is JValue { Type: JTokenType.String } k ? (string?)k ?? "" : "";
+            if (Array.IndexOf(TrackingKinds, kind) < 0) return null;
+            var detail = refusal!["detail"] is JValue { Type: JTokenType.String } d ? (string?)d ?? "" : "";
+            return new RigRefusal(kind, detail.Length > 0 ? detail : kind.Replace('_', ' '), startRefusalJson);
         }
 
         /// <summary>The seal's operator in Local only mode, or on a headset not enrolled: no collector signs in there.</summary>
@@ -139,6 +177,12 @@ namespace RealityLog.Rig
             if (kind == "check_failed")
             {
                 return new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, ex.ErrorJson);
+            }
+            if (Array.IndexOf(TrackingKinds, kind) >= 0)
+            {
+                // The library judged the controllers block handed over right before the start;
+                // the error's notice (sx_rig_last_error) is the operator's words for it.
+                return new RigRefusal(kind, ex.Message, ex.ErrorJson);
             }
             if (kind == "factory_unanswered")
             {

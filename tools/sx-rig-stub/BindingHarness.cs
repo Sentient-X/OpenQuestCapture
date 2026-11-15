@@ -35,6 +35,10 @@ static class Harness {
         Expect(true, "report_device ok");
         try { SxRig.ReportDevice("nope"); Expect(false, "bad report throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_report_device", "report_device bad -> Argument"); }
+        SxRig.ObserveTracking("{\"left\":{},\"right\":{},\"sampleAgeMs\":3}");
+        Expect(true, "observe_tracking ok");
+        try { SxRig.ObserveTracking("[]"); Expect(false, "a tracking block that is not an object throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_observe_tracking", "observe_tracking bad -> Argument"); }
         var (mono, utc) = SxRig.ReadAnchors(() => 123L);
         Expect(mono == 123 && Math.Abs(utc / 1_000_000 - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) < 5000, "anchors " + mono + " " + utc);
         try { SxRig.Start("{\"session\":\"ü\"}", mono, utc); Expect(false, "start throws"); }

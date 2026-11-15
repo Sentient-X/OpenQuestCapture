@@ -456,6 +456,7 @@ namespace RealityLog.Network
                 $"  }},\n" +
                 $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
+                $"  \"selfRelaunch\": {FrozenHeadRecovery.StatusJson()},\n" +
                 $"  \"controllers\": {HeadTrackingMonitor.ControllersJson("  ")},\n" +
                 $"  \"local_only\": {(RigCoordinator.Instance is { } settingsRig ? (settingsRig.LocalOnly ? "true" : "false") : "true")},\n" +
                 $"  \"rig\": {RigCoordinator.StatusJsonOrDefault},\n" +
@@ -1261,6 +1262,7 @@ namespace RealityLog.Network
                 $"  \"isRecording\": {(cachedIsRecording ? "true" : "false")},\n" +
                 $"  \"tracking\": {HeadTrackingMonitor.StatusJson("  ")},\n" +
                 $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
+                $"  \"selfRelaunch\": {FrozenHeadRecovery.StatusJson()},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"timestamp\": \"{DateTimeOffset.UtcNow:O}\"\n" +
                 "}";
@@ -1855,6 +1857,8 @@ namespace RealityLog.Network
                 // The rig's devices are not as the check requires (rig = its report); fix them
                 // and retry. 409 like the other refusals of a state the operator must change.
                 "rig_check_failed" => 409,
+                // The collector's hands, sides or body are not as the tracking law requires.
+                _ when Array.IndexOf(RigStartGate.TrackingKinds, refusal.Code) >= 0 => 409,
                 _ => 503,
             };
             return RigNotReadyResponse(refusal, status, session);
