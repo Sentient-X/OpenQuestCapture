@@ -4,7 +4,7 @@ using System;
 using System.Globalization;
 using System.Threading;
 
-namespace RealityLog
+namespace RealityLog.OVR
 {
     /// <summary>
     /// How often the body runtime delivers a new state, over the last <see cref="WindowSeconds"/>
@@ -80,6 +80,66 @@ namespace RealityLog
         }
 
         private static bool Finite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
+    }
+
+    /// <summary>
+    /// The body tracker's health as HeadTrackingMonitor (assembly RealityLog) measures it, for
+    /// BodyTrackingLogger (assembly RealityLog.OVR, which RealityLog references, so the logger
+    /// cannot see the monitor): since when the rate has refused starts, and the restarts the
+    /// logger made. Any thread.
+    /// </summary>
+    public static class BodyHealth
+    {
+        private const long None = long.MinValue;
+        private static long degradedSinceTicks = None;
+        private static int restarts;
+        private static int restartPending;
+        private static string summary = "";
+
+        /// <summary>The monitor's verdict this refresh: whether the rate refuses, and its figures for a log line.</summary>
+        public static void Observe(bool degraded, string figures)
+        {
+            Volatile.Write(ref summary, figures);
+            if (degraded) Interlocked.CompareExchange(ref degradedSinceTicks, System.Diagnostics.Stopwatch.GetTimestamp(), None);
+            else Interlocked.Exchange(ref degradedSinceTicks, None);
+        }
+
+        /// <summary>Seconds the rate has refused starts; 0 while it admits or is unmeasured.</summary>
+        public static double DegradedSeconds
+        {
+            get
+            {
+                var since = Interlocked.Read(ref degradedSinceTicks);
+                return since == None ? 0
+                    : (System.Diagnostics.Stopwatch.GetTimestamp() - since) / (double)System.Diagnostics.Stopwatch.Frequency;
+            }
+        }
+
+        public static string Summary => Volatile.Read(ref summary);
+        public static int Restarts => Volatile.Read(ref restarts);
+
+        /// <summary>The logger restarted the tracker: count it, and have the monitor measure the rate over.</summary>
+        public static void NoteRestart()
+        {
+            Interlocked.Increment(ref restarts);
+            Interlocked.Exchange(ref degradedSinceTicks, None);
+            Volatile.Write(ref restartPending, 1);
+        }
+
+        /// <summary>True once per restart, for the monitor to reset its window.</summary>
+        public static bool TakeRestart() => Interlocked.Exchange(ref restartPending, 0) == 1;
+
+        /// <summary>Back to launch state (tests and Editor play mode).</summary>
+        public static void Reset()
+        {
+            Interlocked.Exchange(ref degradedSinceTicks, None);
+            Volatile.Write(ref restarts, 0);
+            Volatile.Write(ref restartPending, 0);
+            Volatile.Write(ref summary, "");
+        }
+
+        /// <summary>For tests: pretend the rate has refused since <paramref name="ticks"/>.</summary>
+        internal static void SetDegradedSince(long ticks) => Interlocked.Exchange(ref degradedSinceTicks, ticks);
     }
 
     /// <summary>

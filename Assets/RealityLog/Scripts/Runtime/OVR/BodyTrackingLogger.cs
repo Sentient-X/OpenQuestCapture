@@ -332,7 +332,7 @@ namespace RealityLog.OVR
         }
 
         /// <summary>
-        /// Restarts body tracking when <see cref="HeadTrackingMonitor"/> has refused starts for
+        /// Restarts body tracking when HeadTrackingMonitor has refused starts (<see cref="BodyHealth"/>) for
         /// its body rate for <see cref="RestartAfterDegradedSeconds"/> and nothing records.
         /// What clears a degraded Meta tracker is not established (OQC#22: pod4 recovered on
         /// its own, pod2 needed an app restart); this is the cheapest step, and the rate
@@ -341,14 +341,14 @@ namespace RealityLog.OVR
         private void RecoverIdleTracker()
         {
             if (!bodyTrackingStarted) return;
-            if (HeadTrackingMonitor.BodyDegradedSeconds < RestartAfterDegradedSeconds) return;
+            if (BodyHealth.DegradedSeconds < RestartAfterDegradedSeconds) return;
             if (Time.unscaledTime - lastRestartAt < RestartSpacingSeconds) return;
             lastRestartAt = Time.unscaledTime;
             Debug.LogWarning($"[{Constants.LOG_TAG}] BodyTrackingLogger - body tracking degraded for " +
-                $"{HeadTrackingMonitor.BodyDegradedSeconds:F0} s with no recording ({HeadTrackingMonitor.BodySummary}); restarting it");
+                $"{BodyHealth.DegradedSeconds:F0} s with no recording ({BodyHealth.Summary}); restarting it");
             OVRPlugin.StopBodyTracking();
             bodyTrackingStarted = false;
-            HeadTrackingMonitor.NoteBodyTrackerRestart();
+            BodyHealth.NoteRestart();
             EnsureBodyTrackingStarted();
         }
 

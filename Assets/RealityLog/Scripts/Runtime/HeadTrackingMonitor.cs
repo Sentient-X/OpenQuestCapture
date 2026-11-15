@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using UnityEngine;
 using RealityLog.Common;
+using RealityLog.OVR;
 using Debug = UnityEngine.Debug;
 
 namespace RealityLog
@@ -87,9 +88,6 @@ namespace RealityLog
         // OVRPlugin.BodyTrackingCalibrationState: 1 Valid, 2 Calibrating, 3 Invalid; 0 unread.
         private static int bodyCalibration;
         private static long bodyCalibrationSinceTicks = NoPose;
-        // Since when the body rate has refused a start; NoPose while it admits or is unmeasured.
-        private static long bodyDegradedSinceTicks = NoPose;
-        private static int bodyTrackerRestarts;
         private struct BodySample
         {
             public ControllerSample LeftShoulder;
@@ -135,8 +133,7 @@ namespace RealityLog
             bodyRate.Reset();
             Interlocked.Exchange(ref bodyCalibration, 0);
             Interlocked.Exchange(ref bodyCalibrationSinceTicks, NoPose);
-            Interlocked.Exchange(ref bodyDegradedSinceTicks, NoPose);
-            Interlocked.Exchange(ref bodyTrackerRestarts, 0);
+            BodyHealth.Reset();
             lock (controllerLock)
             {
                 bodySample = default;
@@ -256,11 +253,11 @@ namespace RealityLog
             left.SourceAgeMs = SourceAgeMs(left.SourceTime, sourceNow);
             right.SourceAgeMs = SourceAgeMs(right.SourceTime, sourceNow);
             body.AgeMs = SourceAgeMs(body.SourceTime, sourceNow);
+            if (BodyHealth.TakeRestart()) bodyRate.Reset();
             bodyRate.Observe(body.SourceTime > 0 ? body.SourceTime : null, sourceNow);
-            if (bodyRate.Hz is double hz && hz < StartMinBodyHz)
-                Interlocked.CompareExchange(ref bodyDegradedSinceTicks, now, NoPose);
-            else
-                Interlocked.Exchange(ref bodyDegradedSinceTicks, NoPose);
+            // The summary string is built only while degraded: this runs every frame.
+            var degraded = bodyRate.Hz is double hz && hz < StartMinBodyHz;
+            BodyHealth.Observe(degraded, degraded ? BodySummary : "");
             if (body.AgeMs == null) body = default;
             lock (controllerLock)
             {
@@ -347,28 +344,6 @@ namespace RealityLog
             3 => "3 (invalid)",
             _ => status.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
-
-        /// <summary>
-        /// Seconds the body rate has refused starts, measured on this process's clock; 0 while
-        /// it admits or has not filled a window. BodyTrackingLogger restarts a degraded tracker
-        /// from it while nothing records. Any thread.
-        /// </summary>
-        public static double BodyDegradedSeconds
-        {
-            get
-            {
-                var since = Interlocked.Read(ref bodyDegradedSinceTicks);
-                return since == NoPose ? 0 : TicksToMs(Stopwatch.GetTimestamp() - since) / 1000.0;
-            }
-        }
-
-        /// <summary>Called by BodyTrackingLogger when it restarted a degraded tracker; starts the rate over.</summary>
-        public static void NoteBodyTrackerRestart()
-        {
-            Interlocked.Increment(ref bodyTrackerRestarts);
-            bodyRate.Reset();
-            Interlocked.Exchange(ref bodyDegradedSinceTicks, NoPose);
-        }
 
         /// <summary>The body figures for a log line. Any thread.</summary>
         public static string BodySummary =>
@@ -543,7 +518,7 @@ namespace RealityLog
                 $"{indent}  \"bodyCalibrationStatus\": {Volatile.Read(ref bodyCalibration)},\n" +
                 $"{indent}  \"bodyRecordingGaps\": {Number(BodyGapCounter.Current?.Gaps)},\n" +
                 $"{indent}  \"bodyLongestGapMs\": {Number(BodyGapCounter.Current?.LongestGapMs)},\n" +
-                $"{indent}  \"bodyTrackerRestarts\": {Volatile.Read(ref bodyTrackerRestarts)},\n" +
+                $"{indent}  \"bodyTrackerRestarts\": {BodyHealth.Restarts},\n" +
                 $"{indent}  \"recordingStalls\": {Interlocked.CompareExchange(ref recordingStalls, 0, 0)},\n" +
                 $"{indent}  \"longestStallMs\": {TicksToMs(Interlocked.Read(ref longestStallTicks)):F0},\n" +
                 $"{indent}  \"lastEvent\": {Str(evt)},\n" +

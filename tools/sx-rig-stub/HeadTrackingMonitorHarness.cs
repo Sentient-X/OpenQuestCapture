@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Threading;
 using RealityLog;
+using RealityLog.OVR;
 
 static class HeadTrackingMonitorHarness
 {
@@ -66,14 +67,13 @@ static class HeadTrackingMonitorHarness
             $"a fresh body sample at 7 Hz refuses with the rate and what to do ({reason})");
         Expect(HeadTrackingMonitor.StatusJson("").Contains("\"bodyUpdateHz\": 8") || HeadTrackingMonitor.StatusJson("").Contains("\"bodyUpdateHz\": 7"),
             "/api/status tracking carries the measured body rate");
-        Expect(HeadTrackingMonitor.BodyDegradedSeconds >= 0 && HeadTrackingMonitor.BodyDegradedSeconds < 5,
+        Expect(BodyHealth.DegradedSeconds >= 0 && BodyHealth.DegradedSeconds < 5 && BodyHealth.Summary.Contains("bodyHz="),
             "a degraded rate starts the idle-recovery clock");
-        var degradedSince = typeof(HeadTrackingMonitor).GetField("bodyDegradedSinceTicks", PrivateStatic)!;
-        degradedSince.SetValue(null, Stopwatch.GetTimestamp() - 16 * Stopwatch.Frequency);
+        typeof(BodyHealth).GetMethod("SetDegradedSince", PrivateStatic)!.Invoke(null, new object[] { Stopwatch.GetTimestamp() - 16 * Stopwatch.Frequency });
         HeadTrackingMonitor.RefreshNow();
-        Expect(HeadTrackingMonitor.BodyDegradedSeconds >= 15, "a degraded rate keeps its first refusal time while it stays low");
-        HeadTrackingMonitor.NoteBodyTrackerRestart();
-        Expect(HeadTrackingMonitor.BodyDegradedSeconds == 0 && HeadTrackingMonitor.StatusJson("").Contains("\"bodyTrackerRestarts\": 1"),
+        Expect(BodyHealth.DegradedSeconds >= 15, "a degraded rate keeps its first refusal time while it stays low");
+        BodyHealth.NoteRestart();
+        Expect(BodyHealth.DegradedSeconds == 0 && HeadTrackingMonitor.StatusJson("").Contains("\"bodyTrackerRestarts\": 1"),
             "a tracker restart is counted and measures the rate over");
         HeadTrackingMonitor.RefreshNow();
         Expect(HeadTrackingMonitor.StartRefusal?.Contains("being measured") == true, "after a restart the start waits for a new window");
@@ -87,7 +87,7 @@ static class HeadTrackingMonitorHarness
         Run(36, 2.0);
         OVRPlugin.BodyTime = OVRPlugin.Now;
         HeadTrackingMonitor.RefreshNow();
-        Expect(HeadTrackingMonitor.StartRefusal == null && HeadTrackingMonitor.BodyDegradedSeconds == 0, "36 Hz admits and clears the recovery clock");
+        Expect(HeadTrackingMonitor.StartRefusal == null && BodyHealth.DegradedSeconds == 0, "36 Hz admits and clears the recovery clock");
 
         Healthy();
         HeadTrackingMonitor.RefreshNow();

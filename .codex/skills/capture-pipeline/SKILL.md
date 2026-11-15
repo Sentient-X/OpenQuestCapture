@@ -240,3 +240,12 @@ host test or a short USB-aborted run as sustained capture acceptance.
 - Host harness: `SX_RIG_INCLUDE=~/p3/sentient/sx/packages/sx-pod-runtime/include bash
   tools/sx-rig-stub/test_binding.sh` -> 694 `PASS` lines, exit 0 (676 before this change);
   tracking readiness 60/60. Mutations (threshold 5 Hz; rate clause removed) fail 3 and 5 checks.
+- Assembly direction: `RealityLog` references `RealityLog.OVR`, never the reverse, so
+  `BodyTrackingLogger` cannot call `HeadTrackingMonitor`. Shared body state lives in
+  `OVR/BodyCadence.cs` (`BodyRateWindow`, `BodyGapCounter`, `BodyHealth`). The host
+  harness compiles everything into one assembly and cannot catch this; the batchmode open
+  did: `CS0246 BodyGapCounter` in `BodyTrackingLogger.cs`. Batchmode exits 0 even with
+  compiler errors, so grep the log for `error CS` and "Scripts have compiler errors".
+- Batchmode compile that worked (licence resolved through the running LicensingClient,
+  2026-11-15): `~/p3/Unity/Hub/Editor/6000.3.6f1/Editor/Unity -batchmode -nographics
+  -buildTarget Android -projectPath "$PWD" -quit -logFile ~/p3/tmp/<task>/unity-compile.log`.
