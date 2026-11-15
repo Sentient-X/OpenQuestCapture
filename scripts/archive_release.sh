@@ -78,6 +78,13 @@ if [[ "${1:-}" == "--build" ]]; then
         fi
         exit "$status"
     fi
+    # Batchmode can exit 0 with scripts that did not compile (QuestBuild never ran): success is
+    # the APK plus Unity's own words, and no compiler error anywhere in the log.
+    if grep -q "error CS" "$log" || [[ ! -s "$out" ]] || ! grep -q "^Build succeeded: " "$log"; then
+        grep -E "error CS|Build failed|Build refused" "$log" >&2 || tail -n 40 "$log" >&2
+        echo "Unity exited 0 without a clean build; see $log" >&2
+        exit 1
+    fi
     apk="$out"
     rig_commit="$(git -C "$sx" rev-parse HEAD)"
 else
