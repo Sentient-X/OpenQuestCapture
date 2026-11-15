@@ -426,6 +426,12 @@
       "still_fine": "Recording continues; its poses are frozen until it is back.",
       "action": "Wake it and hold it."
     },
+    "gripper_switch_mismatch": {
+      "who": "technician",
+      "headline": "The {side} gripper sensor names the wrong side",
+      "still_fine": "The menu button still starts and stops recording.",
+      "action": "Tell a technician: the gripper's start button works only when its sensor is set to its own side."
+    },
     "unknown": {
       "who": "technician",
       "headline": "Recording failed",

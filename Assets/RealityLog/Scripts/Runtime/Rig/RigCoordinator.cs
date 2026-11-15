@@ -204,6 +204,11 @@ namespace RealityLog.Rig
         // The episode a seal is writing now (a seal state "sealing"), null when none is.
         private volatile string? sealingNow;
         private readonly System.Collections.Concurrent.ConcurrentQueue<RigCues.Cue> cues = new();
+        // The right gripper's start/stop switch: libsx_rig's gripper_switch counters, read on the
+        // native-status worker; each new hold is handled on the main thread.
+        private readonly GripperSwitch gripperSwitch = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<GripperSwitchPress> switchPresses = new();
+        private float hapticUntil = float.NegativeInfinity;
         private bool floorObserved; // native-status timer thread only
         private bool collectorRestored; // native-status timer thread only
 
@@ -476,6 +481,15 @@ namespace RealityLog.Rig
                 signInCuePending = false;
                 RigCues.Play(RigCues.Cue.SignedIn, gameObject);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector signed in");
+            }
+            while (switchPresses.TryDequeue(out var press))
+            {
+                OnGripperSwitch(press);
+            }
+            if (hapticUntil > float.NegativeInfinity && Time.unscaledTime >= hapticUntil)
+            {
+                hapticUntil = float.NegativeInfinity;
+                OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.RTouch);
             }
             while (cues.TryDequeue(out var cue))
             {
@@ -1832,6 +1846,10 @@ namespace RealityLog.Rig
                     collectorName = RigStatusJson.CollectorName(status);
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
+                    if (gripperSwitch.Observe(status["gripper_switch"] as JObject) is GripperSwitchPress press)
+                    {
+                        switchPresses.Enqueue(press);
+                    }
                     sealingNow = Sealing(status["seals"] as JObject);
                     var episodeId = activeEpisodeId;
                     if (episodeId != null && failureHandledFor != episodeId
@@ -1912,6 +1930,46 @@ namespace RealityLog.Rig
 
         /// <summary>Plays a cue (main thread) when the rig took part in the recording.</summary>
         public void Cue(RigCues.Cue cue) => RigCues.Play(cue, gameObject);
+
+        /// <summary>
+        /// A new hold of the right gripper's start/stop switch (main thread). A hold is the left
+        /// menu button pressed: <see cref="PodControls.StartOrStop"/> with no side asked runs
+        /// exactly its start-or-stop against the recorder's actual state (the tracking gate,
+        /// the armed start, the stop, seal and review) and its cues: start rises, stop falls,
+        /// a refusal buzzes and the Pod card shows why. The right Touch controller pulses at
+        /// once so the collector feels the hold was taken: short for a hold, long for one the
+        /// rig refused (its sensor names the wrong side; the card shows that notice).
+        /// </summary>
+        private void OnGripperSwitch(GripperSwitchPress press)
+        {
+            if (press == GripperSwitchPress.Refused)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold refused by the rig (its sensor names the wrong side)");
+                Pulse(0.45f, 1f);
+                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                return;
+            }
+            Pulse(0.12f, 0.8f);
+            if (PodControls.StartOrStop is not { } startOrStop)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold, but the recorder is not running");
+                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                return;
+            }
+            Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold: the menu button's start or stop");
+            var refused = startOrStop(null, null);
+            if (refused != null)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold not taken: {refused}");
+            }
+        }
+
+        /// <summary>The right Touch controller vibrates for <paramref name="seconds"/> (main thread).</summary>
+        private void Pulse(float seconds, float amplitude)
+        {
+            OVRInput.SetControllerVibration(1f, amplitude, OVRInput.Controller.RTouch);
+            hapticUntil = Time.unscaledTime + seconds;
+        }
 
         /// <summary>floor.operator.signed_in of a status, or null when the status has no floor.</summary>
         private static bool? CollectorSignedIn(JObject? status) => RigStatusJson.CollectorSignedIn(status);
