@@ -43,6 +43,23 @@ static class PodScreenHarness
         var ready = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"progress\":{\"target\":2,\"credited\":1,\"awaiting_review\":1},\"collection\":null}");
         Expect(ready.Blocker.Headline == "Ready to record" && ready.Blocker.Tone == PodTone.Good, "ready: " + ready.Blocker.Headline);
+
+        // The controller warnings read the app's own headset.controllers (RigCoordinator.ReadHeadset):
+        // "tracked" is position AND orientation, so an IMU-only controller warns before a start.
+        // The native device report carries no "tracked" (sx_rig.h refuses unknown keys).
+        string Controllers(string left, string right) => Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles
+            + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
+            + ",\"headset\":{\"displayHz\":90,\"controllers\":[" + left + "," + right + "]}";
+        const string held = "\"connected\":true,\"tracked\":true,\"percent\":80}";
+        var untracked = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\",\"connected\":true,\"tracked\":false,\"percent\":80}"));
+        Expect(untracked.Warnings.Count == 1 && untracked.Warnings[0].Headline == "The right controller is not tracked"
+            && !untracked.StartBlocked, "an untracked controller warns (and leaves Start offered): "
+            + string.Join("; ", untracked.Warnings.ConvertAll(w => w.Headline)));
+        var bothHeld = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\"," + held));
+        Expect(bothHeld.Warnings.Count == 0, "tracked, connected, charged controllers raise no warning");
+        var asleep = Screen(Controllers("{\"side\":\"left\",\"connected\":false,\"tracked\":false,\"percent\":80}", "{\"side\":\"right\"," + held));
+        Expect(asleep.Warnings.Count == 1 && asleep.Warnings[0].Headline == "The left controller is not connected",
+            "a disconnected controller says so, not 'not tracked'");
         Expect(ready.Devices.Count == 4 && ready.Devices[0].Name == "Left camera" && ready.Devices[0].Pill == "Ready" && ready.Devices[0].Value == "port 1-1.1", "devices by role with port: " + ready.Devices[0].Value);
         Expect(ready.Task == "fold towel" && ready.Progress == "1 of 2 credited · 1 awaiting review", "progress: " + ready.Progress);
         Expect(ready.Next == "a review verdict on the recorded episode", "next: " + ready.Next);
