@@ -60,8 +60,6 @@ namespace RealityLog.Rig
         private bool asking; // waiting for a Bluetooth permission answer
         // The rig status as last parsed, and the text it was parsed from: parsed again only
         // when the text changes, never every frame (main thread only).
-        private string parsedStatusJson = "";
-        private JObject? parsedStatus;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -394,32 +392,9 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The rig status, parsed once per change of its text: the multi-KB status is read here
-        /// every frame while a phone is connected, and a parse per frame stalls the render.
-        /// Readers never change it. Main thread.
+        /// The shared status snapshot, parsed off the capture thread. Readers never change it.
         /// </summary>
-        private JObject? Status()
-        {
-            var json = RigCoordinator.StatusJsonOrDefault;
-            if (!ReferenceEquals(json, parsedStatusJson) && !string.Equals(json, parsedStatusJson, StringComparison.Ordinal))
-            {
-                parsedStatus = Parse(json);
-            }
-            parsedStatusJson = json;
-            return parsedStatus;
-        }
-
-        private static JObject? Parse(string json)
-        {
-            try
-            {
-                return JToken.Parse(json) as JObject;
-            }
-            catch (JsonException)
-            {
-                return null;
-            }
-        }
+        private JObject? Status() => RigCoordinator.ParsedStatusOrDefault;
 
         private string PodId()
         {

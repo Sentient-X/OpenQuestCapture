@@ -1,6 +1,8 @@
 #nullable enable
 
 using System;
+using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -108,6 +110,19 @@ namespace RealityLog.UI
         // Episodes.
         private GameObject episodesSection = default!;
         private readonly EpisodeLine[] episodes = new EpisodeLine[EpisodeRows];
+        // Explicit task outcomes, never inferred from the recording/sealing result.
+        private GameObject reviewSection = default!, reviewActions = default!, reviewNavigation = default!;
+        private TextMeshProUGUI reviewIdentity = default!, reviewDetail = default!, reviewMessage = default!;
+        private TextMeshProUGUI reviewSuccessText = default!, reviewFailureText = default!;
+        private Image reviewSuccessImage = default!, reviewFailureImage = default!;
+        private readonly Dictionary<string, PodReviewSubmission> reviewSubmissions = new();
+        private string selectedReviewKey = "", reviewArmedKey = "", reviewArmedSubject = "", reviewResult = "";
+        private int reviewIndex;
+        private bool? reviewArmedSuccess;
+        private bool reviewBusy;
+        private float reviewArmedUntil = float.NegativeInfinity;
+        private PodReviewItem? renderedReview;
+        private int renderedReviewIndex = -1, renderedReviewCount = -1;
         // Phone.
         private GameObject phoneSection = default!, phonePanelObj = default!;
         private Image phonePanel = default!;
@@ -134,7 +149,7 @@ namespace RealityLog.UI
 
         private RecordingManager? recorder;
         private readonly StreamLiveness liveness = new();
-        private string? shownStatus;
+        private JObject? shownStatus;
         private StartRefusal? shownRefusal;
         private bool shownSucceeded, shownAsking;
         private PodStatusLines lines;
@@ -190,18 +205,19 @@ namespace RealityLog.UI
         private void Refresh(bool force)
         {
             if (!live) return;
+            using var trace = RigTrace.Enter("OQC.PodCard.Refresh");
             Show(Gather(force));
         }
 
         /// <summary>The card's state from the live sources; the status is parsed only when it changed.</summary>
         private PodCardState Gather(bool force)
         {
-            var status = RigCoordinator.StatusJsonOrDefault;
+            var status = RigCoordinator.ParsedStatusOrDefault;
             var lastStart = PodStartLog.Shared.Last;
             var succeeded = PodStartLog.Shared.Succeeded;
             var setup = PodSetupController.Instance;
             var asking = setup is { SigningIn: true };
-            // The status string is replaced, never mutated: parse only when something changed.
+            // The coordinator owns one read-only parsed snapshot; UI consumers never reparse it.
             if (force || !ReferenceEquals(status, shownStatus) || !ReferenceEquals(lastStart, shownRefusal)
                 || succeeded != shownSucceeded || asking != shownAsking)
             {
@@ -210,7 +226,7 @@ namespace RealityLog.UI
                 shownSucceeded = succeeded;
                 shownAsking = asking;
                 lines = PodStatusBoard.Lines(status, lastStart, succeeded, asking);
-                headsetPct = HeadsetBattery(status);
+                headsetPct = HeadsetStatusMap.Battery(status);
                 screen = PodScreenBoard.Build(status, lastStart, succeeded, liveness, DateTime.UtcNow);
             }
 
@@ -247,7 +263,7 @@ namespace RealityLog.UI
             {
                 state.PanelTone = PodTone.Warning;
                 state.PanelHeadline = PodControlWords.EndQuestion(screen.Credited, screen.Requested);
-                state.PanelAction = "Tap End now to end it: its episodes are reviewed and uploaded as when it fills";
+                state.PanelAction = "Tap End now to end this collection. Review each stopped episode below; delivery follows the platform checks.";
             }
             else if (state.Running is PodControl busy)
             {
@@ -276,6 +292,7 @@ namespace RealityLog.UI
             ShowControls(state);
             ShowDevices(state.Screen);
             ShowCollection(state);
+            ShowReviews(state);
             ShowEpisodes(state.Screen);
             ShowPhone(state);
             ShowSetup(state);
@@ -429,6 +446,96 @@ namespace RealityLog.UI
             }
         }
 
+        private PodReviewItem? SelectedReview(PodScreen current)
+        {
+            if (current.Reviews.Count == 0)
+            {
+                selectedReviewKey = "";
+                reviewIndex = 0;
+                return null;
+            }
+            var found = -1;
+            for (var i = 0; i < current.Reviews.Count; i++)
+                if (current.Reviews[i].Key == selectedReviewKey) { found = i; break; }
+            reviewIndex = found >= 0 ? found : Math.Min(reviewIndex, current.Reviews.Count - 1);
+            var selected = current.Reviews[reviewIndex];
+            if (selectedReviewKey != selected.Key) ClearReviewConfirmation();
+            selectedReviewKey = selected.Key;
+            if (reviewSubmissions.TryGetValue(selected.Key, out var submitted))
+                submitted.Observe(selected.SubmissionId, selected.SubmissionState, selected.SubmissionMessage);
+            return selected;
+        }
+
+        private string ReviewBlockedReason(PodCardState state, PodReviewItem? item)
+        {
+            if (state.Screen.ReviewUnavailable.Length > 0) return state.Screen.ReviewUnavailable;
+            if (!state.SignedIn) return "Sign in as the collector before reviewing.";
+            if (state.LocalOnly || !state.Enrolled) return "Use Factory mode to review this collection.";
+            if (state.Recording) return "Stop recording before reviewing an episode.";
+            if (state.Running != null) return "Wait for the current control to finish before reviewing.";
+            if (reviewBusy) return "Saving the selected review...";
+            if (item == null) return "No episodes awaiting your review.";
+            if (item.BlockedReason.Length > 0) return item.BlockedReason;
+            if (reviewSubmissions.TryGetValue(item.Key, out var local))
+            {
+                if (local.State is "pending" or "completed") return local.Message;
+                if (local.State == "uncertain" && local.CollectorSubject != state.Screen.ReviewCollectorSubject)
+                    return "Sign in as the collector who chose this review before retrying its saved result.";
+            }
+            return item.SubmissionState switch
+            {
+                "pending" => "Review saved on this headset; waiting for Factory. Do not submit it again.",
+                "completed" => "Review accepted by Factory. Delivery still follows the platform checks.",
+                _ => "",
+            };
+        }
+
+        private void ShowReviews(PodCardState state)
+        {
+            Show(reviewSection, state.Enrolled && !state.LocalOnly);
+            if (!state.Enrolled || state.LocalOnly) return;
+            var item = SelectedReview(state.Screen);
+            var blocked = ReviewBlockedReason(state, item);
+            if (blocked.Length > 0 || (reviewArmedSubject.Length > 0 && reviewArmedSubject != state.Screen.ReviewCollectorSubject))
+                ClearReviewConfirmation();
+            Show(reviewActions, item != null);
+            Show(reviewNavigation, state.Screen.Reviews.Count > 1);
+            if (item == null)
+            {
+                renderedReview = null;
+                Set(reviewIdentity, state.Screen.ReviewQueueAvailable ? "No episodes awaiting review" : "Waiting for review status");
+                Set(reviewDetail, blocked);
+                Set(reviewMessage, reviewResult);
+                return;
+            }
+            var source = item.SourceEpisodeId.Length > 0 ? item.SourceEpisodeId : item.EpisodeId;
+            if (!ReferenceEquals(renderedReview, item) || renderedReviewIndex != reviewIndex || renderedReviewCount != state.Screen.Reviews.Count)
+            {
+                renderedReview = item;
+                renderedReviewIndex = reviewIndex;
+                renderedReviewCount = state.Screen.Reviews.Count;
+                Set(reviewIdentity, (reviewIndex + 1) + " of " + state.Screen.Reviews.Count + " awaiting review · " + source);
+                Set(reviewDetail, "Collection: " + item.SessionId + "\nEpisode: " + item.EpisodeId
+                    + (item.StartedAt.Length > 0 ? "\nStarted: " + item.StartedAt : "")
+                    + "\nIntegrity: " + (item.Integrity.Length > 0 ? item.Integrity : "pending")
+                    + "\nChoose whether the assigned task succeeded. This does not change the quality result.");
+            }
+            reviewSubmissions.TryGetValue(item.Key, out var submitted);
+            var armed = reviewArmedKey == item.Key && Time.unscaledTime < reviewArmedUntil && reviewArmedSuccess != null;
+            var uncertain = submitted?.State == "uncertain";
+            var successAllowed = blocked.Length == 0 && (!uncertain || submitted!.Success);
+            var failureAllowed = blocked.Length == 0 && (!uncertain || !submitted!.Success);
+            Set(reviewSuccessText, armed && reviewArmedSuccess == true ? "Confirm task success" : uncertain && submitted!.Success ? "Retry task success" : "Task succeeded");
+            Set(reviewFailureText, armed && reviewArmedSuccess == false ? "Confirm task failure" : uncertain && !submitted!.Success ? "Retry task failure" : "Task failed");
+            ShowEnabled(reviewSuccessImage, reviewSuccessText, PrimaryColor, successAllowed);
+            ShowEnabled(reviewFailureImage, reviewFailureText, SecondaryColor, failureAllowed);
+            reviewSuccessImage.GetComponent<Button>().interactable = successAllowed;
+            reviewFailureImage.GetComponent<Button>().interactable = failureAllowed;
+            Set(reviewMessage, blocked.Length > 0 ? blocked : armed
+                ? "Confirm " + (reviewArmedSuccess == true ? "task success" : "task failure") + " for " + source + ". Tap the same button again, or Cancel."
+                : submitted?.Message ?? (item.SubmissionState == "failed" ? "Previous review was refused: " + item.SubmissionMessage : reviewResult));
+        }
+
         /// <summary>The Phone section from the companion's phase, in CompanionCard's words.</summary>
         private void ShowPhone(PodCardState state)
         {
@@ -542,16 +649,75 @@ namespace RealityLog.UI
             endArmedUntil = Time.unscaledTime + EndConfirmSeconds;
         }
 
-        /// <summary>deviceReport.battery_percent from the rig status; null when unread.</summary>
-        private static int? HeadsetBattery(string status)
+        private void ClearReviewConfirmation()
         {
+            reviewArmedKey = "";
+            reviewArmedSubject = "";
+            reviewArmedSuccess = null;
+            reviewArmedUntil = float.NegativeInfinity;
+        }
+
+        private void MoveReview(int direction)
+        {
+            if (reviewBusy || screen.Reviews.Count < 2) return;
+            reviewIndex = (reviewIndex + direction + screen.Reviews.Count) % screen.Reviews.Count;
+            selectedReviewKey = screen.Reviews[reviewIndex].Key;
+            ClearReviewConfirmation();
+        }
+
+        private async void ChooseReview(bool success)
+        {
+            if (!live || reviewBusy) return;
+            var state = Gather(force: false);
+            var item = SelectedReview(state.Screen);
+            var blocked = ReviewBlockedReason(state, item);
+            if (item == null || blocked.Length > 0) return;
+            reviewSubmissions.TryGetValue(item.Key, out var previous);
+            if (previous?.State == "uncertain" && previous.Success != success) return;
+            if (reviewArmedKey != item.Key || reviewArmedSubject != state.Screen.ReviewCollectorSubject
+                || reviewArmedSuccess != success || Time.unscaledTime >= reviewArmedUntil)
+            {
+                reviewArmedKey = item.Key;
+                reviewArmedSubject = state.Screen.ReviewCollectorSubject;
+                reviewArmedSuccess = success;
+                reviewArmedUntil = Time.unscaledTime + EndConfirmSeconds;
+                return;
+            }
+            ClearReviewConfirmation();
+            if (RigCoordinator.Instance is not { } coordinator) return;
+            // Keep the exact ID and bytes after an ambiguous failure. Native journal replay
+            // reconciles a saved decision; a second outcome cannot race it under a fresh ID.
+            var replaying = previous?.State == "uncertain";
+            var submitted = replaying ? previous!
+                : new PodReviewSubmission(item, success, Guid.NewGuid(), state.Screen.ReviewCollectorSubject);
+            reviewSubmissions[item.Key] = submitted;
+            reviewBusy = true;
             try
             {
-                return HeadsetStatusMap.Battery(Newtonsoft.Json.Linq.JToken.Parse(status) as Newtonsoft.Json.Linq.JObject);
+                submitted.ApplyReply(await coordinator.SubmitCollectorReviewAsync(submitted.CommandJson));
+                if (this != null) reviewResult = (item.SourceEpisodeId.Length > 0 ? item.SourceEpisodeId : item.EpisodeId) + ": " + submitted.Message;
             }
-            catch (Newtonsoft.Json.JsonException)
+            catch (InvalidOperationException error)
             {
-                return null;
+                submitted.RefusedBeforeSend(error.Message, priorAttemptUnconfirmed: replaying);
+                if (this != null) reviewResult = submitted.Message;
+            }
+            catch (Exception error)
+            {
+                // The native journal may already contain the decision. Its exact retry is the
+                // only allowed next submission until the status resolves it.
+                submitted.Unconfirmed(error is SxRigException native
+                    ? RigStatusJson.ErrorDetail(native.ErrorJson, "The headset could not confirm the saved review")
+                    : "The headset could not confirm the saved review (" + error.GetType().Name + ")");
+                if (this != null) reviewResult = submitted.Message;
+            }
+            finally
+            {
+                if (this != null)
+                {
+                    reviewBusy = false;
+                    Refresh(force: true);
+                }
             }
         }
 
@@ -643,6 +809,25 @@ namespace RealityLog.UI
             progress = Fact(collection, "Progress", withPill: false);
             next = Fact(collection, "Next", withPill: false);
             link = Fact(collection, "Factory", withPill: false);
+
+            // Human review is separate from Check, stop, local seal and collection end.
+            var review = Section(transform, "Review stopped episodes");
+            reviewSection = review.gameObject;
+            reviewIdentity = Text("ReviewIdentity", review, 22, TextColor, Cell.Wrapping);
+            reviewDetail = Text("ReviewDetail", review, 19, DimTextColor, Cell.Wrapping);
+            reviewMessage = Text("ReviewMessage", review, 20, TextColor, Cell.Wrapping);
+            // IDs, prompt labels and error messages are data, never rich-text markup.
+            reviewIdentity.richText = reviewDetail.richText = reviewMessage.richText = false;
+            reviewNavigation = Row("ReviewNavigation", review, PillHeight).gameObject;
+            Pill(reviewNavigation.transform, "PreviousReview", SecondaryColor, () => MoveReview(-1), out var previousReviewText, out _);
+            Set(previousReviewText, "Previous episode");
+            Pill(reviewNavigation.transform, "NextReview", SecondaryColor, () => MoveReview(1), out var nextReviewText, out _);
+            Set(nextReviewText, "Next episode");
+            reviewActions = Row("ReviewActions", review, PillHeight).gameObject;
+            Pill(reviewActions.transform, "ReviewSuccess", PrimaryColor, () => ChooseReview(true), out reviewSuccessText, out reviewSuccessImage);
+            Pill(reviewActions.transform, "ReviewFailure", SecondaryColor, () => ChooseReview(false), out reviewFailureText, out reviewFailureImage);
+            Pill(reviewActions.transform, "CancelReview", SecondaryColor, ClearReviewConfirmation, out var cancelReviewText, out _);
+            Set(cancelReviewText, "Cancel");
 
             // Episodes: the newest first, each across the pipeline's steps.
             var episodesTransform = Section(transform, "Episodes");

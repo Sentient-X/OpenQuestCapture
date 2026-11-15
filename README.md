@@ -301,7 +301,10 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   carry `"task_assignment_id"` and `"mode"`
   (`"directed"`|`"undirected"`), which open the collection on the Factory; the episode also records `quest_apk_build_id` (`sha256:` of the
   installed APK, as the laptop pod computes it) and `quest_session_dir`, which the seal reads.
-  The rig stops after every OQC file of the session is final, so the seal never reads a partial one.
+  At stop, `sx_rig_request_stop` captures the real end timestamp and signals the wrist streams.
+  OQC then stops its cameras and finalizes the session files before `sx_rig_stop` drains the
+  native workers and admits sealing. Repeated stop requests retain the first timestamp, so
+  file-finalization time does not extend the episode and the seal never reads an open file.
 * `GET /api/status` → `rig` carries `enrolled`, `podId`, `registeredRig`, `seals`, `uplink`,
   `floor` (operator sign-in, open collection, pending commands),
   `headsetSerial`, `tailscaleIp` and `apkBuildId`.

@@ -106,6 +106,7 @@ namespace RealityLog.Network
 
         private void Update()
         {
+            using var trace = RigTrace.Enter("OQC.Http.Update");
             server?.ProcessMainThreadQueue();
 
             // A rig episode that fails while recording stops the recording (once subscribed).
@@ -132,6 +133,7 @@ namespace RealityLog.Network
             // storage check fail for the first 30 s after every app (re)launch.
             if (lastStorageRefresh <= 0f || Time.realtimeSinceStartup - lastStorageRefresh > 30f)
             {
+                using var storageTrace = RigTrace.Enter("OQC.Http.Storage");
                 cachedStorageFree = GetStorageFreeBytes();
                 cachedStorageTotal = GetStorageTotalBytes();
                 cachedAppVersion = Application.version;
@@ -141,6 +143,7 @@ namespace RealityLog.Network
             // Heartbeat log every 60 seconds — confirms server is alive and shows IP info
             if (Time.realtimeSinceStartup - lastHeartbeat > 60f)
             {
+                using var heartbeatTrace = RigTrace.Enter("OQC.Http.Heartbeat");
                 lastHeartbeat = Time.realtimeSinceStartup;
                 try
                 {

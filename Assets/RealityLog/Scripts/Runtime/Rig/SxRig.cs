@@ -7,6 +7,59 @@ using System.Text;
 namespace RealityLog.Rig
 {
     /// <summary>
+    /// Optional Android system-trace sections. No log or recording output is produced.
+    /// Scope must begin and end on the same thread; it is inactive outside a system trace.
+    /// </summary>
+    public static class RigTrace
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        private static volatile bool unavailable;
+        [DllImport("android", EntryPoint = "ATrace_isEnabled")]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool IsEnabled();
+        [DllImport("android", EntryPoint = "ATrace_beginSection")]
+        private static extern void Begin([MarshalAs(UnmanagedType.LPStr)] string name);
+        [DllImport("android", EntryPoint = "ATrace_endSection")]
+        private static extern void End();
+#endif
+
+        public static Scope Enter(string name)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (!unavailable)
+            {
+                try
+                {
+                    if (IsEnabled())
+                    {
+                        Begin(name);
+                        return new Scope(true);
+                    }
+                }
+                catch (DllNotFoundException) { unavailable = true; }
+                catch (EntryPointNotFoundException) { unavailable = true; }
+            }
+#endif
+            return default;
+        }
+
+        public readonly struct Scope : IDisposable
+        {
+            private readonly bool active;
+            internal Scope(bool active) => this.active = active;
+            public void Dispose()
+            {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                if (!active) return;
+                try { End(); }
+                catch (DllNotFoundException) { unavailable = true; }
+                catch (EntryPointNotFoundException) { unavailable = true; }
+#endif
+            }
+        }
+    }
+
+    /// <summary>
     /// Return codes of <c>sx_rig.h</c> (the C ABI of libsx_rig.so). Values are the ABI's.
     /// </summary>
     public enum SxRigError
@@ -110,6 +163,9 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_start_armed")]
         private static extern int NativeStartArmed(byte[] episodeJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
+        [DllImport(Library, EntryPoint = "sx_rig_request_stop")]
+        private static extern int NativeRequestStop();
+
         [DllImport(Library, EntryPoint = "sx_rig_stop")]
         private static extern int NativeStop(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
@@ -147,6 +203,7 @@ namespace RealityLog.Rig
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStartArmed(byte[] episodeJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeRequestStop() => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStop(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStatus(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
@@ -265,6 +322,9 @@ namespace RealityLog.Rig
             return CallJson("sx_rig_start_armed",
                 (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeStartArmed(episode, outJson, cap, out needed));
         }
+
+        /// <summary>Freeze capture's end timestamp and signal native producers. Does not seal.</summary>
+        public static void RequestStop() => Check("sx_rig_request_stop", NativeRequestStop);
 
         /// <summary><c>sx_rig_stop</c>: the stop receipt. Bounded 5 s.</summary>
         public static string Stop() => CallJson("sx_rig_stop", NativeStop);

@@ -138,6 +138,13 @@ namespace RealityLog.Rig
             catch (JsonException)
             {
             }
+            return Lines(status, lastStart, lastStartSucceeded, askingForCode);
+        }
+
+        /// <summary>The status already parsed on the coordinator's worker; readers never mutate it.</summary>
+        public static PodStatusLines Lines(JObject? status, StartRefusal? lastStart, bool lastStartSucceeded,
+            bool askingForCode)
+        {
             var refusal = RefusalLine(status, lastStart, lastStartSucceeded);
             var hasRefusal = refusal != NoRefusal;
             var (readiness, readinessText) = Readiness(status, hasRefusal);

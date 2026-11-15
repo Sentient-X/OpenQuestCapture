@@ -23,7 +23,7 @@ namespace RealityLog.Rig
     /// then is the library loaded, opened or called; otherwise every method here is a no-op and
     /// recording behaves exactly as it did before the rig existed (the laptop-pod flow).</para>
     ///
-    /// <para><b>USB.</b> Every 0.5 s the bridge re-enumerates; a newly opened device's fd is
+    /// <para><b>USB.</b> Every 0.5 s a worker asks the bridge to re-enumerate; a newly opened device's fd is
     /// attached to the rig, and a vanished one is detached from the rig before the bridge
     /// closes its connection (the ABI leaves fd ownership with Kotlin until the detach).</para>
     ///
@@ -33,7 +33,7 @@ namespace RealityLog.Rig
     /// (<c>sx_rig_start_armed</c>: the rig arms and anchors the episode itself, inside OQC's
     /// recording). <see cref="StopEpisode"/>, after OQC's files are final, returns the receipt.</para>
     ///
-    /// USB polling is main-thread; the episode calls, <see cref="IsExpected"/> and
+    /// USB results are applied on the main thread, but enumeration never waits there. The episode calls, <see cref="IsExpected"/> and
     /// <see cref="StatusJson"/> are safe from any thread.
     /// </summary>
     public class RigCoordinator : MonoBehaviour
@@ -85,6 +85,9 @@ namespace RealityLog.Rig
         }
 
         private AndroidJavaObject? bridge;
+        private RigUsbRefresh? usbRefresh;
+        private readonly RigUsbSnapshotFlow usbFlow = new();
+        private string? usbRefreshError;
         private AndroidJavaObject? activity;
         private string configPath = "";
         private string podConfigPath = "";
@@ -156,10 +159,11 @@ namespace RealityLog.Rig
         private string? armedSession;
         private string? episodeReceiptJson;
         private volatile RigRefusal? lastRefusal;
-        private volatile string statusJson = NotExpectedStatus;
+        private readonly RigStatusSnapshot parsedStatus = new();
         // sx_rig_status may wait up to 50 ms, so it is polled off the main thread.
-        private volatile string nativeStatusJson = "null";
-        private volatile string nativeSummaryJson = "";
+        private volatile RigNativeStatusSnapshot nativeStatus = RigNativeStatusSnapshot.Empty;
+        private readonly object nativeStatusGate = new();
+        private long nativeStatusGeneration;
         private System.Threading.Timer? nativeStatusTimer;
         private int nativeStatusBusy;
         private const string DeviceReportClassName = "com.samusynth.questcamera.pod.DeviceReport";
@@ -210,11 +214,14 @@ namespace RealityLog.Rig
         /// <summary><see cref="Expected"/> as of the last main-thread poll. Any thread.</summary>
         public bool IsExpected => expected;
 
-        /// <summary>The rig's /api/status object, cached on the main thread. Any thread.</summary>
-        public string StatusJson => statusJson;
+        /// <summary>The rig's /api/status object, built and parsed together off the main thread. Any thread.</summary>
+        public string StatusJson => parsedStatus.Latest?.Json ?? NotExpectedStatus;
 
         /// <summary>The /api/status <c>rig</c> value when no coordinator exists.</summary>
         public static string StatusJsonOrDefault => Instance?.StatusJson ?? NotExpectedStatus;
+
+        /// <summary>Shared read-only status tree. Parsing never runs on Unity's capture thread.</summary>
+        public static JObject? ParsedStatusOrDefault => Instance?.parsedStatus.Current;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -334,6 +341,7 @@ namespace RealityLog.Rig
                 try
                 {
                     bridge = new AndroidJavaObject(BridgeClassName, activity);
+                    StartUsbRefresh(bridge);
                 }
                 catch (Exception ex)
                 {
@@ -407,12 +415,13 @@ namespace RealityLog.Rig
 
         private void ReadHeadset()
         {
+            using var trace = RigTrace.Enter("OQC.Rig.ReadHeadset");
             try
             {
                 var charge = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown;
                 string Controller(string side, OVRInput.Controller touch, int? pct, bool connected)
                 {
-                    var tracked = OVRInput.GetControllerPositionTracked(touch) || OVRInput.GetControllerOrientationTracked(touch);
+                    var tracked = OVRInput.GetControllerPositionTracked(touch) && OVRInput.GetControllerOrientationTracked(touch);
                     // The OS read, when there was one; else whether OVRInput sees it.
                     var linked = charge.Known ? connected : OVRInput.IsControllerConnected(touch);
                     return "{\"side\":\"" + side + "\",\"connected\":" + (linked ? "true" : "false") + ",\"tracked\":" + (tracked ? "true" : "false")
@@ -433,6 +442,8 @@ namespace RealityLog.Rig
 
         private void Update()
         {
+            using var trace = RigTrace.Enter("OQC.Rig.Update");
+            ConsumeUsbRefresh();
             if (Time.unscaledTime - lastHeadsetRead >= 1f)
             {
                 lastHeadsetRead = Time.unscaledTime;
@@ -890,6 +901,35 @@ namespace RealityLog.Rig
         public string Command(string commandJson) => SxRig.Command(commandJson);
 
         /// <summary>
+        /// An explicit collector review from the Pod card. Its original command ID is kept
+        /// across retries; the native journal owns authentication, validation and deduplication.
+        /// No native or network work runs on the capture thread.
+        /// </summary>
+        public System.Threading.Tasks.Task<string> SubmitCollectorReviewAsync(string commandJson)
+        {
+            var command = JObject.Parse(commandJson);
+            var expectedOperator = (string?)command["expected_operator"];
+            if ((string?)command["command"] is not ("review_success" or "review_failure")
+                || string.IsNullOrWhiteSpace(expectedOperator))
+                throw new InvalidOperationException("An explicit episode review and its signed-in collector are required");
+            return System.Threading.Tasks.Task.Run(() =>
+            {
+                lock (episodeLock)
+                {
+                    if (!opened || !enrolled || localOnly || !collectorSignedIn || collectorRestored)
+                        throw new InvalidOperationException("Sign in to the Factory before reviewing episodes");
+                    if ((string?)parsedStatus.Current?["floor"]?["operator"]?["subject"] != expectedOperator)
+                        throw new InvalidOperationException("The signed-in collector changed; select the review again");
+                    if (rigWork != null || episodeActive || reservedSession != null)
+                        throw new InvalidOperationException("Finish the current recording or control before reviewing");
+                    rigWork = "review";
+                }
+                try { return SxRig.Command(commandJson); }
+                finally { lock (episodeLock) ReleaseRigLocked(); }
+            });
+        }
+
+        /// <summary>
         /// Check, on the Pod card and from the paired phone: <c>sx_rig_check</c> now, between
         /// episodes, on the calling (worker) thread (bounded about 16 s on a Factory). It opens each bound
         /// encoder and camera and requires live data in the arm's 2 s startup window, so a device that is
@@ -934,9 +974,8 @@ namespace RealityLog.Rig
         /// <summary>
         /// End collection now, on the Pod card and from the paired phone (after the operator
         /// confirmed): <c>sx_rig_command {"command": "end_recording"}</c>, sx-pod's End collection.
-        /// The rig ends the open collection, tells the Factory, and sends what a collection that
-        /// filled sends (End collection, reviews, finalize), so its episodes finalize and upload
-        /// as at the cap. Refused while an episode records. Calling (worker) thread: it waits on
+        /// The rig ends the open collection and tells the Factory. Each episode still needs
+        /// its collector's explicit review before finalization and upload. Refused while an episode records. Calling (worker) thread: it waits on
         /// the network with the rig claimed, so no start slips in while it ends, and without the
         /// episode lock, so nothing that only reads waits on the Factory.
         /// </summary>
@@ -962,7 +1001,7 @@ namespace RealityLog.Rig
                 var heard = JToken.Parse(answer)["answer"]?["heard"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collection ended by the operator: {answer}");
                 return new PodControlResult(PodControl.EndCollection, true, heard
-                    ? "Ended; its episodes are reviewed and uploaded"
+                    ? "Ended; review its episodes before they can finalize and upload"
                     : "Ended; the Factory is told when it hears the headset again");
             }
             catch (SxRigException ex)
@@ -998,6 +1037,34 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
+        /// Capture the native stop boundary before the headset drains its files. Keeps the
+        /// episode active until StopEpisode finalizes it, so sealing cannot read open files.
+        /// Retries retain the first native cutoff. Any thread. Never throws.
+        /// </summary>
+        public void RequestStopEpisode()
+        {
+            lock (episodeLock)
+            {
+                while (rigWork != null) System.Threading.Monitor.Wait(episodeLock);
+                if (!episodeActive) return;
+                ClaimRigLocked("request_stop");
+            }
+            try
+            {
+                SxRig.RequestStop();
+            }
+            catch (SxRigException ex)
+            {
+                // A clock failure poisons the native attempt; still let final stop drain it.
+                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: stop cutoff: {ex.Message}");
+            }
+            finally
+            {
+                lock (episodeLock) ReleaseRigLocked();
+            }
+        }
+
+        /// <summary>
         /// Stops the rig's episode and returns its stop receipt (a JSON object: the library's
         /// <c>{"outcome": ...}</c>, or <c>{"error": {...}}</c> when the stop call itself failed),
         /// or null when no rig episode ran. Bounded 5 s. Any thread. Idempotent: a second call
@@ -1009,7 +1076,7 @@ namespace RealityLog.Rig
             {
                 // A check or start under way finishes first, as when it held the lock: then a
                 // reservation it made is cancelled, and an episode it armed is stopped.
-                while (rigWork is "check" or "start" or "stop") System.Threading.Monitor.Wait(episodeLock);
+                while (rigWork != null) System.Threading.Monitor.Wait(episodeLock);
                 reservedSession = null; // a stop before the rig armed cancels the arming
                 if (!episodeActive) return episodeReceiptJson;
                 ClaimRigLocked("stop");
@@ -1039,23 +1106,14 @@ namespace RealityLog.Rig
 
         private void Poll()
         {
+            using var trace = RigTrace.Enter("OQC.Rig.Poll");
+            var began = System.Diagnostics.Stopwatch.GetTimestamp();
             lastPoll = Time.unscaledTime;
             configPresent = File.Exists(configPath);
             enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
             if (opened && enrolled && apiToken == null) RefreshApiToken();
             PollIdentity(force: false);
-            if (bridge != null)
-            {
-                try
-                {
-                    var json = bridge.Call<string>("refresh");
-                    snapshot = JsonUtility.FromJson<UsbSnapshot>(json) ?? new UsbSnapshot();
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: USB refresh failed: {ex.Message}");
-                }
-            }
+            ReportMainThreadTime("identity", began);
 
             awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
             expected = Expected;
@@ -1066,11 +1124,70 @@ namespace RealityLog.Rig
             {
                 TryOpen();
             }
-            if (opened)
-            {
-                SyncAttachments();
-            }
+            began = System.Diagnostics.Stopwatch.GetTimestamp();
+            usbFlow.ApplyIfNeeded(opened, SyncAttachments);
+            if (usbRefresh != null) usbFlow.Request(usbRefresh);
+            ReportMainThreadTime("attachments", began);
             RefreshStatus();
+        }
+
+        private void StartUsbRefresh(AndroidJavaObject usbBridge)
+        {
+            // Android's UsbManager uses binder and may wait behind system USB work. Keep
+            // that wait off FixedUpdate's thread, while all SDK tracking calls stay there.
+            usbRefresh = new RigUsbRefresh(() =>
+            {
+                if (AndroidJNI.AttachCurrentThread() != 0)
+                    throw new InvalidOperationException("cannot attach USB refresh thread to the Android VM");
+                try { return usbBridge.Call<string>("refresh"); }
+                finally { AndroidJNI.DetachCurrentThread(); }
+            }, () =>
+            {
+                try
+                {
+                    if (AndroidJNI.AttachCurrentThread() != 0)
+                        throw new InvalidOperationException("cannot attach USB close thread to the Android VM");
+                    try { usbBridge.Call("close"); }
+                    finally
+                    {
+                        try { usbBridge.Dispose(); }
+                        finally { AndroidJNI.DetachCurrentThread(); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: USB close failed: {ex.Message}");
+                }
+            }, key =>
+            {
+                if (AndroidJNI.AttachCurrentThread() != 0)
+                    throw new InvalidOperationException("cannot attach USB release thread to the Android VM");
+                try { usbBridge.Call("release", key); }
+                finally { AndroidJNI.DetachCurrentThread(); }
+            });
+        }
+
+        private void ConsumeUsbRefresh()
+        {
+            var result = usbRefresh?.Take();
+            if (result == null) return;
+            try
+            {
+                if (result.Error != null) throw result.Error;
+                snapshot = JsonUtility.FromJson<UsbSnapshot>(result.Json!) ?? new UsbSnapshot();
+                usbFlow.SnapshotChanged();
+                usbRefreshError = null;
+                awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
+                expected = Expected;
+                usbFlow.ApplyIfNeeded(opened, SyncAttachments);
+                RefreshStatus();
+            }
+            catch (Exception ex)
+            {
+                if (usbRefreshError != ex.Message)
+                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: USB refresh failed: {ex.Message}");
+                usbRefreshError = ex.Message;
+            }
         }
 
         private void TryOpen()
@@ -1246,6 +1363,7 @@ namespace RealityLog.Rig
             if (activity == null) return;
             if (!force && Time.unscaledTime - lastIdentityPoll < IdentityPollSeconds
                 && apkBuildId.Length > 0 && EmbodimentSettled) return;
+            using var trace = RigTrace.Enter("OQC.Rig.PollIdentity");
             lastIdentityPoll = Time.unscaledTime;
             try
             {
@@ -1281,9 +1399,11 @@ namespace RealityLog.Rig
         {
             SxRig.Close();
             opened = false;
+            InvalidateStatus();
             openedConfigJson = "";
             attached.Clear();
             attachErrors.Clear();
+            usbFlow.RigClosed();
             lastOpenAttempt = float.NegativeInfinity;
         }
 
@@ -1335,29 +1455,36 @@ namespace RealityLog.Rig
                     Release(key);
                 }
             }
+            // The retained snapshot remains useful for status and native reopen, but these
+            // one-shot ownership instructions now belong to the worker request queue.
+            snapshot.pendingRelease = Array.Empty<string>();
         }
 
-        private void Release(string key)
+        private void Release(string key) => usbFlow.QueueRelease(key);
+
+        private void InvalidateStatus()
         {
-            try
+            // Only pointer swaps share this gate with the native reader; never a native call,
+            // parse, serializer or main-thread wait for outstanding status work.
+            lock (nativeStatusGate)
             {
-                bridge?.Call("release", key);
+                nativeStatusGeneration++;
+                nativeStatus = RigNativeStatusSnapshot.Empty;
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: release {key}: {ex.Message}");
-            }
+            parsedStatus.Invalidate();
         }
 
         private void RefreshStatus()
         {
+            using var trace = RigTrace.Enter("OQC.Rig.StatusSnapshot");
+            var began = System.Diagnostics.Stopwatch.GetTimestamp();
             if (!Expected && !opened && lastRefusal == null && startupErrors.Count == 0)
             {
-                statusJson = NotExpectedStatus;
+                parsedStatus.Offer(NotExpectedStatus);
                 return;
             }
 
-            var nativeJson = opened ? nativeStatusJson : "null";
+            var native = opened ? nativeStatus : RigNativeStatusSnapshot.Empty;
             // episodeLock is held only briefly now (the rig's work runs under rigWork), but the
             // main thread still never waits on it: it keeps the status it has this poll.
             if (!System.Threading.Monitor.TryEnter(episodeLock)) return;
@@ -1397,7 +1524,9 @@ namespace RealityLog.Rig
                 if (i > 0) json.Append(',');
                 json.Append('"').Append(RigJson.Escape(snapshot.awaitingPermission[i])).Append('"');
             }
-            json.Append("],\"attachErrors\":{");
+            json.Append("],\"refresh\":").Append(usbRefresh?.StatsJson() ?? "null")
+                .Append(",\"refreshError\":").Append(usbRefreshError == null ? "null" : JsonString(usbRefreshError))
+                .Append(",\"attachErrors\":{");
             first = true;
             foreach (var entry in attachErrors)
             {
@@ -1406,32 +1535,56 @@ namespace RealityLog.Rig
                 json.Append('"').Append(RigJson.Escape(entry.Key)).Append("\":").Append(entry.Value);
             }
             json.Append("}}");
-            var summary = opened ? nativeSummaryJson : "";
-            if (summary.Length > 2)
+            // Snapshot only main-owned small state. Large JSON strings are immutable references;
+            // the closure must never read this coordinator or its mutable collections later.
+            var prefix = json.ToString();
+            // These tokens are created once and replaced/removed, never mutated in place.
+            var errors = new Dictionary<string, JToken>(startupErrors);
+            var check = lastCheckJson;
+            var headset = headsetJson;
+            var report = deviceReportJson;
+            var reportError = deviceReportError;
+            var embodiment = embodimentStateJson;
+            var refusal = lastRefusal;
+            parsedStatus.Offer(() =>
             {
-                // podId, registeredRig, seals, uplink, lifted from the native status.
-                json.Append(',').Append(summary, 1, summary.Length - 2);
-            }
-            else
-            {
-                json.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null")
-                    .Append(",\"devices\":null,\"roles\":null,\"attempts\":null,\"factory\":null");
-                // The rig's verdict on the meshes ({ready, configured, assets, missing}) comes
-                // with its status; until the rig is open, say only that it has none yet.
-                json.Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
-            }
-            // The last battery/charging/network-time report the heartbeat sees, and its error.
-            json.Append(",\"startupErrors\":").Append(JsonConvert.SerializeObject(startupErrors));
-            json.Append(",\"lastCheck\":").Append(lastCheckJson);
-            json.Append(",\"headset\":").Append(headsetJson);
-            json.Append(",\"deviceReport\":").Append(deviceReportJson)
-                .Append(",\"deviceReportError\":").Append(deviceReportError is string error ? JsonString(error) : "null");
-            // The app's install of the meshes into filesDir: state, assets, copied, error.
-            json.Append(",\"embodimentInstall\":").Append(embodimentStateJson);
-            json.Append(",\"native\":").Append(nativeJson)
-                .Append(",\"lastRefusal\":").Append(lastRefusal?.ToJson() ?? "null")
-                .Append('}');
-            statusJson = json.ToString();
+                using var assemblyTrace = RigTrace.Enter("OQC.Rig.StatusAssemblyWorker");
+                var result = new StringBuilder(prefix);
+                var summary = native.SummaryJson;
+                if (summary.Length > 2)
+                {
+                    result.Append(',').Append(summary, 1, summary.Length - 2);
+                }
+                else
+                {
+                    result.Append(",\"nativeState\":null,\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null")
+                        .Append(",\"devices\":null,\"roles\":null,\"attempts\":null,\"factory\":null")
+                        .Append(",\"embodiment_assets\":{\"ready\":false,\"configured\":false}");
+                }
+                result.Append(",\"startupErrors\":").Append(JsonConvert.SerializeObject(errors))
+                    .Append(",\"lastCheck\":").Append(check)
+                    .Append(",\"headset\":").Append(headset)
+                    .Append(",\"deviceReport\":").Append(report)
+                    .Append(",\"deviceReportError\":").Append(reportError is string error ? JsonString(error) : "null")
+                    .Append(",\"embodimentInstall\":").Append(embodiment)
+                    .Append(",\"native\":").Append(native.Json)
+                    .Append(",\"lastRefusal\":").Append(refusal?.ToJson() ?? "null")
+                    .Append('}');
+                return result.ToString();
+            });
+            ReportMainThreadTime("status snapshot", began);
+        }
+
+        private long lastSlowMainThreadReport;
+        private void ReportMainThreadTime(string stage, long began)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var elapsedMs = (now - began) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            // Only slow calls are reported, at most once per second. This is diagnostic;
+            // it never changes source timestamps or the seal's timing laws.
+            if (elapsedMs < 20 || now - lastSlowMainThreadReport < System.Diagnostics.Stopwatch.Frequency) return;
+            lastSlowMainThreadReport = now;
+            Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: main-thread stage={stage} elapsed_ms={elapsedMs:F2} status_chars={StatusJson.Length}");
         }
 
         /// <summary>
@@ -1499,28 +1652,19 @@ namespace RealityLog.Rig
         private void PollNativeStatus()
         {
             if (!opened || System.Threading.Interlocked.Exchange(ref nativeStatusBusy, 1) == 1) return;
+            using var trace = RigTrace.Enter("OQC.Rig.NativeStatusWorker");
+            long generation;
+            lock (nativeStatusGate) generation = nativeStatusGeneration;
             try
             {
-                var json = SxRig.Status();
-                nativeStatusJson = json;
-                // "busy" (a check/start/stop/enroll holds the rig) keeps the last summary.
-                if (JToken.Parse(json) is JObject status && (string?)status["state"] != "busy")
+                var observation = RigNativeStatusSnapshot.Read(SxRig.Status(), nativeStatus, out var readable);
+                lock (nativeStatusGate)
                 {
-                    nativeSummaryJson = new JObject
-                    {
-                        ["nativeState"] = status["state"],
-                        ["podId"] = status["pod_id"],
-                        ["registeredRig"] = status["registered_rig"],
-                        ["seals"] = status["seals"],
-                        ["uplink"] = status["uplink"],
-                        ["floor"] = status["floor"],
-                        ["embodiment_assets"] = status["embodiment_assets"],
-                        // The Pod card's status screen (PodScreenBoard), kept while the rig is busy.
-                        ["devices"] = status["devices"],
-                        ["roles"] = status["roles"],
-                        ["attempts"] = status["attempts"],
-                        ["factory"] = status["factory"],
-                    }.ToString(Formatting.None);
+                    if (!opened || generation != nativeStatusGeneration) return;
+                    nativeStatus = observation;
+                }
+                if (readable is JObject status)
+                {
                     var signedIn = CollectorSignedIn(status) == true;
                     // Only a transition seen while running cues; a sign-in already held at
                     // launch does not.
@@ -1554,10 +1698,11 @@ namespace RealityLog.Rig
             }
             catch (SxRigException ex)
             {
-                nativeStatusJson = "{\"error\":" + ex.ErrorJson + "}";
-            }
-            catch (JsonException)
-            {
+                lock (nativeStatusGate)
+                {
+                    if (opened && generation == nativeStatusGeneration)
+                        nativeStatus = RigNativeStatusSnapshot.Error(ex.ErrorJson, nativeStatus);
+                }
             }
             finally
             {
@@ -1633,17 +1778,24 @@ namespace RealityLog.Rig
                 SxRig.Close();
                 opened = false;
             }
+            InvalidateStatus();
+            parsedStatus.Dispose();
             Application.logMessageReceivedThreaded -= OnLogLine;
             appLog?.Dispose();
             appLog = null;
-            try
+            if (usbRefresh != null)
             {
-                bridge?.Call("close");
+                // Its worker owns close/dispose after any outstanding refresh completes.
+                // The native owners above have already detached, so no fd is closed early.
+                usbRefresh.Dispose();
+                usbRefresh = null;
             }
-            catch (Exception)
+            else
             {
+                try { bridge?.Call("close"); }
+                catch (Exception) { }
+                bridge?.Dispose();
             }
-            bridge?.Dispose();
             bridge = null;
             activity?.Dispose();
             activity = null;

@@ -30,6 +30,11 @@ namespace RealityLog
         /// <summary>A head pose older than this refuses a recording start.</summary>
         public const double StartMaxPoseAgeMs = 1000.0;
 
+        // Admission source freshness uses the 100 ms bound from the native body/pose
+        // gap policy, but measures age now, not gaps within a completed recording.
+        // Recorded samples and the separate final validator remain unchanged.
+        private const double StartMaxSourceAgeMs = 100.0;
+
         /// <summary>A gap in head poses longer than this during a recording is a stall.</summary>
         public const double StallThresholdMs = 1000.0;
 
@@ -66,7 +71,7 @@ namespace RealityLog
         private static readonly object controllerLock = new();
         // BodyTrackingLogger starts the body runtime at app launch. This monitor reads it;
         // it does not own or restart the body-tracking lifecycle.
-        private OVRPlugin.BodyState bodyState = new()
+        private static OVRPlugin.BodyState bodyState = new()
         {
             JointLocations = new OVRPlugin.BodyJointLocation[84]
         };
@@ -76,6 +81,7 @@ namespace RealityLog
             public ControllerSample LeftShoulder;
             public ControllerSample RightShoulder;
             public float Confidence;
+            public double SourceTime;
             public double? AgeMs;
         }
         private static ControllerSample headSample;
@@ -89,6 +95,8 @@ namespace RealityLog
             public bool PositionTracked;
             public bool OrientationTracked;
             public OVRPlugin.Posef Pose;
+            public double SourceTime;
+            public double? SourceAgeMs;
             public float? DistanceToHeadM;
         }
 
@@ -98,6 +106,7 @@ namespace RealityLog
         {
             Interlocked.Exchange(ref lastAdvanceTicks, NoPose);
             lastOvrTime = 0;
+            positionTracked = orientationTracked = hmdPresent = vrFocus = inputFocus = false;
             Interlocked.Exchange(ref pausedSinceTicks, NoPose);
             pausedFrame = -1;
             recording = false;
@@ -161,21 +170,11 @@ namespace RealityLog
                 OnApplicationPause(false);
             }
 
-            var poseState = OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head);
-            var now = Stopwatch.GetTimestamp();
-            ObserveHeadPose(poseState, now);
-
-            positionTracked = OVRPlugin.GetNodePositionTracked(OVRPlugin.Node.Head);
-            orientationTracked = OVRPlugin.GetNodeOrientationTracked(OVRPlugin.Node.Head);
-            hmdPresent = OVRManager.isHmdPresent;
-            vrFocus = OVRManager.hasVrFocus;
-            inputFocus = OVRManager.hasInputFocus;
-
-            SampleControllers(poseState, positionTracked, now);
+            RefreshNow();
 
             if (recording)
             {
-                ObserveRecordingStall(now);
+                ObserveRecordingStall(Stopwatch.GetTimestamp());
             }
         }
 
@@ -183,7 +182,7 @@ namespace RealityLog
         // must not read as frozen forever.
         private static void ObserveHeadPose(OVRPlugin.PoseStatef poseState, long now)
         {
-            if (poseState.Time > 0 && poseState.Time != lastOvrTime)
+            if (poseState.Time > 0 && !double.IsInfinity(poseState.Time) && poseState.Time != lastOvrTime)
             {
                 lastOvrTime = poseState.Time;
                 Interlocked.Exchange(ref lastAdvanceTicks, now);
@@ -191,13 +190,20 @@ namespace RealityLog
         }
 
         /// <summary>
-        /// Samples the head pose now. Main thread only. <see cref="RecordingManager"/> calls it
+        /// Samples all tracking readiness now. Main thread only. <see cref="RecordingManager"/> calls it
         /// right before checking <see cref="StartRefusal"/>, so the check reflects the runtime
         /// at this moment, not the last frame before a stall.
         /// </summary>
         public static void RefreshNow()
         {
-            ObserveHeadPose(OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head), Stopwatch.GetTimestamp());
+            var poseState = OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head);
+            ObserveHeadPose(poseState, Stopwatch.GetTimestamp());
+            positionTracked = OVRPlugin.GetNodePositionTracked(OVRPlugin.Node.Head);
+            orientationTracked = OVRPlugin.GetNodeOrientationTracked(OVRPlugin.Node.Head);
+            hmdPresent = OVRManager.isHmdPresent;
+            vrFocus = OVRManager.hasVrFocus;
+            inputFocus = OVRManager.hasInputFocus;
+            SampleControllers(poseState, positionTracked);
         }
 
         private void OnApplicationPause(bool paused)
@@ -221,11 +227,17 @@ namespace RealityLog
 
         // Samples the controllers on the same OVR nodes the controller PoseLoggers use
         // (ControllerLeft = 12, ControllerRight = 13) and in the same tracking space.
-        private void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked, long now)
+        private static void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked)
         {
             var left = SampleController(OVRInput.Controller.LTouch, OVRPlugin.Node.ControllerLeft, headPose, headTracked);
             var right = SampleController(OVRInput.Controller.RTouch, OVRPlugin.Node.ControllerRight, headPose, headTracked);
             var body = SampleBody();
+            var sourceNow = OVRPlugin.GetTimeInSeconds();
+            var now = Stopwatch.GetTimestamp();
+            left.SourceAgeMs = SourceAgeMs(left.SourceTime, sourceNow);
+            right.SourceAgeMs = SourceAgeMs(right.SourceTime, sourceNow);
+            body.AgeMs = SourceAgeMs(body.SourceTime, sourceNow);
+            if (body.AgeMs == null) body = default;
             lock (controllerLock)
             {
                 bodySample = body;
@@ -234,6 +246,7 @@ namespace RealityLog
                     PositionTracked = headTracked,
                     OrientationTracked = orientationTracked,
                     Pose = headPose.Pose,
+                    SourceAgeMs = SourceAgeMs(headPose.Time, sourceNow),
                 };
                 leftController = left;
                 rightController = right;
@@ -241,21 +254,18 @@ namespace RealityLog
             }
         }
 
-        private BodySample SampleBody()
+        private static BodySample SampleBody()
         {
             if (!OVRPlugin.GetBodyState4(OVRPlugin.Step.Render, OVRPlugin.BodyJointSet.FullBody, ref bodyState))
                 return default;
-            var ageMs = (OVRPlugin.GetTimeInSeconds() - bodyState.Time) * 1000.0;
-            // Render poses may be predicted ahead by one display interval. A frozen
-            // body timestamp ages even while Update and the controller poses continue.
-            if (double.IsNaN(ageMs) || double.IsInfinity(ageMs) || bodyState.Time <= 0 || ageMs < -100)
+            if (bodyState.JointLocations == null || bodyState.JointLocations.Length <= 13)
                 return default;
             return new BodySample
             {
                 LeftShoulder = Shoulder(bodyState.JointLocations[8]),
                 RightShoulder = Shoulder(bodyState.JointLocations[13]),
                 Confidence = bodyState.Confidence,
-                AgeMs = Math.Max(0, ageMs),
+                SourceTime = bodyState.Time,
             };
         }
 
@@ -270,12 +280,14 @@ namespace RealityLog
         private static ControllerSample SampleController(
             OVRInput.Controller controller, OVRPlugin.Node node, OVRPlugin.PoseStatef headPose, bool headTracked)
         {
+            var poseState = OVRPlugin.GetNodePoseStateImmediate(node);
             var sample = new ControllerSample
             {
                 Connected = OVRInput.IsControllerConnected(controller),
                 PositionTracked = OVRPlugin.GetNodePositionTracked(node),
                 OrientationTracked = OVRPlugin.GetNodeOrientationTracked(node),
-                Pose = OVRPlugin.GetNodePoseStateImmediate(node).Pose,
+                Pose = poseState.Pose,
+                SourceTime = poseState.Time,
             };
             // An untracked position is stale or predicted, not where the controller is, so
             // no distance is reported for it.
@@ -287,6 +299,17 @@ namespace RealityLog
                 sample.DistanceToHeadM = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
             }
             return sample;
+        }
+
+        private static double? SourceAgeMs(double timestamp, double now)
+        {
+            if (timestamp <= 0 || double.IsNaN(timestamp) || double.IsInfinity(timestamp)) return null;
+            var age = (now - timestamp) * 1000.0;
+            // Retain the existing monitor's bounded 100 ms future allowance. Body
+            // Step.Render predicts ahead; the SDK does not specify a zero-skew
+            // comparison between immediate pose time and GetTimeInSeconds either.
+            if (double.IsNaN(age) || double.IsInfinity(age) || age < -100.0) return null;
+            return Math.Max(0, age);
         }
 
         private static void ObserveRecordingStall(long now)
@@ -350,8 +373,8 @@ namespace RealityLog
         }
 
         /// <summary>
-        /// Why a recording must not start now, or null when head tracking is live. A session
-        /// started without head poses has no usable HMD, controller, IMU or body data.
+        /// Why a recording must not start now. Safe from any thread; the start caller must
+        /// first call RefreshNow on Unity's thread so flags and source ages are current.
         /// </summary>
         public static string? StartRefusal
         {
@@ -368,9 +391,44 @@ namespace RealityLog
                     return $"head tracking stopped {age.Value / 1000.0:F1} s ago ({Describe()}); " +
                         "restart the capture app or reboot the headset";
                 }
+                ControllerSample head, left, right;
+                BodySample body;
+                long sampledAt;
+                lock (controllerLock)
+                {
+                    head = headSample;
+                    left = leftController;
+                    right = rightController;
+                    body = bodySample;
+                    sampledAt = controllerSampleTicks;
+                }
+                var snapshotAgeMs = sampledAt == NoPose ? double.PositiveInfinity
+                    : TicksToMs(Stopwatch.GetTimestamp() - sampledAt);
+                var refusal = PoseStartRefusal("head", head, snapshotAgeMs, needsConnection: false)
+                    ?? PoseStartRefusal("left controller", left, snapshotAgeMs, needsConnection: true)
+                    ?? PoseStartRefusal("right controller", right, snapshotAgeMs, needsConnection: true);
+                if (refusal != null) return refusal;
+                if (!Fresh(body.AgeMs, snapshotAgeMs))
+                    return "body tracking has no fresh active sample (max 100 ms); wear the headset and wait for tracking";
                 return null;
             }
         }
+
+        private static string? PoseStartRefusal(string name, ControllerSample sample, double snapshotAgeMs, bool needsConnection)
+        {
+            if (needsConnection && !sample.Connected)
+                return $"{name} is not connected; wake it and keep it visible to the headset";
+            if (!sample.PositionTracked || !sample.OrientationTracked)
+                return needsConnection
+                    ? $"{name} position and orientation must both be tracked; keep it visible to the headset"
+                    : "head position and orientation must both be tracked; put on the headset and wait for tracking";
+            if (!Fresh(sample.SourceAgeMs, snapshotAgeMs))
+                return $"{name} has no fresh source pose (max 100 ms); wait for tracking";
+            return null;
+        }
+
+        private static bool Fresh(double? sourceAgeMs, double snapshotAgeMs) =>
+            sourceAgeMs is double age && age + snapshotAgeMs <= StartMaxSourceAgeMs;
 
         /// <summary>
         /// The <c>tracking</c> object for <c>/api/status</c>, without a trailing comma.
