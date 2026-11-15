@@ -110,6 +110,9 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_start_armed")]
         private static extern int NativeStartArmed(byte[] episodeJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
+        [DllImport(Library, EntryPoint = "sx_rig_request_stop")]
+        private static extern int NativeRequestStop();
+
         [DllImport(Library, EntryPoint = "sx_rig_stop")]
         private static extern int NativeStop(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
@@ -147,6 +150,7 @@ namespace RealityLog.Rig
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStartArmed(byte[] episodeJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativeRequestStop() => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStop(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeStatus(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
@@ -265,6 +269,9 @@ namespace RealityLog.Rig
             return CallJson("sx_rig_start_armed",
                 (byte[]? outJson, UIntPtr cap, out UIntPtr needed) => NativeStartArmed(episode, outJson, cap, out needed));
         }
+
+        /// <summary>Freeze capture's end timestamp and signal native producers. Does not seal.</summary>
+        public static void RequestStop() => Check("sx_rig_request_stop", NativeRequestStop);
 
         /// <summary><c>sx_rig_stop</c>: the stop receipt. Bounded 5 s.</summary>
         public static string Stop() => CallJson("sx_rig_stop", NativeStop);

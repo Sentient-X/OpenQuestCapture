@@ -102,6 +102,9 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingListRefreshGate.cs"
 "$mono" "$out/list-refresh-harness.exe"
 
+# RigUsbRefresh: slow Android USB reads never hold the sampling thread or close an in-flight fd.
+bash "$here/test_usb_refresh.sh"
+
 # AppLogFile: the app's log lines the rig ships, rolled and bounded.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/app-log-harness.exe" "$here/AppLogHarness.cs" \

@@ -23,7 +23,7 @@ namespace RealityLog.Rig
     /// then is the library loaded, opened or called; otherwise every method here is a no-op and
     /// recording behaves exactly as it did before the rig existed (the laptop-pod flow).</para>
     ///
-    /// <para><b>USB.</b> Every 0.5 s the bridge re-enumerates; a newly opened device's fd is
+    /// <para><b>USB.</b> Every 0.5 s a worker asks the bridge to re-enumerate; a newly opened device's fd is
     /// attached to the rig, and a vanished one is detached from the rig before the bridge
     /// closes its connection (the ABI leaves fd ownership with Kotlin until the detach).</para>
     ///
@@ -33,7 +33,7 @@ namespace RealityLog.Rig
     /// (<c>sx_rig_start_armed</c>: the rig arms and anchors the episode itself, inside OQC's
     /// recording). <see cref="StopEpisode"/>, after OQC's files are final, returns the receipt.</para>
     ///
-    /// USB polling is main-thread; the episode calls, <see cref="IsExpected"/> and
+    /// USB results are applied on the main thread, but enumeration never waits there. The episode calls, <see cref="IsExpected"/> and
     /// <see cref="StatusJson"/> are safe from any thread.
     /// </summary>
     public class RigCoordinator : MonoBehaviour
@@ -85,6 +85,9 @@ namespace RealityLog.Rig
         }
 
         private AndroidJavaObject? bridge;
+        private RigUsbRefresh? usbRefresh;
+        private readonly RigUsbSnapshotFlow usbFlow = new();
+        private string? usbRefreshError;
         private AndroidJavaObject? activity;
         private string configPath = "";
         private string podConfigPath = "";
@@ -334,6 +337,7 @@ namespace RealityLog.Rig
                 try
                 {
                     bridge = new AndroidJavaObject(BridgeClassName, activity);
+                    StartUsbRefresh(bridge);
                 }
                 catch (Exception ex)
                 {
@@ -433,6 +437,7 @@ namespace RealityLog.Rig
 
         private void Update()
         {
+            ConsumeUsbRefresh();
             if (Time.unscaledTime - lastHeadsetRead >= 1f)
             {
                 lastHeadsetRead = Time.unscaledTime;
@@ -998,6 +1003,34 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
+        /// Capture the native stop boundary before the headset drains its files. Keeps the
+        /// episode active until StopEpisode finalizes it, so sealing cannot read open files.
+        /// Retries retain the first native cutoff. Any thread. Never throws.
+        /// </summary>
+        public void RequestStopEpisode()
+        {
+            lock (episodeLock)
+            {
+                while (rigWork != null) System.Threading.Monitor.Wait(episodeLock);
+                if (!episodeActive) return;
+                ClaimRigLocked("request_stop");
+            }
+            try
+            {
+                SxRig.RequestStop();
+            }
+            catch (SxRigException ex)
+            {
+                // A clock failure poisons the native attempt; still let final stop drain it.
+                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: stop cutoff: {ex.Message}");
+            }
+            finally
+            {
+                lock (episodeLock) ReleaseRigLocked();
+            }
+        }
+
+        /// <summary>
         /// Stops the rig's episode and returns its stop receipt (a JSON object: the library's
         /// <c>{"outcome": ...}</c>, or <c>{"error": {...}}</c> when the stop call itself failed),
         /// or null when no rig episode ran. Bounded 5 s. Any thread. Idempotent: a second call
@@ -1009,7 +1042,7 @@ namespace RealityLog.Rig
             {
                 // A check or start under way finishes first, as when it held the lock: then a
                 // reservation it made is cancelled, and an episode it armed is stopped.
-                while (rigWork is "check" or "start" or "stop") System.Threading.Monitor.Wait(episodeLock);
+                while (rigWork != null) System.Threading.Monitor.Wait(episodeLock);
                 reservedSession = null; // a stop before the rig armed cancels the arming
                 if (!episodeActive) return episodeReceiptJson;
                 ClaimRigLocked("stop");
@@ -1044,18 +1077,6 @@ namespace RealityLog.Rig
             enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
             if (opened && enrolled && apiToken == null) RefreshApiToken();
             PollIdentity(force: false);
-            if (bridge != null)
-            {
-                try
-                {
-                    var json = bridge.Call<string>("refresh");
-                    snapshot = JsonUtility.FromJson<UsbSnapshot>(json) ?? new UsbSnapshot();
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: USB refresh failed: {ex.Message}");
-                }
-            }
 
             awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
             expected = Expected;
@@ -1066,11 +1087,68 @@ namespace RealityLog.Rig
             {
                 TryOpen();
             }
-            if (opened)
-            {
-                SyncAttachments();
-            }
+            usbFlow.ApplyIfNeeded(opened, SyncAttachments);
+            if (usbRefresh != null) usbFlow.Request(usbRefresh);
             RefreshStatus();
+        }
+
+        private void StartUsbRefresh(AndroidJavaObject usbBridge)
+        {
+            // Android's UsbManager uses binder and may wait behind system USB work. Keep
+            // that wait off FixedUpdate's thread, while all SDK tracking calls stay there.
+            usbRefresh = new RigUsbRefresh(() =>
+            {
+                if (AndroidJNI.AttachCurrentThread() != 0)
+                    throw new InvalidOperationException("cannot attach USB refresh thread to the Android VM");
+                try { return usbBridge.Call<string>("refresh"); }
+                finally { AndroidJNI.DetachCurrentThread(); }
+            }, () =>
+            {
+                try
+                {
+                    if (AndroidJNI.AttachCurrentThread() != 0)
+                        throw new InvalidOperationException("cannot attach USB close thread to the Android VM");
+                    try { usbBridge.Call("close"); }
+                    finally
+                    {
+                        try { usbBridge.Dispose(); }
+                        finally { AndroidJNI.DetachCurrentThread(); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: USB close failed: {ex.Message}");
+                }
+            }, key =>
+            {
+                if (AndroidJNI.AttachCurrentThread() != 0)
+                    throw new InvalidOperationException("cannot attach USB release thread to the Android VM");
+                try { usbBridge.Call("release", key); }
+                finally { AndroidJNI.DetachCurrentThread(); }
+            });
+        }
+
+        private void ConsumeUsbRefresh()
+        {
+            var result = usbRefresh?.Take();
+            if (result == null) return;
+            try
+            {
+                if (result.Error != null) throw result.Error;
+                snapshot = JsonUtility.FromJson<UsbSnapshot>(result.Json!) ?? new UsbSnapshot();
+                usbFlow.SnapshotChanged();
+                usbRefreshError = null;
+                awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
+                expected = Expected;
+                usbFlow.ApplyIfNeeded(opened, SyncAttachments);
+                RefreshStatus();
+            }
+            catch (Exception ex)
+            {
+                if (usbRefreshError != ex.Message)
+                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: USB refresh failed: {ex.Message}");
+                usbRefreshError = ex.Message;
+            }
         }
 
         private void TryOpen()
@@ -1284,6 +1362,7 @@ namespace RealityLog.Rig
             openedConfigJson = "";
             attached.Clear();
             attachErrors.Clear();
+            usbFlow.RigClosed();
             lastOpenAttempt = float.NegativeInfinity;
         }
 
@@ -1335,19 +1414,12 @@ namespace RealityLog.Rig
                     Release(key);
                 }
             }
+            // The retained snapshot remains useful for status and native reopen, but these
+            // one-shot ownership instructions now belong to the worker request queue.
+            snapshot.pendingRelease = Array.Empty<string>();
         }
 
-        private void Release(string key)
-        {
-            try
-            {
-                bridge?.Call("release", key);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: release {key}: {ex.Message}");
-            }
-        }
+        private void Release(string key) => usbFlow.QueueRelease(key);
 
         private void RefreshStatus()
         {
@@ -1397,7 +1469,9 @@ namespace RealityLog.Rig
                 if (i > 0) json.Append(',');
                 json.Append('"').Append(RigJson.Escape(snapshot.awaitingPermission[i])).Append('"');
             }
-            json.Append("],\"attachErrors\":{");
+            json.Append("],\"refresh\":").Append(usbRefresh?.StatsJson() ?? "null")
+                .Append(",\"refreshError\":").Append(usbRefreshError == null ? "null" : JsonString(usbRefreshError))
+                .Append(",\"attachErrors\":{");
             first = true;
             foreach (var entry in attachErrors)
             {
@@ -1636,14 +1710,19 @@ namespace RealityLog.Rig
             Application.logMessageReceivedThreaded -= OnLogLine;
             appLog?.Dispose();
             appLog = null;
-            try
+            if (usbRefresh != null)
             {
-                bridge?.Call("close");
+                // Its worker owns close/dispose after any outstanding refresh completes.
+                // The native owners above have already detached, so no fd is closed early.
+                usbRefresh.Dispose();
+                usbRefresh = null;
             }
-            catch (Exception)
+            else
             {
+                try { bridge?.Call("close"); }
+                catch (Exception) { }
+                bridge?.Dispose();
             }
-            bridge?.Dispose();
             bridge = null;
             activity?.Dispose();
             activity = null;

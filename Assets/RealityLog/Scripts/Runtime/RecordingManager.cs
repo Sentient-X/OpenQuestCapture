@@ -390,6 +390,11 @@ namespace RealityLog
 
             try
             {
+                // Record the actual end of acquisition before any synchronous drain or
+                // disk flush. The final StopRig below still admits sealing only after all
+                // headset files are closed; finalization time is not part of the episode.
+                RigCoordinator.Instance?.RequestStopEpisode();
+                EndPhase("rig_cutoff");
                 // Stop in reverse order
                 // Step 1: Stop capture loop first
                 captureTimer.StopCapture();
@@ -576,6 +581,7 @@ namespace RealityLog
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; performing synchronous stop.");
 
+                RigCoordinator.Instance?.RequestStopEpisode();
                 captureTimer.StopCapture();
                 HeadTrackingMonitor.EndRecording();
 

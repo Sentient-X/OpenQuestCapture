@@ -41,6 +41,8 @@ static class Harness {
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device, "start -> Device"); }
         try { SxRig.StartArmed("{\"episode_id\":\"e1\"}"); Expect(false, "start_armed throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device && e.Function == "sx_rig_start_armed", "start_armed -> Device"); }
+        try { SxRig.RequestStop(); Expect(false, "request_stop throws without an episode"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_request_stop", "request_stop -> State " + e.ErrorJson); }
         try { SxRig.Stop(); Expect(false, "stop throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State, "stop -> State " + e.ErrorJson); }
         SxRig.Close();
