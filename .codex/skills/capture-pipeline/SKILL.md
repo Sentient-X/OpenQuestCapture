@@ -210,3 +210,33 @@ Evidence: `/home/sarthak/p3/pod5-seal-fix-20261112/status-audit/`, `tracking-aud
 and `status-repair/`. A built repair still requires installation, startup/trace verification,
 a genuine moving recording, actual unchanged sealing and canonical QC. Never describe a
 host test or a short USB-aborted run as sustained capture acceptance.
+
+### Body-rate admission, body gaps and the libsx_rig ABI drift (2026-11-15, sx#4210)
+
+- Body-tracking gaps >100 ms are the top seal refusal (sx#4210: 489 episodes; 38-41% on
+  v67 test builds). One fresh body sample passes a 100 ms age check even when the Meta
+  tracker advances only every 160-320 ms (OQC#22), so `HeadTrackingMonitor.StartRefusal`
+  also refuses below `StartMinBodyHz` (30) over `BodyRateWindow.WindowSeconds` (1.5 s of
+  OVR source time) and while that window is not yet full ("still being measured").
+- `OVRPlugin.BodyTrackingCalibrationState`: 1 Valid, 2 Calibrating, 3 Invalid (SDK 81
+  `OVRPlugin.cs`). Calibrating alone does not refuse; every change is logged as
+  `HeadTrackingMonitor: body calibration_status A -> B after N s`.
+- `BodyTrackingLogger` counts intervals >100 ms between *written* rows into the body
+  stream's manifest stats (`gaps_over_100ms`, `max_gap_ms`); `/api/status` tracking has
+  `bodyUpdateHz`, `bodyCalibrationStatus`, `bodyRecordingGaps`, `bodyLongestGapMs`,
+  `bodyTrackerRestarts`. Nothing in sx parses those (seal checks only that
+  `stream_manifest.json` exists; the laptop pod reads `/tracking/startRefusal` by pointer).
+- Idle recovery: with the rate refusing for 15 s and no recording, the logger runs
+  `StopBodyTracking` + `StartBodyTracking2` at most once a minute. Not yet observed on a
+  device to clear a degraded tracker. A frozen *head* pose still has no automatic recovery:
+  quitting the app needs a relauncher, which a headset-only pod lacks.
+- Do not add `tracked` to `DevicePresence`'s controllers: libsx_rig's `ControllerReport`
+  is `deny_unknown_fields`, so the whole device report (battery, power_ok, clock) would be
+  refused. The Pod card's "controller not tracked" warning reads the app's own
+  `headset.controllers[].tracked` (position AND orientation), covered in PodScreenHarness.
+- The vendored `libsx_rig.so` (sx main 9c0b8959dd) does not export `sx_rig_request_stop`;
+  check with `nm -D --defined-only Assets/Plugins/Android/libs/arm64-v8a/libsx_rig.so`.
+  `RequestStopEpisode` now warns once and skips it, so the stop alone ends capture.
+- Host harness: `SX_RIG_INCLUDE=~/p3/sentient/sx/packages/sx-pod-runtime/include bash
+  tools/sx-rig-stub/test_binding.sh` -> 694 `PASS` lines, exit 0 (676 before this change);
+  tracking readiness 60/60. Mutations (threshold 5 Hz; rate clause removed) fail 3 and 5 checks.
