@@ -1036,6 +1036,9 @@ namespace RealityLog.Rig
             return ex.Error.ToString();
         }
 
+        // Set once the library is found to lack sx_rig_request_stop.
+        private volatile bool noEarlyStop;
+
         /// <summary>
         /// Capture the native stop boundary before the headset drains its files. Keeps the
         /// episode active until StopEpisode finalizes it, so sealing cannot read open files.
@@ -1043,6 +1046,7 @@ namespace RealityLog.Rig
         /// </summary>
         public void RequestStopEpisode()
         {
+            if (noEarlyStop) return;
             lock (episodeLock)
             {
                 while (rigWork != null) System.Threading.Monitor.Wait(episodeLock);
@@ -1052,6 +1056,13 @@ namespace RealityLog.Rig
             try
             {
                 SxRig.RequestStop();
+            }
+            catch (SxRigLibraryMissingException ex)
+            {
+                // A libsx_rig without sx_rig_request_stop (sx main 9c0b8959dd, this tree's
+                // v67 library) has no early cutoff: its stop alone ends capture, as before.
+                noEarlyStop = true;
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: this libsx_rig has no stop cutoff; the stop ends capture ({ex.Message})");
             }
             catch (SxRigException ex)
             {
