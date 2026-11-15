@@ -260,10 +260,16 @@ public static class PodCardSnapshot
         PodReadiness.Refused, "Refused");
 
     /// <summary>(k) Recording, the left controller out of hand for 3 s: the banner says so, recording goes on.</summary>
-    private static PodCardState RecordingControllerLost() => Live(LivePod + ",\"episodeActive\":true,\"factory\":{" + LiveFactory + "}," +
+    private static PodCardState RecordingControllerLost() => Recording(Live(LivePod + ",\"episodeActive\":true,\"factory\":{" + LiveFactory + "}," +
         "\"native\":{\"state\":\"recording\",\"episode\":{\"episode_id\":\"20261115_120000\"}}," +
         "\"tracking\":{\"start_refusal\":null,\"controllers_lost\":[{\"code\":\"controller_lost\",\"who\":\"collector\",\"args\":{\"side\":\"left\"}}]}",
-        PodReadiness.Ready, "Recording");
+        PodReadiness.Ready, "Recording"));
+
+    private static PodCardState Recording(PodCardState state)
+    {
+        state.Recording = true;
+        return state;
+    }
 
     /// <summary>(a) A fresh install: not enrolled, Local only off, nothing plugged in; the real boards' words.</summary>
     private static PodCardState NotEnrolled()

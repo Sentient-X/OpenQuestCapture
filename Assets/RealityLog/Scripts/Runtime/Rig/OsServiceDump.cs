@@ -13,8 +13,9 @@ namespace RealityLog.Rig
     /// A Horizon OS system service's <c>dumpsys</c> text, read in-app: its binder
     /// (<c>ServiceManager.getService</c>) dumps into a pipe, read with a timeout. Needs
     /// <c>android.permission.DUMP</c> (granted over adb at provisioning). Used for the controllers'
-    /// charge (<c>OVRRemoteService</c>, <see cref="OsRemoteServiceBattery"/>) and the headset's serial
-    /// (<c>CompanionService</c>, <see cref="OsHeadsetSerial"/>). Never on Unity's main thread; the
+    /// charge (<c>OVRRemoteService</c>, <see cref="OsRemoteServiceBattery"/>). Not every service is
+    /// reachable: SELinux denies untrusted apps <c>find</c> on <c>CompanionService</c> (pod5,
+    /// 2026-11-15), so the headset serial still comes from pod_config.json. Never on Unity's main thread; the
     /// calling thread must be attached to the Android VM.
     /// </summary>
     public static class OsServiceDump
@@ -145,19 +146,5 @@ namespace RealityLog.Rig
             return null;
         }
 #endif
-    }
-
-    /// <summary>
-    /// The headset's serial as Horizon OS's <c>CompanionService</c> prints it
-    /// (<c>Provisioned serial: 3487C10H3P07B9</c>): apps cannot read <c>ro.serialno</c>, so a
-    /// pod_config.json without <c>headset_serial</c> takes it from here. Pure parse, host-tested.
-    /// </summary>
-    public static class OsHeadsetSerial
-    {
-        private static readonly System.Text.RegularExpressions.Regex Line =
-            new(@"Provisioned serial:\s*([A-Za-z0-9]{6,32})\b");
-
-        /// <summary>The serial in a CompanionService dump; null when it names none.</summary>
-        public static string? Parse(string dump) => Line.Match(dump) is { Success: true } m ? m.Groups[1].Value : null;
     }
 }

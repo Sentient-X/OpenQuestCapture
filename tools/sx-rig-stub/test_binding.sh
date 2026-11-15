@@ -134,12 +134,6 @@ bash "$here/test_tracking_readiness.sh"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SelfRelaunch.cs"
 "$mono" "$out/self-relaunch-harness.exe"
 
-# OsHeadsetSerial: the headset serial from CompanionService's dumpsys text.
-"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
-    -out:"$out/os-serial-harness.exe" "$here/OsHeadsetSerialHarness.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/OsServiceDump.cs"
-"$mono" "$out/os-serial-harness.exe"
-
 # OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/os-controller-harness.exe" "$here/OsControllerReportHarness.cs" \

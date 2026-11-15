@@ -629,6 +629,8 @@ namespace RealityLog.Rig
                 PodReadiness.Refused => PodTone.Error,
                 _ => PodTone.Neutral,
             };
+            // A recording keeps its own chip; a warning while it runs (a controller out of hand) is amber.
+            if (screen.Recording && screen.Blocker.Tone == PodTone.Warning) return (PodTone.Warning, text);
             if (screen.Blocker.Tone != PodTone.Good)
             {
                 return tone == PodTone.Good || readiness == PodReadiness.LocalOnly

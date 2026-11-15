@@ -175,6 +175,8 @@ static class PodScreenHarness
             + "{\"code\":\"controller_lost\",\"args\":{\"side\":\"left\"}}]}", live: lostLive, at: T0.AddSeconds(1));
         Expect(lostLeft.Blocker.Headline == "The left controller is out of hand" && lostLeft.Blocker.Tone == PodTone.Warning
             && lostLeft.Recording, "a controller lost while recording -> its notice, amber, recording goes on: " + lostLeft.Blocker.Headline);
+        Expect(PodScreenBoard.Chip(lostLeft, PodReadiness.Ready, "Recording") == (PodTone.Warning, "Recording"),
+            "the chip still says Recording (amber), never Not ready");
         Expect(PodScreenBoard.ControllerLost(JObject.Parse("{\"native\":{\"tracking\":{\"controllers_lost\":[{\"code\":\"controller_lost\",\"args\":{\"side\":\"right\"}}]}}}"))?.Code
             == "controller_lost", "controllers_lost is read from the native status when not lifted");
 

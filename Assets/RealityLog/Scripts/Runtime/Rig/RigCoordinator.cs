@@ -259,7 +259,6 @@ namespace RealityLog.Rig
             credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
             localOnly = ReadLocalOnly(); // before the first open
-            ReadOsSerial();
             // The operator's words (sx_operator_notices.json, shipped with the library). Without
             // them every notice reads as its code, never raw text; the failure is reported.
             try
@@ -456,79 +455,10 @@ namespace RealityLog.Rig
 
         private float lastHeadsetRead = float.NegativeInfinity;
 
-        // The headset serial CompanionService printed (OsHeadsetSerial), handed to the main thread once.
-        private volatile string? osSerial;
-        private bool osSerialApplied;
-
-        /// <summary>Reads CompanionService's serial once, off the main thread (it needs the DUMP grant).</summary>
-        private void ReadOsSerial()
-        {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            new System.Threading.Thread(() =>
-            {
-                AndroidJNI.AttachCurrentThread();
-                try
-                {
-                    var dump = OsServiceDump.Dump("CompanionService", out var refused);
-                    var serial = dump == null ? null : OsHeadsetSerial.Parse(dump);
-                    if (serial == null)
-                    {
-                        Debug.LogWarning($"[{Constants.LOG_TAG}] HeadsetSerial: CompanionService gave none: " +
-                            (refused ?? $"no 'Provisioned serial:' line in {dump?.Length ?? 0} chars"));
-                    }
-                    osSerial = serial;
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] HeadsetSerial: CompanionService dump threw {ex.GetType().Name}: {ex.Message}");
-                }
-                finally
-                {
-                    AndroidJNI.DetachCurrentThread();
-                }
-            }) { IsBackground = true, Name = "HeadsetSerialOs" }.Start();
-#endif
-        }
-
-        /// <summary>
-        /// Main thread: a pod_config.json without headset_serial takes CompanionService's (the rig
-        /// reads it there); one that names another keeps its own, and the mismatch is logged.
-        /// </summary>
-        private void ApplyOsSerial()
-        {
-            if (osSerialApplied || osSerial is not string serial) return;
-            osSerialApplied = true;
-            var configured = ReadPodConfigSerial();
-            if (configured == serial)
-            {
-                Debug.Log($"[{Constants.LOG_TAG}] HeadsetSerial: from CompanionService {serial}, equal to pod_config.json's");
-                return;
-            }
-            if (configured.Length > 0)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] HeadsetSerial: from CompanionService {serial}, but pod_config.json names " +
-                    $"{configured}; keeping pod_config.json's");
-                return;
-            }
-            try
-            {
-                var config = ReadPodConfig();
-                config["headset_serial"] = serial;
-                WritePodConfig(config);
-                Debug.Log($"[{Constants.LOG_TAG}] HeadsetSerial: from CompanionService {serial}, written to pod_config.json");
-            }
-            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException
-                || ex is UnauthorizedAccessException)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] HeadsetSerial: from CompanionService {serial}; cannot write pod_config.json: {ex.Message}");
-            }
-        }
-
         private void Update()
         {
             using var trace = RigTrace.Enter("OQC.Rig.Update");
             ConsumeUsbRefresh();
-            ApplyOsSerial();
             if (Time.unscaledTime - lastHeadsetRead >= 1f)
             {
                 lastHeadsetRead = Time.unscaledTime;
