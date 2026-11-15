@@ -187,6 +187,8 @@ public static class PodCardSnapshot
         yield return ("g-no-episodes-held", NoEpisodesHeld());
         yield return ("h-storage-low", StorageLow());
         yield return ("i-prestart-warnings", PreStartWarnings());
+        yield return ("j-refused-not-in-hand", RefusedNotInHand());
+        yield return ("k-recording-controller-lost", RecordingControllerLost());
     }
 
     // ---- The operator's words, through the real board from the status the rig and the app write ----
@@ -248,6 +250,20 @@ public static class PodCardSnapshot
         "\"native\":{\"state\":\"open\",\"storage\":{\"free_bytes\":3600000000,\"required_bytes\":2248800000,\"backlog_bytes\":0,\"backlog_episodes\":0," +
         "\"held\":{\"unreported\":{\"attempts\":1}}}}",
         PodReadiness.Ready, "Ready");
+
+    /// <summary>(j) A start the rig's tracking law refused (sx#4210): a controller set down, out of reach.</summary>
+    private static PodCardState RefusedNotInHand() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
+        "\"tracking\":{\"start_refusal\":{\"kind\":\"controllers_not_in_hand\",\"detail\":\"left controller is 1.9 m from the headset\"," +
+        "\"notice\":{\"code\":\"controllers_not_in_hand\",\"who\":\"collector\",\"args\":{}}},\"controllers_lost\":[]}," +
+        "\"lastRefusal\":{\"code\":\"controllers_not_in_hand\",\"message\":\"left controller is 1.9 m from the headset\"," +
+        "\"detail\":{\"kind\":\"controllers_not_in_hand\",\"notice\":{\"code\":\"controllers_not_in_hand\",\"who\":\"collector\",\"args\":{}}}}",
+        PodReadiness.Refused, "Refused");
+
+    /// <summary>(k) Recording, the left controller out of hand for 3 s: the banner says so, recording goes on.</summary>
+    private static PodCardState RecordingControllerLost() => Live(LivePod + ",\"episodeActive\":true,\"factory\":{" + LiveFactory + "}," +
+        "\"native\":{\"state\":\"recording\",\"episode\":{\"episode_id\":\"20261115_120000\"}}," +
+        "\"tracking\":{\"start_refusal\":null,\"controllers_lost\":[{\"code\":\"controller_lost\",\"who\":\"collector\",\"args\":{\"side\":\"left\"}}]}",
+        PodReadiness.Ready, "Recording");
 
     /// <summary>(a) A fresh install: not enrolled, Local only off, nothing plugged in; the real boards' words.</summary>
     private static PodCardState NotEnrolled()

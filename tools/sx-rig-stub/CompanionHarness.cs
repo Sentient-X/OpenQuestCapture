@@ -320,6 +320,8 @@ static class CompanionHarness
             == "A Factory check is failing: Call a technician. The Console names the check.", "a Factory 422 reaches the phone in plain words");
         Expect(PodControlWords.HttpWords(500, "not json", false) == "The stop was refused (code http_500)", "an unreadable refusal names the status");
         Expect(PodControlWords.Percent(null) == "not available" && PodControlWords.Percent(7) == "7%", "percent words");
+        Expect(PodControlWords.Percent(null, false).Contains("DUMP grant") && PodControlWords.Percent(null, null) == "not available"
+            && PodControlWords.Percent(60, false) == "60%", "a charge missing for want of the DUMP grant says so");
         Expect(ControllerCharge.FromLevel(true, 0.6f) == 60 && ControllerCharge.FromLevel(true, 0f) == null
             && ControllerCharge.FromLevel(false, 0.6f) == null && ControllerCharge.FromLevel(true, 1.5f) == null, "XR batteryLevel 0..1 -> percent, 0 unknown");
         Expect(ControllerCharge.First(null, 40) == 40 && ControllerCharge.First(60, 40) == 60 && ControllerCharge.First(null, null) == null, "the first source that read it");

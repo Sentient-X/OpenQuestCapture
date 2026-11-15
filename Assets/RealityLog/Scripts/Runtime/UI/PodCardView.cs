@@ -610,7 +610,7 @@ namespace RealityLog.UI
         /// <summary>"Left 64%", tinted by how low it is; dim when it cannot be read.</summary>
         private static void ShowCharge(TextMeshProUGUI text, string label, int? pct)
         {
-            Set(text, "<color=#999999>" + label + "</color>  " + PodControlWords.Percent(pct));
+            Set(text, "<color=#999999>" + label + "</color>  " + PodControlWords.Percent(pct, label == "Headset" ? true : OsServiceDump.Granted));
             text.color = pct is int p ? p <= 15 ? ErrorColor : p <= 30 ? WarningColor : GoodColor : DimTextColor;
         }
 
