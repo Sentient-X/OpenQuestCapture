@@ -1,11 +1,160 @@
 # nullable enable
 
+using System;
 using System.Linq;
+using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace RealityLog.Rig
 {
+    /// <summary>
+    /// Builds and parses status off the capture thread. Only the newest pending request is
+    /// retained. Raw JSON and its read-only tree publish together; readers must not mutate
+    /// that tree. The lock covers only pointer swaps, never building/parsing or a callback.
+    /// </summary>
+    public sealed class RigStatusSnapshot : IDisposable
+    {
+        public sealed class Value
+        {
+            public string Json { get; }
+            public JObject? Tree { get; }
+            public Value(string json, JObject? tree) { Json = json; Tree = tree; }
+        }
+
+        private readonly object gate = new();
+        private readonly Func<string, JObject?> parse;
+        private Func<string>? pending;
+        private long generation;
+        private bool running;
+        private bool disposed;
+        private Value? published;
+
+        public RigStatusSnapshot() : this(json => JToken.Parse(json) as JObject) { }
+        // A parser seam lets host tests hold a parse while many new snapshots arrive.
+        public RigStatusSnapshot(Func<string, JObject?> parse) => this.parse = parse;
+        public Value? Latest => Volatile.Read(ref published);
+        public JObject? Current => Latest?.Tree;
+
+        public void Offer(string json) => Offer(() => json);
+
+        /// <summary>The callback owns an immutable input snapshot; it must not read Unity or live collections.</summary>
+        public void Offer(Func<string> build)
+        {
+            lock (gate)
+            {
+                if (disposed) return;
+                pending = build;
+                if (running) return;
+                running = true;
+            }
+            ThreadPool.QueueUserWorkItem(_ => Drain());
+        }
+
+        private void Drain()
+        {
+            while (true)
+            {
+                Func<string>? build;
+                long acceptedGeneration;
+                lock (gate)
+                {
+                    build = pending;
+                    pending = null;
+                    acceptedGeneration = generation;
+                    if (disposed || build == null)
+                    {
+                        running = false;
+                        return;
+                    }
+                }
+                Value result;
+                try
+                {
+                    var json = build();
+                    result = new Value(json, parse(json));
+                }
+                catch (Exception)
+                {
+                    // A failed diagnostic build/parse must neither kill the worker nor keep
+                    // a stale ready tree. The HTTP form remains valid JSON too.
+                    result = new Value("null", null);
+                }
+                lock (gate)
+                {
+                    // New offers replace the pending request, not the generation: an
+                    // overloaded builder must still publish progress. Only invalidation
+                    // or disposal can make an in-flight result unsafe to publish.
+                    if (!disposed && acceptedGeneration == generation)
+                        Volatile.Write(ref published, result);
+                }
+            }
+        }
+
+        /// <summary>Forget the previous rig generation without waiting for a builder already running.</summary>
+        public void Invalidate()
+        {
+            lock (gate)
+            {
+                generation++;
+                pending = null;
+                Volatile.Write(ref published, null);
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (gate)
+            {
+                disposed = true;
+                generation++;
+                pending = null;
+                Volatile.Write(ref published, null);
+            }
+        }
+    }
+
+    /// <summary>One native observation and its lifted summary; both strings cross threads together.</summary>
+    public sealed class RigNativeStatusSnapshot
+    {
+        public static readonly RigNativeStatusSnapshot Empty = new("null", "");
+        public string Json { get; }
+        public string SummaryJson { get; }
+
+        private RigNativeStatusSnapshot(string json, string summary)
+        { Json = json; SummaryJson = summary; }
+
+        public static RigNativeStatusSnapshot Read(string json, RigNativeStatusSnapshot previous) =>
+            Read(json, previous, out _);
+
+        /// <summary>The caller consumes a readable observation for cues; the cache retains only strings.</summary>
+        public static RigNativeStatusSnapshot Read(string json, RigNativeStatusSnapshot previous, out JObject? readable)
+        {
+            readable = null;
+            JObject? status;
+            try { status = JToken.Parse(json) as JObject; }
+            catch (JsonException) { return new RigNativeStatusSnapshot(json, previous.SummaryJson); }
+            // A busy native read retains the last readable summary, exactly as before.
+            if (status == null || (string?)status["state"] == "busy")
+                return new RigNativeStatusSnapshot(json, previous.SummaryJson);
+            var summary = new JObject
+            {
+                ["nativeState"] = status["state"], ["podId"] = status["pod_id"],
+                ["registeredRig"] = status["registered_rig"], ["seals"] = status["seals"],
+                ["uplink"] = status["uplink"], ["floor"] = status["floor"],
+                ["embodiment_assets"] = status["embodiment_assets"], ["devices"] = status["devices"],
+                ["roles"] = status["roles"], ["attempts"] = status["attempts"], ["factory"] = status["factory"],
+                // sx_rig_observe_tracking's verdict: {"start_refusal", "controllers_lost"} (sx#4210).
+                ["tracking"] = status["tracking"],
+            }.ToString(Formatting.None);
+            readable = status;
+            return new RigNativeStatusSnapshot(json, summary);
+        }
+
+        public static RigNativeStatusSnapshot Error(string errorJson, RigNativeStatusSnapshot previous) =>
+            new("{\"error\":" + errorJson + "}", previous.SummaryJson);
+    }
+
     /// <summary>
     /// Reads libsx_rig's status and check JSON. Every reader tolerates a missing key, a JSON
     /// null and an unexpected type (local mode's status has <c>"floor": null</c>) and never

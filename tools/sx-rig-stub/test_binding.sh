@@ -35,6 +35,11 @@ facades="$editor/Data/MonoBleedingEdge/lib/mono/4.5/Facades"
 cp "$newtonsoft" "$out/"
 "$mono" "$out/status-harness.exe"
 
+# Status parsing is one bounded worker; UI/phone readers never parse on the capture thread.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/status-snapshot-harness.exe" "$here/StatusSnapshotHarness.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+"$mono" "$out/status-snapshot-harness.exe"
+
 # RigStartGate (with the binding's types and RigCoordinator's RigRefusal compiled in).
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -define:SX_RIG_HOST_TEST -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/gate-harness.exe" "$here/RigStartGateHarness.cs" \
@@ -102,6 +107,12 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Common/RecordingListRefreshGate.cs"
 "$mono" "$out/list-refresh-harness.exe"
 
+# RigUsbRefresh: slow Android USB reads never hold the sampling thread or close an in-flight fd.
+bash "$here/test_usb_refresh.sh"
+
+# HeadTrackingMonitor: reject stale or incompletely tracked sources before capture starts.
+bash "$here/test_tracking_readiness.sh"
+
 # AppLogFile: the app's log lines the rig ships, rolled and bounded.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/app-log-harness.exe" "$here/AppLogHarness.cs" \
@@ -117,8 +128,17 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/device-presence-harness.exe"
 
+# SelfRelaunch: the app relaunches itself for a frozen head pose only when nothing records or seals.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/self-relaunch-harness.exe" "$here/SelfRelaunchHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SelfRelaunch.cs"
+"$mono" "$out/self-relaunch-harness.exe"
+
 # OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/os-controller-harness.exe" "$here/OsControllerReportHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/OsControllerReport.cs"
 "$mono" "$out/os-controller-harness.exe"
+
+# Explicit collector reviews: no invented outcomes/answers and stable replay after uncertainty.
+SX_NEWTONSOFT_DLL="$newtonsoft" bash "$here/test_pod_review.sh"

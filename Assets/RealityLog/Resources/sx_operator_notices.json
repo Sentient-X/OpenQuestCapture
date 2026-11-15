@@ -219,6 +219,32 @@
       "still_fine": "Your earlier episodes are safe.",
       "action": "A technician runs setup again from the Console."
     },
+    "rig_devices_unregistered": {
+      "who": "technician",
+      "headline": "A {part} attached is not registered to any rig",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Attach the registered one, or a technician registers it in the Console."
+    },
+    "rig_devices_mixed": {
+      "who": "collector",
+      "headline": "The attached devices are from different rigs: {rigs}",
+      "still_fine": "Each device is registered.",
+      "action": "Attach the four devices of one rig, then press Check.",
+      "button": "check"
+    },
+    "rig_devices_incomplete": {
+      "who": "collector",
+      "headline": "Rig {rig} is missing its {side} {part}",
+      "still_fine": "The attached devices are rig {rig}'s.",
+      "action": "Attach its {side} {part}, then press Check.",
+      "button": "check"
+    },
+    "rig_swap_while_recording": {
+      "who": "collector",
+      "headline": "This shift is recording on rig {rig}; the attached devices are rig {attached}",
+      "still_fine": "The episode being recorded stays on rig {rig}.",
+      "action": "Stop the recording, then press Check to switch to rig {attached}."
+    },
     "readiness_clock": {
       "who": "collector",
       "headline": "The headset's clock is not synced",
@@ -351,6 +377,54 @@
       "headline": "{held} episodes are held by attempts awaiting review",
       "still_fine": "They count once reviewed.",
       "action": "The floor manager reviews them in the Console."
+    },
+    "seal_body_tracking_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: body tracking dropped out",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Face forward with your shoulders and arms in view of the headset, then record again. If it repeats, restart the capture app."
+    },
+    "seal_head_tracking_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: head tracking paused",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Record again. If it repeats, restart the capture app."
+    },
+    "seal_controller_tracking_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: the {side} controller's tracking dropped out",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Keep both controllers in view of the headset, then record again."
+    },
+    "controllers_not_in_hand": {
+      "who": "collector",
+      "headline": "Controllers not in hand",
+      "still_fine": "Nothing was recorded.",
+      "action": "Pick up both grippers, then start again."
+    },
+    "controllers_wrong_side": {
+      "who": "collector",
+      "headline": "The grippers are on the wrong sides",
+      "still_fine": "Nothing was recorded.",
+      "action": "Hold the left gripper on your left and the right gripper on your right, then start again."
+    },
+    "body_tracking_unavailable": {
+      "who": "collector",
+      "headline": "Body tracking cannot place you",
+      "still_fine": "Nothing was recorded.",
+      "action": "Stand facing forward with the grippers in hand and wait for tracking, then start again. If it persists, call a technician."
+    },
+    "head_tracking_stopped": {
+      "who": "collector",
+      "headline": "Head tracking stopped on the headset",
+      "still_fine": "Nothing was recorded.",
+      "action": "Restart the capture app or reboot the headset, then start again."
+    },
+    "controller_lost": {
+      "who": "collector",
+      "headline": "The {side} controller is out of hand",
+      "still_fine": "Recording continues; its poses are frozen until it is back.",
+      "action": "Wake it and hold it."
     },
     "unknown": {
       "who": "technician",

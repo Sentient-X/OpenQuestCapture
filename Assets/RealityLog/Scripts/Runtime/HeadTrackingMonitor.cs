@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using UnityEngine;
 using RealityLog.Common;
+using RealityLog.OVR;
 using Debug = UnityEngine.Debug;
 
 namespace RealityLog
@@ -29,6 +30,18 @@ namespace RealityLog
     {
         /// <summary>A head pose older than this refuses a recording start.</summary>
         public const double StartMaxPoseAgeMs = 1000.0;
+
+        // Admission source freshness uses the 100 ms bound from the native body/pose
+        // gap policy, but measures age now, not gaps within a completed recording.
+        // Recorded samples and the separate final validator remain unchanged.
+        private const double StartMaxSourceAgeMs = 100.0;
+
+        /// <summary>
+        /// Below this many new body states per second over <see cref="BodyRateWindow.WindowSeconds"/>
+        /// a start is refused: sx-seal's body check needs 30-55 Hz and no gap over 100 ms, and a
+        /// degraded tracker (OQC#22, 6-13 Hz) passes a single-sample age check.
+        /// </summary>
+        public const double StartMinBodyHz = 30.0;
 
         /// <summary>A gap in head poses longer than this during a recording is a stall.</summary>
         public const double StallThresholdMs = 1000.0;
@@ -66,16 +79,21 @@ namespace RealityLog
         private static readonly object controllerLock = new();
         // BodyTrackingLogger starts the body runtime at app launch. This monitor reads it;
         // it does not own or restart the body-tracking lifecycle.
-        private OVRPlugin.BodyState bodyState = new()
+        private static OVRPlugin.BodyState bodyState = new()
         {
             JointLocations = new OVRPlugin.BodyJointLocation[84]
         };
         private static BodySample bodySample;
+        private static readonly BodyRateWindow bodyRate = new();
+        // OVRPlugin.BodyTrackingCalibrationState: 1 Valid, 2 Calibrating, 3 Invalid; 0 unread.
+        private static int bodyCalibration;
+        private static long bodyCalibrationSinceTicks = NoPose;
         private struct BodySample
         {
             public ControllerSample LeftShoulder;
             public ControllerSample RightShoulder;
             public float Confidence;
+            public double SourceTime;
             public double? AgeMs;
         }
         private static ControllerSample headSample;
@@ -89,6 +107,8 @@ namespace RealityLog
             public bool PositionTracked;
             public bool OrientationTracked;
             public OVRPlugin.Posef Pose;
+            public double SourceTime;
+            public double? SourceAgeMs;
             public float? DistanceToHeadM;
         }
 
@@ -98,6 +118,7 @@ namespace RealityLog
         {
             Interlocked.Exchange(ref lastAdvanceTicks, NoPose);
             lastOvrTime = 0;
+            positionTracked = orientationTracked = hmdPresent = vrFocus = inputFocus = false;
             Interlocked.Exchange(ref pausedSinceTicks, NoPose);
             pausedFrame = -1;
             recording = false;
@@ -109,6 +130,11 @@ namespace RealityLog
                 lastEvent = null;
                 lastEventTicks = NoPose;
             }
+            bodyRate.Reset();
+            Interlocked.Exchange(ref bodyCalibration, 0);
+            Interlocked.Exchange(ref bodyCalibrationSinceTicks, NoPose);
+            BodyHealth.Reset();
+            Attendance.Shared.Reset();
             lock (controllerLock)
             {
                 bodySample = default;
@@ -161,21 +187,11 @@ namespace RealityLog
                 OnApplicationPause(false);
             }
 
-            var poseState = OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head);
-            var now = Stopwatch.GetTimestamp();
-            ObserveHeadPose(poseState, now);
-
-            positionTracked = OVRPlugin.GetNodePositionTracked(OVRPlugin.Node.Head);
-            orientationTracked = OVRPlugin.GetNodeOrientationTracked(OVRPlugin.Node.Head);
-            hmdPresent = OVRManager.isHmdPresent;
-            vrFocus = OVRManager.hasVrFocus;
-            inputFocus = OVRManager.hasInputFocus;
-
-            SampleControllers(poseState, positionTracked, now);
+            RefreshNow();
 
             if (recording)
             {
-                ObserveRecordingStall(now);
+                ObserveRecordingStall(Stopwatch.GetTimestamp());
             }
         }
 
@@ -183,7 +199,7 @@ namespace RealityLog
         // must not read as frozen forever.
         private static void ObserveHeadPose(OVRPlugin.PoseStatef poseState, long now)
         {
-            if (poseState.Time > 0 && poseState.Time != lastOvrTime)
+            if (poseState.Time > 0 && !double.IsInfinity(poseState.Time) && poseState.Time != lastOvrTime)
             {
                 lastOvrTime = poseState.Time;
                 Interlocked.Exchange(ref lastAdvanceTicks, now);
@@ -191,13 +207,20 @@ namespace RealityLog
         }
 
         /// <summary>
-        /// Samples the head pose now. Main thread only. <see cref="RecordingManager"/> calls it
+        /// Samples all tracking readiness now. Main thread only. <see cref="RecordingManager"/> calls it
         /// right before checking <see cref="StartRefusal"/>, so the check reflects the runtime
         /// at this moment, not the last frame before a stall.
         /// </summary>
         public static void RefreshNow()
         {
-            ObserveHeadPose(OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head), Stopwatch.GetTimestamp());
+            var poseState = OVRPlugin.GetNodePoseStateImmediate(OVRPlugin.Node.Head);
+            ObserveHeadPose(poseState, Stopwatch.GetTimestamp());
+            positionTracked = OVRPlugin.GetNodePositionTracked(OVRPlugin.Node.Head);
+            orientationTracked = OVRPlugin.GetNodeOrientationTracked(OVRPlugin.Node.Head);
+            hmdPresent = OVRManager.isHmdPresent;
+            vrFocus = OVRManager.hasVrFocus;
+            inputFocus = OVRManager.hasInputFocus;
+            SampleControllers(poseState, positionTracked);
         }
 
         private void OnApplicationPause(bool paused)
@@ -221,11 +244,29 @@ namespace RealityLog
 
         // Samples the controllers on the same OVR nodes the controller PoseLoggers use
         // (ControllerLeft = 12, ControllerRight = 13) and in the same tracking space.
-        private void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked, long now)
+        private static void SampleControllers(OVRPlugin.PoseStatef headPose, bool headTracked)
         {
             var left = SampleController(OVRInput.Controller.LTouch, OVRPlugin.Node.ControllerLeft, headPose, headTracked);
             var right = SampleController(OVRInput.Controller.RTouch, OVRPlugin.Node.ControllerRight, headPose, headTracked);
             var body = SampleBody();
+            var sourceNow = OVRPlugin.GetTimeInSeconds();
+            var now = Stopwatch.GetTimestamp();
+            left.SourceAgeMs = SourceAgeMs(left.SourceTime, sourceNow);
+            right.SourceAgeMs = SourceAgeMs(right.SourceTime, sourceNow);
+            body.AgeMs = SourceAgeMs(body.SourceTime, sourceNow);
+            if (BodyHealth.TakeRestart()) bodyRate.Reset();
+            bodyRate.Observe(body.SourceTime > 0 ? body.SourceTime : null, sourceNow);
+            // The summary string is built only while degraded: this runs every frame.
+            var degraded = bodyRate.Hz is double hz && hz < StartMinBodyHz;
+            // Someone must be using the headset (Attendance): a headset lying unworn has no body
+            // to track, and restarting its tracker every minute for that helps nobody.
+            Attendance.Shared.Observe(vrFocus && inputFocus, headTracked && orientationTracked,
+                headPose.Pose.Position.x, headPose.Pose.Position.y, headPose.Pose.Position.z,
+                headPose.Pose.Orientation.x, headPose.Pose.Orientation.y, headPose.Pose.Orientation.z,
+                headPose.Pose.Orientation.w, now);
+            var attendedDegraded = degraded && Attendance.Shared.Attended(now);
+            BodyHealth.Observe(attendedDegraded, attendedDegraded ? BodySummary : "");
+            if (body.AgeMs == null) body = default;
             lock (controllerLock)
             {
                 bodySample = body;
@@ -234,6 +275,7 @@ namespace RealityLog
                     PositionTracked = headTracked,
                     OrientationTracked = orientationTracked,
                     Pose = headPose.Pose,
+                    SourceAgeMs = SourceAgeMs(headPose.Time, sourceNow),
                 };
                 leftController = left;
                 rightController = right;
@@ -241,25 +283,31 @@ namespace RealityLog
             }
         }
 
-        private BodySample SampleBody()
+        private static BodySample SampleBody()
         {
             if (!OVRPlugin.GetBodyState4(OVRPlugin.Step.Render, OVRPlugin.BodyJointSet.FullBody, ref bodyState))
                 return default;
-            var ageMs = (OVRPlugin.GetTimeInSeconds() - bodyState.Time) * 1000.0;
-            // Render poses may be predicted ahead by one display interval. A frozen
-            // body timestamp ages even while Update and the controller poses continue.
-            if (double.IsNaN(ageMs) || double.IsInfinity(ageMs) || bodyState.Time <= 0 || ageMs < -100)
+            ObserveCalibration((int)bodyState.CalibrationStatus);
+            if (bodyState.JointLocations == null || bodyState.JointLocations.Length <= RightShoulderJoint)
                 return default;
             return new BodySample
             {
-                LeftShoulder = Shoulder(bodyState.JointLocations[8]),
-                RightShoulder = Shoulder(bodyState.JointLocations[13]),
+                LeftShoulder = Shoulder(bodyState.JointLocations[LeftShoulderJoint]),
+                RightShoulder = Shoulder(bodyState.JointLocations[RightShoulderJoint]),
                 Confidence = bodyState.Confidence,
-                AgeMs = Math.Max(0, ageMs),
+                SourceTime = bodyState.Time,
             };
         }
 
-        // FullBody joint indices match BodyTrackingLogger: LeftShoulder=8, RightShoulder=13.
+        // The shoulder joints the rig's tracking law reads (sx_pod_core::tracking: shoulders
+        // 0.15-0.7 m apart) are the upper-arm roots, FullBody LeftArmUpper=10 and
+        // RightArmUpper=15 (BodyTrackingLogger's JOINT_NAMES). Meta's "LeftShoulder"=8 and
+        // "RightShoulder"=13 are the clavicle roots beside the neck, ~6 cm apart on every body:
+        // pod5 2026-11-15, body_tracking.csv of 20261115_211730 read 0.058 m between 8 and 13 and
+        // 0.36 m between 10 and 15, so every v73 start was refused "cannot establish your sides".
+        public const int LeftShoulderJoint = 10;
+        public const int RightShoulderJoint = 15;
+
         private static ControllerSample Shoulder(OVRPlugin.BodyJointLocation joint) => new()
         {
             PositionTracked = (joint.LocationFlags & OVRPlugin.SpaceLocationFlags.PositionValid) != 0,
@@ -270,12 +318,14 @@ namespace RealityLog
         private static ControllerSample SampleController(
             OVRInput.Controller controller, OVRPlugin.Node node, OVRPlugin.PoseStatef headPose, bool headTracked)
         {
+            var poseState = OVRPlugin.GetNodePoseStateImmediate(node);
             var sample = new ControllerSample
             {
                 Connected = OVRInput.IsControllerConnected(controller),
                 PositionTracked = OVRPlugin.GetNodePositionTracked(node),
                 OrientationTracked = OVRPlugin.GetNodeOrientationTracked(node),
-                Pose = OVRPlugin.GetNodePoseStateImmediate(node).Pose,
+                Pose = poseState.Pose,
+                SourceTime = poseState.Time,
             };
             // An untracked position is stale or predicted, not where the controller is, so
             // no distance is reported for it.
@@ -287,6 +337,43 @@ namespace RealityLog
                 sample.DistanceToHeadM = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
             }
             return sample;
+        }
+
+        // Logged on every change, recording or not: OQC#22 found every degraded episode at
+        // status 2 (Calibrating) while healthy ones mixed 1 and 2, and no headset log had it.
+        private static void ObserveCalibration(int status)
+        {
+            var previous = Interlocked.Exchange(ref bodyCalibration, status);
+            if (previous == status) return;
+            var now = Stopwatch.GetTimestamp();
+            var since = Interlocked.Exchange(ref bodyCalibrationSinceTicks, now);
+            var held = since == NoPose ? "" : $" after {TicksToMs(now - since) / 1000.0:F1} s";
+            Debug.LogWarning($"[{Constants.LOG_TAG}] HeadTrackingMonitor: body calibration_status {CalibrationName(previous)} -> " +
+                $"{CalibrationName(status)}{held} (bodyHz={Number(bodyRate.Hz)}, recording={recording})");
+        }
+
+        private static string CalibrationName(int status) => status switch
+        {
+            0 => "unread",
+            1 => "1 (valid)",
+            2 => "2 (calibrating)",
+            3 => "3 (invalid)",
+            _ => status.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
+
+        /// <summary>The body figures for a log line. Any thread.</summary>
+        public static string BodySummary =>
+            $"bodyHz={Number(bodyRate.Hz)}, calibration_status={CalibrationName(Volatile.Read(ref bodyCalibration))}";
+
+        private static double? SourceAgeMs(double timestamp, double now)
+        {
+            if (timestamp <= 0 || double.IsNaN(timestamp) || double.IsInfinity(timestamp)) return null;
+            var age = (now - timestamp) * 1000.0;
+            // Retain the existing monitor's bounded 100 ms future allowance. Body
+            // Step.Render predicts ahead; the SDK does not specify a zero-skew
+            // comparison between immediate pose time and GetTimeInSeconds either.
+            if (double.IsNaN(age) || double.IsInfinity(age) || age < -100.0) return null;
+            return Math.Max(0, age);
         }
 
         private static void ObserveRecordingStall(long now)
@@ -339,6 +426,9 @@ namespace RealityLog
             }
         }
 
+        /// <summary>True between <see cref="BeginRecording"/> and <see cref="EndRecording"/>. Any thread.</summary>
+        public static bool Recording => recording;
+
         /// <summary>Milliseconds since the OVR runtime last delivered a new head pose; null if it never has.</summary>
         public static double? HeadPoseAgeMs
         {
@@ -350,8 +440,8 @@ namespace RealityLog
         }
 
         /// <summary>
-        /// Why a recording must not start now, or null when head tracking is live. A session
-        /// started without head poses has no usable HMD, controller, IMU or body data.
+        /// Why a recording must not start now. Safe from any thread; the start caller must
+        /// first call RefreshNow on Unity's thread so flags and source ages are current.
         /// </summary>
         public static string? StartRefusal
         {
@@ -368,9 +458,56 @@ namespace RealityLog
                     return $"head tracking stopped {age.Value / 1000.0:F1} s ago ({Describe()}); " +
                         "restart the capture app or reboot the headset";
                 }
-                return null;
+                ControllerSample head, left, right;
+                BodySample body;
+                long sampledAt;
+                lock (controllerLock)
+                {
+                    head = headSample;
+                    left = leftController;
+                    right = rightController;
+                    body = bodySample;
+                    sampledAt = controllerSampleTicks;
+                }
+                var snapshotAgeMs = sampledAt == NoPose ? double.PositiveInfinity
+                    : TicksToMs(Stopwatch.GetTimestamp() - sampledAt);
+                var refusal = PoseStartRefusal("head", head, snapshotAgeMs, needsConnection: false)
+                    ?? PoseStartRefusal("left controller", left, snapshotAgeMs, needsConnection: true)
+                    ?? PoseStartRefusal("right controller", right, snapshotAgeMs, needsConnection: true);
+                if (refusal != null) return refusal;
+                if (!Fresh(body.AgeMs, snapshotAgeMs))
+                    return "body tracking has no fresh active sample (max 100 ms); wear the headset and wait for tracking";
+                return BodyRateRefusal(bodyRate.Hz);
             }
         }
+
+        private static string? BodyRateRefusal(double? hz)
+        {
+            if (hz is not double rate)
+                return "body tracking is still being measured; keep the headset on and wait 2 s";
+            if (rate < StartMinBodyHz)
+            {
+                return $"body tracking is updating at {rate:F0} Hz (needs {StartMinBodyHz:F0} Hz); stand in view facing forward " +
+                    "and wait. It restarts on its own after 15 s; if it stays low, restart the capture app";
+            }
+            return null;
+        }
+
+        private static string? PoseStartRefusal(string name, ControllerSample sample, double snapshotAgeMs, bool needsConnection)
+        {
+            if (needsConnection && !sample.Connected)
+                return $"{name} is not connected; wake it and keep it visible to the headset";
+            if (!sample.PositionTracked || !sample.OrientationTracked)
+                return needsConnection
+                    ? $"{name} position and orientation must both be tracked; keep it visible to the headset"
+                    : "head position and orientation must both be tracked; put on the headset and wait for tracking";
+            if (!Fresh(sample.SourceAgeMs, snapshotAgeMs))
+                return $"{name} has no fresh source pose (max 100 ms); wait for tracking";
+            return null;
+        }
+
+        private static bool Fresh(double? sourceAgeMs, double snapshotAgeMs) =>
+            sourceAgeMs is double age && age + snapshotAgeMs <= StartMaxSourceAgeMs;
 
         /// <summary>
         /// The <c>tracking</c> object for <c>/api/status</c>, without a trailing comma.
@@ -396,6 +533,12 @@ namespace RealityLog
                 $"{indent}  \"vrFocus\": {Bool(vrFocus)},\n" +
                 $"{indent}  \"inputFocus\": {Bool(inputFocus)},\n" +
                 $"{indent}  \"startRefusal\": {Str(refusal)},\n" +
+                $"{indent}  \"bodyUpdateHz\": {Number(bodyRate.Hz)},\n" +
+                $"{indent}  \"bodyCalibrationStatus\": {Volatile.Read(ref bodyCalibration)},\n" +
+                $"{indent}  \"bodyRecordingGaps\": {Number(BodyGapCounter.Current?.Gaps)},\n" +
+                $"{indent}  \"bodyLongestGapMs\": {Number(BodyGapCounter.Current?.LongestGapMs)},\n" +
+                $"{indent}  \"bodyTrackerRestarts\": {BodyHealth.Restarts},\n" +
+
                 $"{indent}  \"recordingStalls\": {Interlocked.CompareExchange(ref recordingStalls, 0, 0)},\n" +
                 $"{indent}  \"longestStallMs\": {TicksToMs(Interlocked.Read(ref longestStallTicks)):F0},\n" +
                 $"{indent}  \"lastEvent\": {Str(evt)},\n" +

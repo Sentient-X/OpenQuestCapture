@@ -40,7 +40,9 @@ namespace RealityLog.OVR
     /// stale_polls (Time did not advance: the runtime had no new sample; excludes
     /// same-frame polls), same_frame_polls (another poll in the same rendered frame),
     /// failed_polls (GetBodyState4 false: body inactive), rows, display_hz,
-    /// fidelity_granted.</para>
+    /// fidelity_granted, gaps_over_100ms and max_gap_ms (intervals between written rows'
+    /// ovr_timestamp; sx-seal refuses a body gap over 100 ms, so a non-zero count at stop
+    /// says the seal will).</para>
     ///
     /// <para><b>Root joint (index 0):</b> Floor-projected origin (Y ≈ 0). For actual
     /// pelvis height, use Hips (index 1).</para>
@@ -177,6 +179,14 @@ namespace RealityLog.OVR
         private long failedPolls;
         private long rows;
         private int fidelityGranted;
+        // Gaps over 100 ms between written rows: the interval sx-seal's body check bounds.
+        private BodyGapCounter gapCounter = new();
+
+        // Idle recovery (OQC#22): a body tracker that stays degraded while nothing records is
+        // restarted, at most once per RestartSpacingSeconds. A recording is never touched.
+        private const double RestartAfterDegradedSeconds = 15.0;
+        private const float RestartSpacingSeconds = 60f;
+        private float lastRestartAt = float.NegativeInfinity;
 
         public string DirectoryName
         {
@@ -252,7 +262,8 @@ namespace RealityLog.OVR
                 + $"\"failed_polls\":{failedPolls.ToString(inv)},"
                 + $"\"rows\":{rows.ToString(inv)},"
                 + $"\"display_hz\":{hz.ToString("R", inv)},"
-                + $"\"fidelity_granted\":{fidelityGranted.ToString(inv)}"
+                + $"\"fidelity_granted\":{fidelityGranted.ToString(inv)},"
+                + gapCounter.StatsFields()
                 + "}";
         }
 
@@ -265,6 +276,8 @@ namespace RealityLog.OVR
             failedPolls = 0;
             rows = 0;
             fidelityGranted = 0;
+            gapCounter = new BodyGapCounter();
+            BodyGapCounter.Publish(gapCounter);
 
             lastPollFrame = -1;
             displayHz = OVRPlugin.systemDisplayFrequency;
@@ -315,6 +328,28 @@ namespace RealityLog.OVR
         private void FixedUpdate()
         {
             Poll();
+            if (writer == null) RecoverIdleTracker();
+        }
+
+        /// <summary>
+        /// Restarts body tracking when HeadTrackingMonitor has refused starts (<see cref="BodyHealth"/>) for
+        /// its body rate for <see cref="RestartAfterDegradedSeconds"/> and nothing records.
+        /// What clears a degraded Meta tracker is not established (OQC#22: pod4 recovered on
+        /// its own, pod2 needed an app restart); this is the cheapest step, and the rate
+        /// clause still refuses a start until the restarted tracker delivers 30 Hz.
+        /// </summary>
+        private void RecoverIdleTracker()
+        {
+            if (!bodyTrackingStarted) return;
+            if (BodyHealth.DegradedSeconds < RestartAfterDegradedSeconds) return;
+            if (Time.unscaledTime - lastRestartAt < RestartSpacingSeconds) return;
+            lastRestartAt = Time.unscaledTime;
+            Debug.LogWarning($"[{Constants.LOG_TAG}] BodyTrackingLogger - body tracking degraded for " +
+                $"{BodyHealth.DegradedSeconds:F0} s with no recording ({BodyHealth.Summary}); restarting it");
+            OVRPlugin.StopBodyTracking();
+            bodyTrackingStarted = false;
+            BodyHealth.NoteRestart();
+            EnsureBodyTrackingStarted();
         }
 
         private void Poll()
@@ -408,6 +443,7 @@ namespace RealityLog.OVR
 
             writer.EnqueueRow(row);
             rows++;
+            gapCounter.Row(timestamp);
         }
 
         private string[] BuildHeader()

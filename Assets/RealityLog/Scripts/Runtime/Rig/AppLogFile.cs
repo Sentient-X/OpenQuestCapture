@@ -44,6 +44,9 @@ namespace RealityLog.Rig
         /// <summary>One line, its continuation lines indented; rolls first when it would pass the bound.</summary>
         public void Write(DateTime at, string level, string message)
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            using var trace = RigTrace.Enter("OQC.AppLog.Write");
+#endif
             var line = at.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ") + " " + level + " "
                 + message.Replace("\r", "").Replace("\n", "\n    ") + "\n";
             var bytes = Encoding.UTF8.GetBytes(line);

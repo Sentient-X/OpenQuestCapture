@@ -35,6 +35,7 @@ namespace RealityLog.Rig
         /// <summary>Reads both controllers now; probes and logs every source at startup and on a wake.</summary>
         public ControllerCharge Read()
         {
+            using var trace = RigTrace.Enter("OQC.ControllerBattery.Read");
             var fromOs = os.Read();
             var left = XrController(InputDeviceCharacteristics.Left);
             var right = XrController(InputDeviceCharacteristics.Right);

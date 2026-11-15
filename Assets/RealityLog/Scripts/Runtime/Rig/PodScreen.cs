@@ -169,6 +169,11 @@ namespace RealityLog.Rig
         public string Link { get; set; } = "";
         public PodTone LinkTone { get; set; } = PodTone.Neutral;
         public List<PodEpisodeRow> Episodes { get; } = new();
+        /// <summary>Explicit collector work, including earlier collections still draining.</summary>
+        public List<PodReviewItem> Reviews { get; } = new();
+        public bool ReviewQueueAvailable { get; set; }
+        public string ReviewUnavailable { get; set; } = "";
+        public string ReviewCollectorSubject { get; set; } = "";
         // The collection's numbers and the link, for the phone companion (Progress and Link word them).
         public long Credited { get; set; }
         /// <summary>The task's target; 0 when it has none or no task is known.</summary>
@@ -194,6 +199,103 @@ namespace RealityLog.Rig
         public bool LocalOnly { get; set; }
         /// <summary>The blocker is the newest episode's failure, shown until the next start.</summary>
         public bool LastFailed { get; set; }
+    }
+
+    /// <summary>One native review target. Task outcome never changes its integrity verdict.</summary>
+    public sealed class PodReviewItem
+    {
+        public string SessionId { get; set; } = "";
+        public string EpisodeId { get; set; } = "";
+        public string SourceEpisodeId { get; set; } = "";
+        public string Scope { get; set; } = "";
+        public long EpisodeIndex { get; set; }
+        public string StartedAt { get; set; } = "";
+        public string Integrity { get; set; } = "";
+        public string BlockedReason { get; set; } = "";
+        public string SubmissionId { get; set; } = "";
+        public string SubmissionState { get; set; } = "";
+        public string SubmissionMessage { get; set; } = "";
+        public string Key { get; internal set; } = "";
+        public bool CanSubmit => Scope == "episode" && SessionId.Length > 0 && EpisodeId.Length > 0
+            && BlockedReason.Length == 0 && SubmissionState != "pending" && SubmissionState != "completed";
+
+        public string Command(bool success, Guid commandId, string collectorSubject)
+        {
+            if (!CanSubmit) throw new InvalidOperationException(BlockedReason.Length > 0 ? BlockedReason : "This review is already saved");
+            if (commandId == Guid.Empty) throw new ArgumentException("A review needs a nonempty command ID", nameof(commandId));
+            if (string.IsNullOrWhiteSpace(collectorSubject)) throw new ArgumentException("A review needs a confirmed collector", nameof(collectorSubject));
+            return new JObject
+            {
+                ["command"] = success ? "review_success" : "review_failure",
+                ["command_id"] = commandId.ToString(),
+                ["session_id"] = SessionId,
+                ["episode_id"] = EpisodeId,
+                ["expected_operator"] = collectorSubject,
+                ["answers"] = new JArray(),
+            }.ToString(Formatting.None);
+        }
+    }
+
+    /// <summary>
+    /// A deliberate choice and its immutable retry payload. An ambiguous exchange cannot turn
+    /// into a different outcome or command ID. The native journal remains the durable authority.
+    /// </summary>
+    public sealed class PodReviewSubmission
+    {
+        public string CommandId { get; }
+        public bool Success { get; }
+        public string CommandJson { get; }
+        public string CollectorSubject { get; }
+        public string State { get; private set; } = "uncertain";
+        public string Message { get; private set; } = "Review result not confirmed. Retry the same choice to check its saved result.";
+
+        public PodReviewSubmission(PodReviewItem item, bool success, Guid commandId, string collectorSubject)
+        {
+            if (string.IsNullOrWhiteSpace(collectorSubject)) throw new ArgumentException("A review needs a confirmed collector", nameof(collectorSubject));
+            CommandId = commandId.ToString();
+            Success = success;
+            CollectorSubject = collectorSubject;
+            CommandJson = item.Command(success, commandId, collectorSubject);
+        }
+
+        public void ApplyReply(string json)
+        {
+            try
+            {
+                if (JToken.Parse(json) is JObject result && result["answer"] is JObject answer)
+                    Observe(Word(answer["command_id"]), Word(answer["state"]), Word(answer["message"]));
+            }
+            catch (JsonException) { }
+        }
+
+        private static string? Word(JToken? value) => value is JValue { Type: JTokenType.String } ? (string?)value : null;
+
+        public void RefusedBeforeSend(string reason, bool priorAttemptUnconfirmed = false)
+        {
+            if (State != "uncertain") return;
+            if (priorAttemptUnconfirmed) { Unconfirmed(reason); return; }
+            State = "failed";
+            Message = "Review not submitted: " + reason;
+        }
+
+        public void Unconfirmed(string reason)
+        {
+            if (State != "uncertain") return;
+            Message = "Review result not confirmed: " + reason + ". Retry the same choice to check its saved result.";
+        }
+
+        public void Observe(string? commandId, string? state, string? message)
+        {
+            if (commandId != CommandId || state is not ("pending" or "completed" or "failed")) return;
+            if (State is "completed" or "failed") return; // A stale status cannot undo a terminal journal result.
+            State = state;
+            Message = state switch
+            {
+                "pending" => "Review saved on this headset; waiting for Factory. Do not submit it again.",
+                "completed" => "Review accepted by Factory. Sealing and delivery still follow their checks.",
+                _ => "Review refused: " + (string.IsNullOrWhiteSpace(message) ? "check sign-in and the current review questions before choosing again." : message),
+            };
+        }
     }
 
     /// <summary>The rig's storage figures (<see cref="PodScreenBoard.Storage"/>), in bytes.</summary>
@@ -291,10 +393,70 @@ namespace RealityLog.Rig
             Devices(screen, status, failures, liveness, now);
             Collection(screen, status);
             Episodes(screen, status);
+            Reviews(screen, status);
             screen.Blocker = Blocker(status, refusal, screen);
             screen.StartBlocked = StartBlocker(status) != null;
             if (!screen.Recording) Warnings(screen, status);
             return screen;
+        }
+
+        private static void Reviews(PodScreen screen, JObject? status)
+        {
+            var floor = Lifted(status, "floor") as JObject;
+            var queue = floor?["review_queue"] as JArray;
+            screen.ReviewCollectorSubject = Str((floor?["operator"] as JObject)?["subject"]);
+            screen.ReviewQueueAvailable = queue != null;
+            screen.ReviewUnavailable = status == null || Bool(status, "open") != true
+                ? "Waiting for the headset's review status."
+                : screen.LocalOnly ? "Local only recordings have no Factory review queue."
+                : Bool(status, "enrolled") != true ? "Set up this headset on Factory before reviewing."
+                : RigStatusJson.CollectorSignedIn(status) != true || screen.ReviewCollectorSubject.Length == 0 ? "Sign in as the collector before reviewing."
+                : screen.Recording ? "Stop recording before reviewing an episode."
+                : queue == null ? "Review status is unavailable. Refresh the Pod page after Factory reconnects."
+                : "";
+            if (queue == null) return;
+            var seen = new HashSet<string>();
+            foreach (var value in queue)
+            {
+                if (value is not JObject row) continue;
+                var submission = row["submission"] as JObject;
+                var item = new PodReviewItem
+                {
+                    SessionId = Str(row["session_id"]), EpisodeId = Str(row["episode_id"]),
+                    SourceEpisodeId = Str(row["source_episode_id"]), Scope = Str(row["scope"]),
+                    EpisodeIndex = Long(row["episode_index"]), StartedAt = Str(row["episode_started_at"]),
+                    Integrity = Str(row["integrity"]), SubmissionId = Str(submission?["command_id"]),
+                    SubmissionState = Str(submission?["state"]), SubmissionMessage = Str(submission?["message"]),
+                };
+                item.Key = item.SessionId + "/" + item.Scope + "/" + item.EpisodeId;
+                if (item.SessionId.Length == 0 || (item.Scope == "episode" && item.EpisodeId.Length == 0))
+                    item.BlockedReason = "Review identity is unavailable. Refresh before reviewing.";
+                else if (item.Scope != "episode")
+                    item.BlockedReason = "Complete this collection's required questions in SX platform review.";
+                else if (Str(row["review_error"]).Length > 0 || row["prompts"] is not JArray)
+                    item.BlockedReason = "Review questions could not be read. Open this collection in SX platform review.";
+                else
+                {
+                    foreach (var prompt in (JArray)row["prompts"]!)
+                    {
+                        if (prompt is not JObject question || question["required"] is not JValue { Type: JTokenType.Boolean })
+                        {
+                            item.BlockedReason = "Review questions could not be read. Open this collection in SX platform review.";
+                            break;
+                        }
+                        if ((bool)question["required"]!)
+                        {
+                            var label = Str(question["label"]);
+                            item.BlockedReason = "Required answer: " + (label.Length > 0 ? label : "collection question")
+                                + ". Complete the questions in SX platform review before submitting an outcome.";
+                            break;
+                        }
+                    }
+                }
+                if (item.SubmissionState.Length > 0 && item.SubmissionState is not ("pending" or "completed" or "failed"))
+                    item.BlockedReason = "Review submission status is unavailable. Refresh before reviewing.";
+                if (seen.Add(item.Key)) screen.Reviews.Add(item);
+            }
         }
 
         // ---- Start ----
@@ -467,6 +629,8 @@ namespace RealityLog.Rig
                 PodReadiness.Refused => PodTone.Error,
                 _ => PodTone.Neutral,
             };
+            // A recording keeps its own chip; a warning while it runs (a controller out of hand) is amber.
+            if (screen.Recording && screen.Blocker.Tone == PodTone.Warning) return (PodTone.Warning, text);
             if (screen.Blocker.Tone != PodTone.Good)
             {
                 return tone == PodTone.Good || readiness == PodReadiness.LocalOnly
@@ -529,7 +693,14 @@ namespace RealityLog.Rig
                 if (factory.ContainsKey("task") && factory["task"] is not JObject) return PodBlocker.Of("no_task", PodTone.Error);
             }
             if (refusal != null) return PodBlocker.Of(refusal.Notice ?? PodStatusBoard.NoticeOf(null, refusal.Code, refusal.Message), PodTone.Error);
-            if (recording) return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
+            if (recording)
+            {
+                // The rig's 3 s controller-lost watch (status tracking.controllers_lost): while a
+                // controller is out of hand its poses freeze, so the collector hears it now, not at
+                // the seal (sx#4210). Recording goes on.
+                if (ControllerLost(status) is { } lost) return PodBlocker.Of(lost, PodTone.Warning);
+                return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
+            }
             // The newest attempt failed or its seal refused it: shown until the next start.
             if (LastFailure(status) is { } failed)
             {
@@ -940,6 +1111,12 @@ namespace RealityLog.Rig
                 _ => new PodEpisodeRow(id, 0, -1, OperatorNotices.Stage("recorded"), PodTone.Neutral, ""),
             };
         }
+
+        /// <summary>The first notice of the rig's <c>tracking.controllers_lost</c>; null when none is lost.</summary>
+        public static OperatorNotice? ControllerLost(JObject? status) =>
+            (Lifted(status, "tracking") as JObject)?["controllers_lost"] is JArray lost
+                ? lost.Select(OperatorNotice.FromJson).FirstOrDefault(notice => notice != null)
+                : null;
 
         // ---- Readers ----
 

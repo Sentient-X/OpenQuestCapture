@@ -161,6 +161,13 @@ namespace RealityLog.Rig
 
         /// <summary>A controller's charge on the strip: "64%", or "not available" when no source reads it.</summary>
         public static string Percent(int? pct) => pct is int p ? p + "%" : "not available";
+
+        /// <summary>
+        /// <see cref="Percent(int?)"/>, saying why when the charge is not available for want of the
+        /// DUMP grant (the only source of it on Horizon OS, granted over adb at provisioning).
+        /// </summary>
+        public static string Percent(int? pct, bool? dumpGranted) =>
+            pct is null && dumpGranted == false ? "needs the DUMP grant (adb pm grant)" : Percent(pct);
     }
 
     /// <summary>

@@ -6758,7 +6758,7 @@ MonoBehaviour:
   menuPositioner: {fileID: 1929108984}
   closedMenuHint: {fileID: 487299148}
   toggleButton: 8
-  controller: -1
+  controller: 3
 --- !u!114 &730769974
 MonoBehaviour:
   m_ObjectHideFlags: 0

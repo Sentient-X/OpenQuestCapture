@@ -276,7 +276,7 @@ namespace RealityLog.Camera
                     captureError = startRefusal;
                     Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider ({outputVideoFileName}) prepared without a recorder: {startRefusal}");
                     WriteCameraMetadataFile();
-                    WriteVideoMetadata(dataDirectoryName);
+                    WriteVideoMetadata(Application.persistentDataPath, dataDirectoryName);
                 }
                 return;
             }
@@ -348,6 +348,18 @@ namespace RealityLog.Camera
 
         public override void StopRecordingSession()
         {
+            BeginStopRecordingSession()?.Invoke();
+        }
+
+        /// <summary>
+        /// Main thread: ends the delayed start and detaches this session's paths; returns the
+        /// encoder drain and file close (the Java <c>stopRecording</c>, which joins the encoder
+        /// output thread for up to 15 s; 7.5 s for the right eye on pod5 2026-11-15) for
+        /// RecordingManager to run off the main thread with the JVM attached. Null when no
+        /// session records.
+        /// </summary>
+        public override Action? BeginStopRecordingSession()
+        {
             if (delayedStartCoroutine != null)
             {
                 StopCoroutine(delayedStartCoroutine);
@@ -357,10 +369,10 @@ namespace RealityLog.Camera
 
             if (currentInstance == null || !isRecordingSessionActive)
             {
-                return;
+                return null;
             }
-
-            FinalizeRecordingSession(scheduleFinalizationPoll: true);
+            var (videoPath, sessionDirName, dataPath) = DetachSession();
+            return () => FinishRecordingSession(videoPath, sessionDirName, dataPath, scheduleFinalizationPoll: true);
         }
 
         private void FinalizeRecordingSession(bool scheduleFinalizationPoll)
@@ -369,11 +381,31 @@ namespace RealityLog.Camera
             {
                 return;
             }
+            var (videoPath, sessionDirName, dataPath) = DetachSession();
+            FinishRecordingSession(videoPath, sessionDirName, dataPath, scheduleFinalizationPoll);
+        }
 
-            // Capture the current session path before resetting, so metadata writes
-            // and finalization poll use the correct file.
-            var videoPath = BuildVideoOutputPath();
-            var sessionDirName = dataDirectoryName;
+        /// <summary>
+        /// Main thread: the session's video path, directory and data path, then
+        /// dataDirectoryName reset at once, so that any camera reinit (app resume, session
+        /// reopen) cannot start a new native encoder pointing at this completed session's
+        /// file: with dataDirectoryName empty, GetJavaInstance() -> BuildVideoOutputPath()
+        /// resolves to the root files directory, which is safe to truncate.
+        /// </summary>
+        private (string videoPath, string sessionDirName, string dataPath) DetachSession()
+        {
+            var detached = (BuildVideoOutputPath(), dataDirectoryName, Application.persistentDataPath);
+            dataDirectoryName = string.Empty;
+            return detached;
+        }
+
+        /// <summary>The blocking stop: JNI and files only, so any thread attached to the JVM.</summary>
+        private void FinishRecordingSession(string videoPath, string sessionDirName, string dataPath, bool scheduleFinalizationPoll)
+        {
+            if (currentInstance == null)
+            {
+                return;
+            }
 
             bool stopSucceeded = false;
             try
@@ -398,14 +430,7 @@ namespace RealityLog.Camera
                 isRecordingSessionActive = false;
             }
 
-            WriteVideoMetadata(sessionDirName);
-
-            // CRITICAL: Reset dataDirectoryName immediately after stop so that any
-            // future camera reinit (app resume, session reopen) cannot start a new
-            // native encoder pointing at this completed session's video file.
-            // With dataDirectoryName empty, GetJavaInstance() -> BuildVideoOutputPath()
-            // resolves to the root files directory, which is safe to truncate.
-            dataDirectoryName = string.Empty;
+            WriteVideoMetadata(dataPath, sessionDirName);
 
             if (stopSucceeded && scheduleFinalizationPoll)
             {
@@ -526,13 +551,13 @@ namespace RealityLog.Camera
             return Path.Join(dataDirPath, frameTimestampsFileName);
         }
 
-        private void WriteVideoMetadata(string sessionDirName)
+        private void WriteVideoMetadata(string dataPath, string sessionDirName)
         {
             try
             {
                 var stopUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var stopMonoNs = MonotonicClock.Nanos();
-                var dataDirPath = Path.Join(Application.persistentDataPath, sessionDirName);
+                var dataDirPath = Path.Join(dataPath, sessionDirName);
                 Directory.CreateDirectory(dataDirPath);
                 var metadataPath = Path.Join(dataDirPath, videoMetadataFileName);
                 var timestampSource = cameraMetadata?.sensor?.timestampSource ?? "UNKNOWN";

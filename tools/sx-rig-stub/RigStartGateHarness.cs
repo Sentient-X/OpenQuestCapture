@@ -79,6 +79,28 @@ static class RigStartGateHarness
             "{\"code\":\"device\",\"detail\":\"the Factory did not answer\",\"refusal\":{\"kind\":\"factory_unanswered\"}}"), "rig_start_failed");
         Expect(slow.Code == "factory_unanswered" && slow.Message.Contains("start again"), "a Factory that did not answer the start in time -> factory_unanswered");
 
+        // The rig's tracking law (sx#4210): judged before the check and before OQC's session.
+        runs = 0;
+        var notInHand = "{\"kind\":\"controllers_not_in_hand\",\"detail\":\"left controller is 1.9 m from the headset\"," +
+            "\"notice\":{\"code\":\"controllers_not_in_hand\",\"args\":{}}}";
+        r = RigStartGate.Evaluate(With(f => f[0].TrackingRefusalJson = notInHand), passing, _ => { });
+        Expect(r?.Code == "controllers_not_in_hand" && runs == 0 && r.Message.Contains("1.9 m") && r.DetailJson.Contains("\"notice\""),
+            "a tracking refusal refuses before the device check, coded by its kind, with the rig's notice");
+        foreach (var kind in RigStartGate.TrackingKinds)
+        {
+            Expect(RigStartGate.Tracking("{\"kind\":\"" + kind + "\"}")?.Code == kind, "tracking kind " + kind + " is its own refusal code");
+        }
+        Expect(RigStartGate.Tracking("{\"kind\":\"storage_low\"}") == null && RigStartGate.Tracking(null) == null
+            && RigStartGate.Tracking("not json") == null, "anything but a tracking kind is not a tracking refusal");
+        runs = 0;
+        r = RigStartGate.Evaluate(With(f => { f[0].TrackingRefusalJson = notInHand; f[0].CollectorReady = false; }), passing, _ => { });
+        Expect(r?.Code == "collector_signed_out" && runs == 0, "signing in is said before the hands");
+        var armedTracking = RigStartGate.FromError(new SxRigException("sx_rig_start_armed", SxRigError.State,
+            "{\"code\":\"state\",\"detail\":\"the right controller is on the left\",\"refusal\":{\"kind\":\"controllers_wrong_side\"}," +
+            "\"notice\":{\"code\":\"controllers_wrong_side\",\"args\":{}}}"), "rig_start_failed");
+        Expect(armedTracking.Code == "controllers_wrong_side" && armedTracking.DetailJson.Contains("\"notice\""),
+            "a start the library refused on tracking -> its kind, its notice kept");
+
         // The seal's operator_id is the signed-in collector, as sx-pod's (Principal.display_name).
         var signedIn = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha Rao\"}}}");
         var signedOut = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}}}");

@@ -43,6 +43,23 @@ static class PodScreenHarness
         var ready = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"progress\":{\"target\":2,\"credited\":1,\"awaiting_review\":1},\"collection\":null}");
         Expect(ready.Blocker.Headline == "Ready to record" && ready.Blocker.Tone == PodTone.Good, "ready: " + ready.Blocker.Headline);
+
+        // The controller warnings read the app's own headset.controllers (RigCoordinator.ReadHeadset):
+        // "tracked" is position AND orientation, so an IMU-only controller warns before a start.
+        // The native device report carries no "tracked" (sx_rig.h refuses unknown keys).
+        string Controllers(string left, string right) => Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles
+            + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
+            + ",\"headset\":{\"displayHz\":90,\"controllers\":[" + left + "," + right + "]}";
+        const string held = "\"connected\":true,\"tracked\":true,\"percent\":80}";
+        var untracked = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\",\"connected\":true,\"tracked\":false,\"percent\":80}"));
+        Expect(untracked.Warnings.Count == 1 && untracked.Warnings[0].Headline == "The right controller is not tracked"
+            && !untracked.StartBlocked, "an untracked controller warns (and leaves Start offered): "
+            + string.Join("; ", untracked.Warnings.ConvertAll(w => w.Headline)));
+        var bothHeld = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\"," + held));
+        Expect(bothHeld.Warnings.Count == 0, "tracked, connected, charged controllers raise no warning");
+        var asleep = Screen(Controllers("{\"side\":\"left\",\"connected\":false,\"tracked\":false,\"percent\":80}", "{\"side\":\"right\"," + held));
+        Expect(asleep.Warnings.Count == 1 && asleep.Warnings[0].Headline == "The left controller is not connected",
+            "a disconnected controller says so, not 'not tracked'");
         Expect(ready.Devices.Count == 4 && ready.Devices[0].Name == "Left camera" && ready.Devices[0].Pill == "Ready" && ready.Devices[0].Value == "port 1-1.1", "devices by role with port: " + ready.Devices[0].Value);
         Expect(ready.Task == "fold towel" && ready.Progress == "1 of 2 credited · 1 awaiting review", "progress: " + ready.Progress);
         Expect(ready.Next == "a review verdict on the recorded episode", "next: " + ready.Next);
@@ -149,6 +166,19 @@ static class PodScreenHarness
         var again = Screen(Recording(60, 150), live: liveness, at: T0.AddSeconds(5));
         Expect(again.Devices[0].Pill == "Live" && again.Devices[2].Pill == "Live", "rising again is live");
         Expect(again.Blocker.Headline == "The right gripper sensor sends nothing", "a silent stream while recording blocks: " + again.Blocker.Headline);
+
+        // The rig's controller-lost watch while recording (sx#4210): the collector hears it now.
+        var lostLive = new StreamLiveness();
+        var inHand = Screen(Recording(30, 100) + ",\"tracking\":{\"start_refusal\":null,\"controllers_lost\":[]}", live: lostLive, at: T0);
+        Expect(inHand.Blocker.Tone == PodTone.Good && inHand.Blocker.Notice == null, "both controllers in hand while recording: recording");
+        var lostLeft = Screen(Recording(31, 101) + ",\"tracking\":{\"start_refusal\":null,\"controllers_lost\":["
+            + "{\"code\":\"controller_lost\",\"args\":{\"side\":\"left\"}}]}", live: lostLive, at: T0.AddSeconds(1));
+        Expect(lostLeft.Blocker.Headline == "The left controller is out of hand" && lostLeft.Blocker.Tone == PodTone.Warning
+            && lostLeft.Recording, "a controller lost while recording -> its notice, amber, recording goes on: " + lostLeft.Blocker.Headline);
+        Expect(PodScreenBoard.Chip(lostLeft, PodReadiness.Ready, "Recording") == (PodTone.Warning, "Recording"),
+            "the chip still says Recording (amber), never Not ready");
+        Expect(PodScreenBoard.ControllerLost(JObject.Parse("{\"native\":{\"tracking\":{\"controllers_lost\":[{\"code\":\"controller_lost\",\"args\":{\"side\":\"right\"}}]}}}"))?.Code
+            == "controller_lost", "controllers_lost is read from the native status when not lifted");
 
         // No rig resolved yet: devices by kind, the missing ones named.
         var unresolved = Screen(Pod + "," + SignedIn + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"},{\"kind\":\"encoder\",\"port\":\"1-1.3\"}],\"roles\":["
