@@ -74,8 +74,12 @@ namespace RealityLog.Rig
             var now = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
             var busy = Busy();
             // Update runs only while the OS lets the app run frames; a paused app is never frozen.
+            // Nor is a headset nobody uses (RealityLog.OVR.Attendance: focus plus a head move or a
+            // button in the last minute): lying unworn its head pose stops, and a relaunch cannot
+            // change that (pod5 2026-11-15: two relaunches at 20:27 and before, both unworn).
+            var attended = RealityLog.OVR.Attendance.Shared.Attended(Stopwatch.GetTimestamp());
             var verdict = policy.Observe(now, DateTime.UtcNow, HeadTrackingMonitor.HeadPoseAgeMs,
-                !HeadTrackingMonitor.AppPaused, busy, ledger.LastUtc);
+                !HeadTrackingMonitor.AppPaused && attended, busy, ledger.LastUtc);
             if (verdict != lastVerdict || (verdict == RelaunchVerdict.Held && busy != lastBusy))
             {
                 Report(verdict, busy, now);

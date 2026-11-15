@@ -28,7 +28,8 @@ namespace RealityLog.Rig
     /// refused "head tracking stopped"). Pure: no UnityEngine, tested on the host
     /// (tools/sx-rig-stub/SelfRelaunchHarness.cs).
     ///
-    /// It relaunches only when all hold: the app is running frames (not paused by the OS); the
+    /// It relaunches only when all hold: the app is running frames (not paused by the OS) and
+    /// someone is using the headset (the caller folds RealityLog.OVR.Attendance into <c>appRunning</c>); the
     /// head pose has been older than <see cref="FrozenAfterMs"/> for <see cref="HoldSeconds"/>
     /// without a break; nothing records, arms or seals (<c>busy</c> is null); and the last self
     /// relaunch was at least <see cref="MinInterval"/> ago. A relaunch never interrupts capture or

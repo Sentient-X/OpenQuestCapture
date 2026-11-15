@@ -29,10 +29,20 @@ namespace RealityLog.UI
         [Tooltip("Button to toggle menu (Y button on Quest controllers)")]
         [SerializeField] private OVRInput.Button toggleButton = OVRInput.Button.Four;
 
-        [Tooltip("Controller to check for button input")]
-        [SerializeField] private OVRInput.Controller controller = OVRInput.Controller.All;
+        [Tooltip("Controller to check for button input: Touch only. All also reads Android's gamepad, which maps Four to Y a second time")]
+        [SerializeField] private OVRInput.Controller controller = OVRInput.Controller.Touch;
+
+        /// <summary>
+        /// A press within this long of the last toggle is ignored. On pod5 (2026-11-15) one
+        /// collector's Y opened the menu and closed it again 200-360 ms later, five times in a
+        /// row (21:15:56-21:17:44): the menu builds 313 rows after opening and the collector,
+        /// seeing nothing yet, pressed again; the menu with the refusal and the Y hint never
+        /// stayed up. Controller.All also resolved Four through OVRControllerGamepadAndroid.
+        /// </summary>
+        public const float ToggleDebounceSeconds = 0.75f;
 
         private bool isMenuVisible = false;
+        private float lastToggleAt = float.NegativeInfinity;
 
         private CanvasGroup? menuCanvasGroup;
         private RecordingListManager? listManager;
@@ -58,6 +68,13 @@ namespace RealityLog.UI
         {
             if (OVRInput.GetDown(toggleButton, controller))
             {
+                var now = Time.unscaledTime;
+                if (now - lastToggleAt < ToggleDebounceSeconds)
+                {
+                    Debug.Log($"[{Constants.LOG_TAG}] RecordingMenuController: press {(now - lastToggleAt) * 1000f:F0} ms after the last toggle ignored (menu stays {(isMenuVisible ? "open" : "closed")})");
+                    return;
+                }
+                lastToggleAt = now;
                 ToggleMenu();
             }
         }

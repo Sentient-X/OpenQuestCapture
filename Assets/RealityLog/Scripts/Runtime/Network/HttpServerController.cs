@@ -485,6 +485,9 @@ namespace RealityLog.Network
             {
                 return AppPausedResponse();
             }
+            // The check (seconds) and the arming run on this thread; the log says whether the
+            // main thread kept its frames meanwhile.
+            MainThreadFrames.Watch("start request", 12);
 
             // The wrist rig, when expected, on this HTTP worker thread (its calls take seconds and
             // must not block Unity's main thread): (1) sx_rig_check and reserve the session name;
@@ -646,7 +649,9 @@ namespace RealityLog.Network
                 if (armRefusal != null)
                 {
                     // No episode without the rig: stop OQC's session again (its files stay, with
-                    // the refusal beside them) and answer the refusal.
+                    // the refusal beside them) and answer the refusal. The stop's drain runs off
+                    // the main thread; this thread waits for it.
+                    System.Threading.Tasks.Task? stopTask = null;
                     var stopped = server!.EnqueueOnMainThread(() =>
                     {
                         try
@@ -654,7 +659,7 @@ namespace RealityLog.Network
                             if (recordingManager != null && recordingManager.IsRecording
                                 && recordingManager.CurrentSessionDirectory == reservedSession)
                             {
-                                recordingManager.StopRecording();
+                                stopTask = recordingManager.StopRecordingAsync();
                                 currentRecordingFile = null;
                                 currentRecordingStartedAt = null;
                                 currentRecordingStartMs = 0;
@@ -665,7 +670,7 @@ namespace RealityLog.Network
                             Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: stop after a refused arming: {ex}");
                         }
                     });
-                    stopped.Wait(5000);
+                    if (stopped.Wait(5000)) stopTask?.Wait(15000);
                     WriteSessionJson(reservedSession, "rig_refusal.json", armRefusal.ToJson());
                     return RigRefusalResponse(rig, armRefusal, reservedSession);
                 }
@@ -704,6 +709,8 @@ namespace RealityLog.Network
             long stopDurationMs = -1;
             string? streamsJson = null;
             string? rigReceiptJson = null;
+            System.Threading.Tasks.Task? stopTask = null;
+            var stopWait = System.Diagnostics.Stopwatch.StartNew();
 
             // Show the stop in /api/status (recording.state) before the main thread reaches it.
             var manager = recordingManager;
@@ -732,10 +739,9 @@ namespace RealityLog.Network
                     stoppedFile = currentRecordingFile;
                     startedAt = currentRecordingStartedAt;
 
-                    recordingManager.StopRecording();
-                    stopDurationMs = recordingManager.LastStopDurationMs;
-                    streamsJson = recordingManager.LastStreamManifestJson;
-                    rigReceiptJson = recordingManager.LastRigStopReceiptJson;
+                    // Returns once the main thread's part is done; the drain and the rig's
+                    // stop finish on a worker (stopTask), which this thread waits for below.
+                    stopTask = recordingManager.StopRecordingAsync();
 
                     // Clear recording state
                     currentRecordingFile = null;
@@ -752,7 +758,8 @@ namespace RealityLog.Network
             });
             // 3.5 s, not 5: the pod's own request timeout is 5 s, so a 202 sent at 5 s
             // would arrive after it had already given up on the request.
-            if (!signal.Wait(3500))
+            if (!signal.Wait(3500)
+                || (stopTask != null && !stopTask.Wait(Math.Max(0, 3500 - (int)stopWait.ElapsedMilliseconds))))
             {
                 // The stop is still queued or running on the main thread and will finish
                 // there. It is not a failure: confirm it through /api/status.
@@ -760,7 +767,7 @@ namespace RealityLog.Network
                 var stoppingJson = "{\n" +
                     $"  \"status\": \"stopping\",\n" +
                     $"  \"file\": \"{EscapeJson(currentRecordingFile ?? "")}\",\n" +
-                    $"  \"message\": \"Stop is still running on the main thread; poll /api/status until recording.active is false\"\n" +
+                    $"  \"message\": \"Stop is still running; poll /api/status until recording.active is false\"\n" +
                     "}";
                 var accepted = HttpResponse.Json(202, stoppingJson);
                 accepted.StatusText = "Accepted";
@@ -770,6 +777,12 @@ namespace RealityLog.Network
             if (notRecording)
             {
                 return HttpResponse.Conflict("not_recording", "No recording in progress");
+            }
+            if (success && recordingManager is { } stoppedManager)
+            {
+                stopDurationMs = stoppedManager.LastStopDurationMs;
+                streamsJson = stoppedManager.LastStreamManifestJson;
+                rigReceiptJson = stoppedManager.LastRigStopReceiptJson;
             }
 
             if (!success)

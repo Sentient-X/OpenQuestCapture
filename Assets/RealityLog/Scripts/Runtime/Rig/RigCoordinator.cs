@@ -469,6 +469,7 @@ namespace RealityLog.Rig
             if (OVRInput.GetDown(OVRInput.Button.Any))
             {
                 presence.KeyPressed();
+                RealityLog.OVR.Attendance.Shared.Input(System.Diagnostics.Stopwatch.GetTimestamp());
             }
             if (signInCuePending)
             {
@@ -519,6 +520,17 @@ namespace RealityLog.Rig
             try
             {
                 refusal = CheckReady(facts);
+                // The check holds the rig for seconds (5.5 s on pod5); the collector may have
+                // moved meanwhile. Judge the tracking once more, on a sample handed over now,
+                // before OQC's session starts: a start the rig's tracking law refuses then never
+                // starts and stops a recording (sx#4210, pod5 2026-11-15 21:17:30: the check passed,
+                // sx_rig_start_armed refused inside the recording, and the stop took 7.6 s).
+                if (refusal == null && facts.Opened
+                    && RigStartGate.Tracking(TrackingRefusalNow()) is { } moved)
+                {
+                    refusal = moved;
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: start refused after the check: {moved.Code}: {moved.Message}");
+                }
             }
             finally
             {
@@ -1073,6 +1085,30 @@ namespace RealityLog.Rig
                 if (!episodeActive) return;
                 ClaimRigLocked("request_stop");
             }
+            RequestStopClaimed();
+        }
+
+        /// <summary>
+        /// <see cref="RequestStopEpisode"/> for Unity's main thread: never waits on a check or a
+        /// start holding the rig (seconds), and answers false then; that stop's
+        /// <see cref="StopEpisode"/> waits for the arming and its sx_rig_stop ends capture.
+        /// True when the cutoff was taken or nothing needed one. Never throws.
+        /// </summary>
+        public bool TryRequestStopEpisode()
+        {
+            if (noEarlyStop) return true;
+            lock (episodeLock)
+            {
+                if (rigWork != null) return false;
+                if (!episodeActive) return true;
+                ClaimRigLocked("request_stop");
+            }
+            RequestStopClaimed();
+            return true;
+        }
+
+        private void RequestStopClaimed()
+        {
             try
             {
                 SxRig.RequestStop();
@@ -1733,16 +1769,29 @@ namespace RealityLog.Rig
         private string? TrackingRefusalNow()
         {
             if (!ObserveTracking()) return null;
-            try
+            // sx_rig_status answers {"state": "busy"} when another call holds the rig for 50 ms
+            // (the device report, the status worker); that is no verdict, so ask again for up to
+            // a second rather than let a start through unjudged.
+            for (var attempt = 0; attempt < 25; attempt++)
             {
-                return JToken.Parse(SxRig.Status()) is JObject status
-                    && status["tracking"] is JObject tracking && tracking["start_refusal"] is JObject refusal
-                    ? refusal.ToString(Formatting.None) : null;
+                try
+                {
+                    if (JToken.Parse(SxRig.Status()) is not JObject status) return null;
+                    if ((string?)status["state"] == "busy")
+                    {
+                        System.Threading.Thread.Sleep(40);
+                        continue;
+                    }
+                    return status["tracking"] is JObject tracking && tracking["start_refusal"] is JObject refusal
+                        ? refusal.ToString(Formatting.None) : null;
+                }
+                catch (Exception ex) when (ex is SxRigException || ex is JsonException)
+                {
+                    return null;
+                }
             }
-            catch (Exception ex) when (ex is SxRigException || ex is JsonException)
-            {
-                return null;
-            }
+            Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: the rig stayed busy for 1 s; the start's tracking is judged by sx_rig_start_armed alone");
+            return null;
         }
 
         private void PollNativeStatus()

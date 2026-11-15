@@ -279,6 +279,7 @@ namespace RealityLog
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
+            MainThreadFrames.Watch("start", 5);
 
             try
             {
@@ -358,51 +359,64 @@ namespace RealityLog
         }
 
         /// <summary>
-        /// Stops recording from all subsystems in the proper order.
-        /// Video finalization (OS flushing the MP4) runs on a background thread;
-        /// a coroutine waits for it to complete before firing saved events.
+        /// Stops recording from all subsystems in the proper order, without blocking Unity's
+        /// main thread on the parts that wait (sx#4210): on the main thread the rig's cutoff
+        /// (only when the rig is free; never waiting on an arming), the capture timer, both
+        /// eyes' exposure freeze, the CSV loggers, the stream manifest and the tracking origin;
+        /// then on a worker thread with the JVM attached each eye's encoder drain and file
+        /// close (7.5 s for the right eye on pod5 2026-11-15, which froze every pose, controller
+        /// and body stream) and the rig's stop (bounded 5 s; the seal reads this session, so it
+        /// runs after every OQC file is final); then back on the main thread the state turns
+        /// Idle. <see cref="State"/> reads Stopping and <see cref="IsRecording"/> true until then.
+        /// Returns the stop's completion; <see cref="LastStopDurationMs"/>,
+        /// <see cref="LastStreamManifestJson"/> and <see cref="LastRigStopReceiptJson"/> are this
+        /// stop's once it completes. Main thread only.
         /// </summary>
-        public void StopRecording()
+        public void StopRecording() => StopRecordingAsync();
+
+        /// <inheritdoc cref="StopRecording"/>
+        public System.Threading.Tasks.Task StopRecordingAsync()
         {
             if (!isRecording)
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Not currently recording!");
-                return;
+                return System.Threading.Tasks.Task.CompletedTask;
+            }
+            if (stopInFlight is { } running)
+            {
+                return running.Task;
             }
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Stopping recording session");
             System.Threading.Volatile.Write(ref state, (int)RecordingState.Stopping);
+            MainThreadFrames.Watch("stop", 10);
 
-            // Every phase below blocks the main thread; time each one so a slow stop
-            // shows which part was slow.
             var stopTimer = System.Diagnostics.Stopwatch.StartNew();
             var phases = new List<string>();
             long phaseStartMs = 0;
             void EndPhase(string phase)
             {
                 var nowMs = stopTimer.ElapsedMilliseconds;
-                phases.Add($"{phase}={nowMs - phaseStartMs}");
+                lock (phases) phases.Add($"{phase}={nowMs - phaseStartMs}");
                 phaseStartMs = nowMs;
             }
 
             // Store directory name before resetting state
             string savedDirectory = currentSessionDirectory ?? string.Empty;
-
+            var finishers = new List<(string name, Action finish)>();
             try
             {
-                // Record the actual end of acquisition before any synchronous drain or
-                // disk flush. The final StopRig below still admits sealing only after all
-                // headset files are closed; finalization time is not part of the episode.
-                RigCoordinator.Instance?.RequestStopEpisode();
-                EndPhase("rig_cutoff");
-                // Stop in reverse order
-                // Step 1: Stop capture loop first
+                // The actual end of acquisition, before any drain or flush. A rig still arming
+                // (sx_rig_start_armed, seconds) is never waited on here: the worker's stop waits
+                // for it, and sx_rig_stop then ends its capture.
+                var rig = RigCoordinator.Instance;
+                var cutoff = rig is null || rig.TryRequestStopEpisode();
+                EndPhase(cutoff ? "rig_cutoff" : "rig_cutoff_deferred");
                 captureTimer.StopCapture();
                 EndPhase("capture_timer");
 
-                // Freeze both camera exposure timelines before either encoder performs
-                // synchronous drain/finalization. Otherwise the second eye keeps recording
-                // while the first eye stops and their delivered frame counts diverge.
+                // Freeze both camera exposure timelines before either encoder drains, so the
+                // second eye never records on while the first finalizes.
                 foreach (var provider in cameraProviders)
                 {
                     provider.RequestStopRecordingSession();
@@ -410,11 +424,10 @@ namespace RealityLog
                 }
                 foreach (var provider in cameraProviders)
                 {
-                    provider.StopRecordingSession();
-                    EndPhase($"stop_session:{provider.name}");
+                    if (provider.BeginStopRecordingSession() is { } finish) finishers.Add((provider.name, finish));
+                    EndPhase($"begin_stop:{provider.name}");
                 }
 
-                // Step 2: Close file writers and cleanup
                 if (recordDepthMaps && depthMapExporter != null)
                 {
                     depthMapExporter.StopExport();
@@ -439,20 +452,7 @@ namespace RealityLog
                 WriteStreamManifest(savedDirectory);
                 EndPhase("stream_manifest");
                 WriteTrackingOriginRecord(savedDirectory);
-
                 EndPhase("tracking_origin");
-
-                // The rig stops last (bounded 5 s): its seal starts on the stop and reads this
-                // session, so every OQC file must be final first. The cameras' MP4s and
-                // sidecars are, since their stop above is synchronous.
-                StopRig(savedDirectory);
-                EndPhase("rig");
-                // A failed rig episode already buzzed when it failed; a clean one chimes stop.
-                if (LastRigStopReceiptJson != null && RigCoordinator.Instance is { } rigForCue
-                    && !RigStatusJson.StopFailed(LastRigStopReceiptJson))
-                {
-                    rigForCue.Cue(RigCues.Cue.Stop);
-                }
             }
             catch
             {
@@ -461,16 +461,72 @@ namespace RealityLog
                 System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
                 throw;
             }
+            var mainMs = stopTimer.ElapsedMilliseconds;
+            EndPhase("main_thread");
+
+            var completion = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+            stopInFlight = completion;
+            var dataPath = Application.persistentDataPath;
+            var worker = new System.Threading.Thread(() =>
+            {
+                string? receipt = null;
+#if UNITY_ANDROID && !UNITY_EDITOR
+                var attached = AndroidJNI.AttachCurrentThread() == 0;
+#endif
+                try
+                {
+                    foreach (var (name, finish) in finishers)
+                    {
+                        try { finish(); }
+                        catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {name} stop failed: {ex}"); }
+                        EndPhase($"stop_session:{name}");
+                    }
+                    // Last: the rig's seal reads this session, so every OQC file is final first.
+                    receipt = StopRig(dataPath, savedDirectory);
+                    EndPhase("rig");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: stop worker failed: {ex}");
+                }
+                finally
+                {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                    if (attached) AndroidJNI.DetachCurrentThread();
+#endif
+                    mainThreadWork.Enqueue(() => CompleteStop(savedDirectory, receipt, stopTimer, mainMs, phases, completion));
+                }
+            }) { IsBackground = true, Name = "RecordingStop" };
+            stopWorker = worker;
+            worker.Start();
+            return completion.Task;
+        }
+
+        /// <summary>Main thread, once the stop worker is done: the recording reads Idle.</summary>
+        private void CompleteStop(string savedDirectory, string? receipt, System.Diagnostics.Stopwatch stopTimer,
+            long mainMs, List<string> phases, System.Threading.Tasks.TaskCompletionSource<bool> completion)
+        {
+            LastRigStopReceiptJson = receipt;
+            // A failed rig episode already buzzed when it failed; a clean one chimes stop.
+            if (receipt != null && RigCoordinator.Instance is { } rigForCue && !RigStatusJson.StopFailed(receipt))
+            {
+                rigForCue.Cue(RigCues.Cue.Stop);
+            }
 
             HeadTrackingMonitor.EndRecording();
             isRecording = false;
             recordingStartTime = 0f;
             currentSessionDirectory = null;
+            stopInFlight = null;
+            stopWorker = null;
 
             var stopMs = stopTimer.ElapsedMilliseconds;
             System.Threading.Interlocked.Exchange(ref lastStopDurationMs, stopMs);
             System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
-            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: StopRecording took {stopMs} ms ({string.Join(", ", phases)})");
+            string phaseList;
+            lock (phases) phaseList = string.Join(", ", phases);
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: StopRecording took {stopMs} ms, {mainMs} ms of it on the main thread ({phaseList})");
 
             // Show the standby label again now that recording has stopped
             infoCanvasAnimator?.SetBool(IsRunningParam, false);
@@ -486,6 +542,23 @@ namespace RealityLog
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped (no session directory)");
             }
+            completion.TrySetResult(true);
+        }
+
+        // The stop that runs (worker started, completion not yet applied); null otherwise.
+        private System.Threading.Tasks.TaskCompletionSource<bool>? stopInFlight;
+        private System.Threading.Thread? stopWorker;
+        // Work a worker hands back to Unity's main thread, run in Update.
+        private readonly System.Collections.Concurrent.ConcurrentQueue<Action> mainThreadWork = new();
+
+        private void Update()
+        {
+            while (mainThreadWork.TryDequeue(out var work))
+            {
+                try { work(); }
+                catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: main-thread work failed: {ex}"); }
+            }
+            MainThreadFrames.Frame(Time.unscaledDeltaTime);
         }
 
         private IEnumerator WaitForFinalizationThenNotify(string savedDirectory)
@@ -577,6 +650,20 @@ namespace RealityLog
         /// </summary>
         private void StopForTeardown(string reason)
         {
+            if (stopInFlight != null)
+            {
+                // A stop already runs on its worker: let it finish (the camera's Java stop is
+                // bounded 15 s, the rig's 5 s), then apply its completion here, since Update
+                // will not run again.
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while a stop runs; waiting for it.");
+                stopWorker?.Join(TimeSpan.FromSeconds(22));
+                while (mainThreadWork.TryDequeue(out var work))
+                {
+                    try { work(); }
+                    catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: teardown work failed: {ex}"); }
+                }
+                return;
+            }
             if (isRecording)
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; performing synchronous stop.");
@@ -602,7 +689,7 @@ namespace RealityLog
                 string savedDirectory = currentSessionDirectory ?? string.Empty;
                 WriteStreamManifest(savedDirectory);
                 WriteTrackingOriginRecord(savedDirectory);
-                StopRig(savedDirectory); // last: the rig's seal reads this session
+                LastRigStopReceiptJson = StopRig(Application.persistentDataPath, savedDirectory); // last: the rig's seal reads this session
                 isRecording = false;
                 System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
                 recordingStartTime = 0f;
@@ -679,20 +766,20 @@ namespace RealityLog
 
         /// <summary>
         /// Stops the rig's episode, if one ran, and writes its receipt into the session.
-        /// Never throws: a rig that fails to stop reports it in the receipt.
+        /// Never throws: a rig that fails to stop reports it in the receipt. Returns the
+        /// receipt (null when no rig episode ran). Any thread.
         /// </summary>
-        private void StopRig(string sessionDirectoryName)
+        private static string? StopRig(string dataPath, string sessionDirectoryName)
         {
             var rig = RigCoordinator.Instance;
             var receipt = rig is null ? null : rig.StopEpisode();
-            LastRigStopReceiptJson = receipt;
             if (receipt == null || string.IsNullOrEmpty(sessionDirectoryName))
             {
-                return;
+                return receipt;
             }
             try
             {
-                var sessionDir = Path.Join(Application.persistentDataPath, sessionDirectoryName);
+                var sessionDir = Path.Join(dataPath, sessionDirectoryName);
                 Directory.CreateDirectory(sessionDir);
                 File.WriteAllText(Path.Join(sessionDir, RigStopReceiptFileName), receipt);
             }
@@ -700,6 +787,7 @@ namespace RealityLog
             {
                 Debug.LogError($"[{Constants.LOG_TAG}] Failed to write {RigStopReceiptFileName}: {ex.Message}");
             }
+            return receipt;
         }
 
         private void WriteVideoStartTime()
@@ -1029,6 +1117,64 @@ namespace RealityLog
             public long mono_time_ns;
             public int recenter_count;
             public string runtime_origin = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// The longest Unity main-thread frame over a window opened by a start or a stop, logged
+    /// once when the window closes ("main thread: longest frame N ms ..."). A blocked main
+    /// thread stops every pose, controller and body stream and ages the tracking sample the rig
+    /// judges a start by (sx#4210), so each start and stop says how long its worst frame was.
+    /// <see cref="Watch"/> from any thread; <see cref="Frame"/> from RecordingManager.Update.
+    /// </summary>
+    public static class MainThreadFrames
+    {
+        private static readonly object Gate = new();
+        private static string? label;
+        private static long sinceTicks;
+        private static long untilTicks;
+        private static double longestMs;
+        private static int frames;
+
+        /// <summary>Opens (or widens) the window for <paramref name="seconds"/> from now.</summary>
+        public static void Watch(string what, double seconds)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var until = now + (long)(seconds * System.Diagnostics.Stopwatch.Frequency);
+            lock (Gate)
+            {
+                if (label == null)
+                {
+                    label = what;
+                    sinceTicks = now;
+                    longestMs = 0;
+                    frames = 0;
+                }
+                else if (!label.EndsWith(what, StringComparison.Ordinal))
+                {
+                    label += " + " + what;
+                }
+                if (until > untilTicks) untilTicks = until;
+            }
+        }
+
+        /// <summary>One main-thread frame of <paramref name="deltaSeconds"/> (unscaled).</summary>
+        public static void Frame(float deltaSeconds)
+        {
+            string? done = null;
+            lock (Gate)
+            {
+                if (label == null) return;
+                frames++;
+                if (deltaSeconds * 1000.0 > longestMs) longestMs = deltaSeconds * 1000.0;
+                var now = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (now < untilTicks) return;
+                done = $"main thread: longest frame {longestMs:F0} ms over {frames} frames in the " +
+                    $"{(now - sinceTicks) / (double)System.Diagnostics.Stopwatch.Frequency:F1} s from {label}";
+                label = null;
+                untilTicks = 0;
+            }
+            Debug.Log($"[{Constants.LOG_TAG}] {done}");
         }
     }
 }

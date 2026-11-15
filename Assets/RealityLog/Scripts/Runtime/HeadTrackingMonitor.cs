@@ -134,6 +134,7 @@ namespace RealityLog
             Interlocked.Exchange(ref bodyCalibration, 0);
             Interlocked.Exchange(ref bodyCalibrationSinceTicks, NoPose);
             BodyHealth.Reset();
+            Attendance.Shared.Reset();
             lock (controllerLock)
             {
                 bodySample = default;
@@ -257,7 +258,14 @@ namespace RealityLog
             bodyRate.Observe(body.SourceTime > 0 ? body.SourceTime : null, sourceNow);
             // The summary string is built only while degraded: this runs every frame.
             var degraded = bodyRate.Hz is double hz && hz < StartMinBodyHz;
-            BodyHealth.Observe(degraded, degraded ? BodySummary : "");
+            // Someone must be using the headset (Attendance): a headset lying unworn has no body
+            // to track, and restarting its tracker every minute for that helps nobody.
+            Attendance.Shared.Observe(vrFocus && inputFocus, headTracked && orientationTracked,
+                headPose.Pose.Position.x, headPose.Pose.Position.y, headPose.Pose.Position.z,
+                headPose.Pose.Orientation.x, headPose.Pose.Orientation.y, headPose.Pose.Orientation.z,
+                headPose.Pose.Orientation.w, now);
+            var attendedDegraded = degraded && Attendance.Shared.Attended(now);
+            BodyHealth.Observe(attendedDegraded, attendedDegraded ? BodySummary : "");
             if (body.AgeMs == null) body = default;
             lock (controllerLock)
             {
@@ -280,18 +288,26 @@ namespace RealityLog
             if (!OVRPlugin.GetBodyState4(OVRPlugin.Step.Render, OVRPlugin.BodyJointSet.FullBody, ref bodyState))
                 return default;
             ObserveCalibration((int)bodyState.CalibrationStatus);
-            if (bodyState.JointLocations == null || bodyState.JointLocations.Length <= 13)
+            if (bodyState.JointLocations == null || bodyState.JointLocations.Length <= RightShoulderJoint)
                 return default;
             return new BodySample
             {
-                LeftShoulder = Shoulder(bodyState.JointLocations[8]),
-                RightShoulder = Shoulder(bodyState.JointLocations[13]),
+                LeftShoulder = Shoulder(bodyState.JointLocations[LeftShoulderJoint]),
+                RightShoulder = Shoulder(bodyState.JointLocations[RightShoulderJoint]),
                 Confidence = bodyState.Confidence,
                 SourceTime = bodyState.Time,
             };
         }
 
-        // FullBody joint indices match BodyTrackingLogger: LeftShoulder=8, RightShoulder=13.
+        // The shoulder joints the rig's tracking law reads (sx_pod_core::tracking: shoulders
+        // 0.15-0.7 m apart) are the upper-arm roots, FullBody LeftArmUpper=10 and
+        // RightArmUpper=15 (BodyTrackingLogger's JOINT_NAMES). Meta's "LeftShoulder"=8 and
+        // "RightShoulder"=13 are the clavicle roots beside the neck, ~6 cm apart on every body:
+        // pod5 2026-11-15, body_tracking.csv of 20261115_211730 read 0.058 m between 8 and 13 and
+        // 0.36 m between 10 and 15, so every v73 start was refused "cannot establish your sides".
+        public const int LeftShoulderJoint = 10;
+        public const int RightShoulderJoint = 15;
+
         private static ControllerSample Shoulder(OVRPlugin.BodyJointLocation joint) => new()
         {
             PositionTracked = (joint.LocationFlags & OVRPlugin.SpaceLocationFlags.PositionValid) != 0,

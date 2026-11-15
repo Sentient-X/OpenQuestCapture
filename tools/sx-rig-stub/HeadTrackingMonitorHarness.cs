@@ -58,7 +58,18 @@ static class HeadTrackingMonitorHarness
     {
         // OQC#22: a degraded tracker delivers every 160-320 ms; sampled right after an
         // advance it is fresh, so only the rate refuses it.
+        // Unattended (focus, but no head move or button for a minute): a low rate refuses the
+        // start but never starts the idle restart clock (pod5 2026-11-15: a restart every minute
+        // while the headset lay unworn).
         Cold();
+        Run(7, 2.0);
+        OVRPlugin.BodyTime = OVRPlugin.Now;
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.StartRefusal?.Contains("updating at") == true && BodyHealth.DegradedSeconds == 0,
+            "an unattended headset's low body rate refuses a start but starts no restart clock");
+
+        Cold();
+        Attendance.Shared.Input(Stopwatch.GetTimestamp());
         Run(7, 2.0);
         OVRPlugin.BodyTime = OVRPlugin.Now;
         HeadTrackingMonitor.RefreshNow();
@@ -126,8 +137,57 @@ static class HeadTrackingMonitorHarness
             "/api/status carries the live recording's body gaps");
     }
 
+    static OVRPlugin.BodyJointLocation Joint(float x) => new()
+    {
+        LocationFlags = OVRPlugin.SpaceLocationFlags.PositionValid | OVRPlugin.SpaceLocationFlags.OrientationValid,
+        Pose = new OVRPlugin.Posef { Position = new OVRPlugin.Vector3f { x = x, y = 1.5f }, Orientation = new OVRPlugin.Quatf { w = 1 } },
+    };
+
+    static void Shoulders()
+    {
+        // The rig's law needs shoulders 0.15-0.7 m apart: the upper-arm roots (10, 15), never
+        // Meta's clavicle "shoulders" (8, 13), 0.058 m apart on pod5's collector.
+        Healthy();
+        OVRPlugin.Joints[8] = Joint(-0.029f);
+        OVRPlugin.Joints[13] = Joint(0.029f);
+        OVRPlugin.Joints[10] = Joint(-0.18f);
+        OVRPlugin.Joints[15] = Joint(0.18f);
+        HeadTrackingMonitor.RefreshNow();
+        var json = HeadTrackingMonitor.ControllersJson("");
+        Expect(json.Contains("\"leftShoulder\": {\"connected\": false, \"positionTracked\": true, \"orientationTracked\": true, \"pose\": {\"position\": {\"x\": -0.18")
+            && json.Contains("\"rightShoulder\": {\"connected\": false, \"positionTracked\": true, \"orientationTracked\": true, \"pose\": {\"position\": {\"x\": 0.18")
+            && !json.Contains("0.029"),
+            "the controllers block's shoulders are the upper-arm roots (FullBody 10 and 15), not the clavicles (8 and 13)");
+    }
+
+    static void Attended()
+    {
+        var f = Stopwatch.Frequency;
+        long t = 1_000 * f;
+        var a = new Attendance();
+        a.Observe(true, true, 0, 1.6f, 0, 0, 0, 0, 1, t);
+        Expect(!a.Attended(t), "a first head pose anchors and is not yet activity");
+        a.Observe(true, true, 0.01f, 1.6f, 0, 0, 0, 0, 1, t + f);
+        Expect(!a.Attended(t + f), "1 cm of head drift is no activity (a headset on a table)");
+        a.Observe(true, true, 0.02f, 1.6f, 0, 0, 0, 0, 1, t + 2 * f);
+        Expect(a.Attended(t + 2 * f), "2 cm of head movement is someone wearing it");
+        Expect(a.Attended(t + 63 * f) == false, "a minute without movement or a button is unattended");
+        var turned = (float)Math.Sin(5 * Math.PI / 360);
+        a.Observe(true, true, 0.02f, 1.6f, 0, 0, turned, 0, (float)Math.Sqrt(1 - turned * turned), t + 64 * f);
+        Expect(a.Attended(t + 64 * f), "a 5 degree head turn is activity");
+        a.Observe(false, true, 0.02f, 1.6f, 0, 0, turned, 0, (float)Math.Sqrt(1 - turned * turned), t + 65 * f);
+        Expect(!a.Attended(t + 65 * f), "without the app's focus nobody is using it");
+        var b = new Attendance();
+        b.Observe(true, false, 0, 0, 0, 0, 0, 0, 1, t);
+        b.Input(t);
+        Expect(b.Attended(t + 30 * f), "a button press is attendance even with the head pose frozen");
+        Expect(!b.Attended(t + 61 * f), "and it lasts a minute");
+    }
+
     static int Main()
     {
+        Shoulders();
+        Attended();
         Cold();
         Expect(HeadTrackingMonitor.StartRefusal != null, "no samples refuse a start");
         HeadTrackingMonitor.RefreshNow();
@@ -272,6 +332,7 @@ public static class OVRPlugin
     public static bool BodyActive, BodyHasJoints;
     public static BodyTrackingCalibrationState Calibration = BodyTrackingCalibrationState.Valid;
     public static Action? AfterBodyRead;
+    public static readonly System.Collections.Generic.Dictionary<int, BodyJointLocation> Joints = new();
     public static int Reads;
     public static void Reset()
     {
@@ -280,6 +341,7 @@ public static class OVRPlugin
         BodyActive = BodyHasJoints = true;
         Calibration = BodyTrackingCalibrationState.Valid;
         AfterBodyRead = null;
+        Joints.Clear();
         Reads = 0;
     }
     public static PoseStatef GetNodePoseStateImmediate(Node node)
@@ -298,6 +360,7 @@ public static class OVRPlugin
         body.Confidence = 1;
         body.CalibrationStatus = Calibration;
         body.JointLocations = new BodyJointLocation[BodyHasJoints ? 84 : 0];
+        if (BodyHasJoints) foreach (var joint in Joints) body.JointLocations[joint.Key] = joint.Value;
         AfterBodyRead?.Invoke();
         return true;
     }

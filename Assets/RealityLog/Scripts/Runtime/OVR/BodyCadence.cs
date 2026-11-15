@@ -187,4 +187,90 @@ namespace RealityLog.OVR
             "\"gaps_over_100ms\":" + Gaps.ToString(CultureInfo.InvariantCulture)
             + ",\"max_gap_ms\":" + LongestGapMs.ToString("F1", CultureInfo.InvariantCulture);
     }
+
+    /// <summary>
+    /// Whether someone is using the headset now, for the recoveries that only help a person
+    /// (BodyTrackingLogger's idle tracker restart, FrozenHeadRecovery's self relaunch): this
+    /// app has the headset's focus, and in the last <see cref="IdleAfterSeconds"/> the head
+    /// moved (more than <see cref="MoveMetres"/> or <see cref="TurnDegrees"/> from where it
+    /// last rested) or a controller button went down. The runtime's user-present flag cannot
+    /// say it: a pod headset kept awake (provision-headset.sh --keep-awake broadcasts
+    /// vrpowermanager prox_close) reads "mounted" lying on a table (pod5, 2026-11-15:
+    /// "Virtual proximity state: CLOSE", HEADSET_MOUNTED while unworn). Main thread writes,
+    /// any thread reads; no UnityEngine dependency (tools/sx-rig-stub/HeadTrackingMonitorHarness.cs).
+    /// </summary>
+    public sealed class Attendance
+    {
+        public const double IdleAfterSeconds = 60.0;
+        public const float MoveMetres = 0.015f;
+        public const float TurnDegrees = 3f;
+        private const long None = long.MinValue;
+
+        /// <summary>The app's one watch, fed by HeadTrackingMonitor and RigCoordinator.</summary>
+        public static readonly Attendance Shared = new();
+
+        private readonly object gate = new();
+        private bool focused;
+        private bool anchored;
+        private float ax, ay, az, aqx, aqy, aqz, aqw;
+        private long lastActivityTicks = None;
+
+        /// <summary>One look at the head (main thread, every frame); <paramref name="nowTicks"/> a Stopwatch timestamp.</summary>
+        public void Observe(bool hasFocus, bool headTracked, float x, float y, float z,
+            float qx, float qy, float qz, float qw, long nowTicks)
+        {
+            lock (gate)
+            {
+                focused = hasFocus;
+                if (!headTracked) return;
+                if (!anchored)
+                {
+                    Anchor(x, y, z, qx, qy, qz, qw);
+                    return;
+                }
+                var dx = x - ax; var dy = y - ay; var dz = z - az;
+                var moved = Math.Sqrt(dx * dx + dy * dy + dz * dz) > MoveMetres;
+                var dot = Math.Min(1.0, Math.Abs(qx * aqx + qy * aqy + qz * aqz + qw * aqw));
+                var turned = 2.0 * Math.Acos(dot) * 180.0 / Math.PI > TurnDegrees;
+                if (moved || turned)
+                {
+                    Anchor(x, y, z, qx, qy, qz, qw);
+                    lastActivityTicks = nowTicks;
+                }
+            }
+        }
+
+        /// <summary>A controller button went down (any thread).</summary>
+        public void Input(long nowTicks)
+        {
+            lock (gate) lastActivityTicks = nowTicks;
+        }
+
+        /// <summary>Focused, and the head moved or a button went down in the last <see cref="IdleAfterSeconds"/>.</summary>
+        public bool Attended(long nowTicks)
+        {
+            lock (gate)
+            {
+                return focused && lastActivityTicks != None
+                    && (nowTicks - lastActivityTicks) / (double)System.Diagnostics.Stopwatch.Frequency < IdleAfterSeconds;
+            }
+        }
+
+        /// <summary>Back to launch state (tests and Editor play mode).</summary>
+        public void Reset()
+        {
+            lock (gate)
+            {
+                focused = false;
+                anchored = false;
+                lastActivityTicks = None;
+            }
+        }
+
+        private void Anchor(float x, float y, float z, float qx, float qy, float qz, float qw)
+        {
+            ax = x; ay = y; az = z; aqx = qx; aqy = qy; aqz = qz; aqw = qw;
+            anchored = true;
+        }
+    }
 }

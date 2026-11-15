@@ -219,6 +219,32 @@
       "still_fine": "Your earlier episodes are safe.",
       "action": "A technician runs setup again from the Console."
     },
+    "rig_devices_unregistered": {
+      "who": "technician",
+      "headline": "A {part} attached is not registered to any rig",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Attach the registered one, or a technician registers it in the Console."
+    },
+    "rig_devices_mixed": {
+      "who": "collector",
+      "headline": "The attached devices are from different rigs: {rigs}",
+      "still_fine": "Each device is registered.",
+      "action": "Attach the four devices of one rig, then press Check.",
+      "button": "check"
+    },
+    "rig_devices_incomplete": {
+      "who": "collector",
+      "headline": "Rig {rig} is missing its {side} {part}",
+      "still_fine": "The attached devices are rig {rig}'s.",
+      "action": "Attach its {side} {part}, then press Check.",
+      "button": "check"
+    },
+    "rig_swap_while_recording": {
+      "who": "collector",
+      "headline": "This shift is recording on rig {rig}; the attached devices are rig {attached}",
+      "still_fine": "The episode being recorded stays on rig {rig}.",
+      "action": "Stop the recording, then press Check to switch to rig {attached}."
+    },
     "readiness_clock": {
       "who": "collector",
       "headline": "The headset's clock is not synced",
