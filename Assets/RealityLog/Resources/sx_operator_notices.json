@@ -79,6 +79,12 @@
       "still_fine": "The rig is fine.",
       "action": "Restart the app and record again. If it repeats, call a technician."
     },
+    "seal_raw_files_removed": {
+      "who": "technician",
+      "headline": "Episode not kept: its raw files were removed from the headset",
+      "still_fine": "The rig and your other episodes are fine.",
+      "action": "Nothing to record again here. A technician can clear it from the headset."
+    },
     "seal_quality": {
       "who": "technician",
       "headline": "Last episode not kept: it did not pass the quality check",
