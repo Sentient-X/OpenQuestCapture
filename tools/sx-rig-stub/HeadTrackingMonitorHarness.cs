@@ -20,9 +20,29 @@ static class HeadTrackingMonitorHarness
     }
     static void Healthy()
     {
+        Cold();
+        // A whole rate window of 50 Hz body states (and poses) ending at the source time 100.
+        Run(50, 2.0);
+        OVRPlugin.Reset();
+    }
+    static void Cold()
+    {
         typeof(HeadTrackingMonitor).GetMethod("ResetStatics", PrivateStatic)!.Invoke(null, null);
         OVRPlugin.Reset();
         OVRInput.LeftConnected = OVRInput.RightConnected = true;
+    }
+    // Refreshes at 90 Hz for `seconds` ending at source time 100; the body advances at `bodyHz`.
+    static void Run(double bodyHz, double seconds)
+    {
+        var start = 100 - seconds;
+        var nextBody = start;
+        for (var t = start; t <= 100 + 1e-9; t += 1.0 / 90)
+        {
+            OVRPlugin.Now = t;
+            for (var i = 0; i < 3; i++) OVRPlugin.Times[i] = t;
+            if (t + 1e-9 >= nextBody) { OVRPlugin.BodyTime = t; nextBody += 1.0 / bodyHz; }
+            HeadTrackingMonitor.RefreshNow();
+        }
     }
     static void Refuses(Action change, string contains, string what)
     {
@@ -33,10 +53,86 @@ static class HeadTrackingMonitorHarness
         var reason = HeadTrackingMonitor.StartRefusal;
         Expect(reason != null && reason.Contains(contains), what);
     }
+    static void BodyCadence()
+    {
+        // OQC#22: a degraded tracker delivers every 160-320 ms; sampled right after an
+        // advance it is fresh, so only the rate refuses it.
+        Cold();
+        Run(7, 2.0);
+        OVRPlugin.BodyTime = OVRPlugin.Now;
+        HeadTrackingMonitor.RefreshNow();
+        var reason = HeadTrackingMonitor.StartRefusal;
+        Expect(reason != null && reason.Contains("updating at") && reason.Contains("needs 30 Hz") && reason.Contains("restart the capture app"),
+            $"a fresh body sample at 7 Hz refuses with the rate and what to do ({reason})");
+        Expect(HeadTrackingMonitor.StatusJson("").Contains("\"bodyUpdateHz\": 8") || HeadTrackingMonitor.StatusJson("").Contains("\"bodyUpdateHz\": 7"),
+            "/api/status tracking carries the measured body rate");
+        Expect(HeadTrackingMonitor.BodyDegradedSeconds >= 0 && HeadTrackingMonitor.BodyDegradedSeconds < 5,
+            "a degraded rate starts the idle-recovery clock");
+        var degradedSince = typeof(HeadTrackingMonitor).GetField("bodyDegradedSinceTicks", PrivateStatic)!;
+        degradedSince.SetValue(null, Stopwatch.GetTimestamp() - 16 * Stopwatch.Frequency);
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.BodyDegradedSeconds >= 15, "a degraded rate keeps its first refusal time while it stays low");
+        HeadTrackingMonitor.NoteBodyTrackerRestart();
+        Expect(HeadTrackingMonitor.BodyDegradedSeconds == 0 && HeadTrackingMonitor.StatusJson("").Contains("\"bodyTrackerRestarts\": 1"),
+            "a tracker restart is counted and measures the rate over");
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.StartRefusal?.Contains("being measured") == true, "after a restart the start waits for a new window");
+
+        Cold();
+        Run(29, 2.0);
+        OVRPlugin.BodyTime = OVRPlugin.Now;
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.StartRefusal?.Contains("Hz") == true, "29 Hz refuses");
+        Cold();
+        Run(36, 2.0);
+        OVRPlugin.BodyTime = OVRPlugin.Now;
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.StartRefusal == null && HeadTrackingMonitor.BodyDegradedSeconds == 0, "36 Hz admits and clears the recovery clock");
+
+        Healthy();
+        HeadTrackingMonitor.RefreshNow();
+        OVRPlugin.Now = OVRPlugin.BodyTime = 5;
+        for (var i = 0; i < 3; i++) OVRPlugin.Times[i] = 5;
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.StartRefusal?.Contains("being measured") == true, "a source clock that went back measures the rate over");
+
+        Healthy();
+        UnityEngine.Debug.Warnings.Clear();
+        OVRPlugin.Calibration = OVRPlugin.BodyTrackingCalibrationState.Calibrating;
+        HeadTrackingMonitor.RefreshNow();
+        HeadTrackingMonitor.RefreshNow();
+        OVRPlugin.Calibration = OVRPlugin.BodyTrackingCalibrationState.Valid;
+        HeadTrackingMonitor.RefreshNow();
+        var calibrationLines = UnityEngine.Debug.Warnings.FindAll(w => w.Contains("calibration_status"));
+        Expect(calibrationLines.Count == 2 && calibrationLines[0].Contains("1 (valid) -> 2 (calibrating)")
+            && calibrationLines[1].Contains("2 (calibrating) -> 1 (valid) after"),
+            "each calibration_status change is logged once, with how long the last one held");
+        Expect(HeadTrackingMonitor.StartRefusal == null, "calibrating alone does not refuse a start (healthy episodes mix 1 and 2)");
+
+        // The recording's body rows: the interval the seal bounds at 100 ms.
+        var gaps = new BodyGapCounter();
+        BodyGapCounter.Publish(gaps);
+        var at = 10.0;
+        for (var i = 0; i < 50; i++) { gaps.Row(at); at += .02; }
+        gaps.Row(at += .13);
+        gaps.Row(at += .1);
+        gaps.Row(double.NaN);
+        gaps.Row(at += .02);
+        Expect(gaps.Gaps == 1 && Math.Abs(gaps.LongestGapMs - 150) < .1,
+            $"one interval over 100 ms is one gap; exactly 100 ms is not (gaps={gaps.Gaps}, max={gaps.LongestGapMs})");
+        Expect(gaps.StatsFields() == "\"gaps_over_100ms\":1,\"max_gap_ms\":150.0", $"stream manifest stats fields ({gaps.StatsFields()})");
+        var status = HeadTrackingMonitor.StatusJson("");
+        Expect(status.Contains("\"bodyRecordingGaps\": 1") && status.Contains("\"bodyLongestGapMs\": 150"),
+            "/api/status carries the live recording's body gaps");
+    }
+
     static int Main()
     {
-        Healthy();
+        Cold();
         Expect(HeadTrackingMonitor.StartRefusal != null, "no samples refuse a start");
+        HeadTrackingMonitor.RefreshNow();
+        Expect(HeadTrackingMonitor.StartRefusal?.Contains("being measured") == true, "one fresh sample does not admit before a whole body-rate window");
+        Healthy();
         HeadTrackingMonitor.RefreshNow();
         Expect(HeadTrackingMonitor.StartRefusal == null, "fresh, connected, fully tracked stationary poses admit");
 
@@ -121,6 +217,7 @@ static class HeadTrackingMonitorHarness
         Expect(HeadTrackingMonitor.StartRefusal?.Contains("right controller") == true, "normal Update publishes the same complete readiness decision");
         Expect(OVRPlugin.Times[0] == 100 && OVRPlugin.Times[1] == 100 && OVRPlugin.Times[2] == 100 && OVRPlugin.BodyTime == 100,
             "admission leaves all input sample timestamps unchanged");
+        BodyCadence();
         Console.WriteLine($"{checks - failures}/{checks} admission checks passed");
         return failures == 0 ? 0 : 1;
     }
@@ -135,7 +232,11 @@ namespace UnityEngine
     public class GameObject { public GameObject(string name) {} public T AddComponent<T>() where T : new() => new T(); }
     public static class Time { public static int frameCount; }
     public static class Mathf { public static float Sqrt(float value) => (float)Math.Sqrt(value); }
-    public static class Debug { public static void LogWarning(string text) {} }
+    public static class Debug
+    {
+        public static readonly System.Collections.Generic.List<string> Warnings = new();
+        public static void LogWarning(string text) => Warnings.Add(text);
+    }
 }
 namespace RealityLog.Common { public static class Constants { public const string LOG_TAG = "test"; } }
 
@@ -163,11 +264,13 @@ public static class OVRPlugin
     public struct Posef { public Vector3f Position; public Quatf Orientation; }
     public struct PoseStatef { public double Time; public Posef Pose; }
     public struct BodyJointLocation { public SpaceLocationFlags LocationFlags; public Posef Pose; }
-    public struct BodyState { public BodyJointLocation[] JointLocations; public double Time; public float Confidence; }
+    public enum BodyTrackingCalibrationState { Valid = 1, Calibrating = 2, Invalid = 3 }
+    public struct BodyState { public BodyJointLocation[] JointLocations; public double Time; public float Confidence; public BodyTrackingCalibrationState CalibrationStatus; }
     public static double Now, BodyTime;
     public static double[] Times = new double[3];
     public static bool[] Position = new bool[3], Orientation = new bool[3];
     public static bool BodyActive, BodyHasJoints;
+    public static BodyTrackingCalibrationState Calibration = BodyTrackingCalibrationState.Valid;
     public static Action? AfterBodyRead;
     public static int Reads;
     public static void Reset()
@@ -175,6 +278,7 @@ public static class OVRPlugin
         Now = BodyTime = 100;
         for (int i = 0; i < 3; i++) { Times[i] = 100; Position[i] = Orientation[i] = true; }
         BodyActive = BodyHasJoints = true;
+        Calibration = BodyTrackingCalibrationState.Valid;
         AfterBodyRead = null;
         Reads = 0;
     }
@@ -192,6 +296,7 @@ public static class OVRPlugin
         if (!BodyActive) return false;
         body.Time = BodyTime;
         body.Confidence = 1;
+        body.CalibrationStatus = Calibration;
         body.JointLocations = new BodyJointLocation[BodyHasJoints ? 84 : 0];
         AfterBodyRead?.Invoke();
         return true;

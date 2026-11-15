@@ -13,5 +13,6 @@ mkdir -p "$out"
 monitorSource="${TRACKING_MONITOR_SOURCE:-$repo/Assets/RealityLog/Scripts/Runtime/HeadTrackingMonitor.cs}"
 "$dotnet" "$csc" -nologo -nullable:enable -langversion:9 -noconfig -nostdlib \
     -r:"$references/mscorlib.dll" -r:"$references/System.dll" -r:"$references/System.Core.dll" \
-    -out:"$out/harness.exe" "$here/HeadTrackingMonitorHarness.cs" "$monitorSource"
+    -out:"$out/harness.exe" "$here/HeadTrackingMonitorHarness.cs" "$monitorSource" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/BodyCadence.cs"
 "$mono" "$out/harness.exe"

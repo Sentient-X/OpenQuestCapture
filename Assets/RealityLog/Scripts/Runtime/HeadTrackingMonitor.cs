@@ -35,6 +35,13 @@ namespace RealityLog
         // Recorded samples and the separate final validator remain unchanged.
         private const double StartMaxSourceAgeMs = 100.0;
 
+        /// <summary>
+        /// Below this many new body states per second over <see cref="BodyRateWindow.WindowSeconds"/>
+        /// a start is refused: sx-seal's body check needs 30-55 Hz and no gap over 100 ms, and a
+        /// degraded tracker (OQC#22, 6-13 Hz) passes a single-sample age check.
+        /// </summary>
+        public const double StartMinBodyHz = 30.0;
+
         /// <summary>A gap in head poses longer than this during a recording is a stall.</summary>
         public const double StallThresholdMs = 1000.0;
 
@@ -76,6 +83,13 @@ namespace RealityLog
             JointLocations = new OVRPlugin.BodyJointLocation[84]
         };
         private static BodySample bodySample;
+        private static readonly BodyRateWindow bodyRate = new();
+        // OVRPlugin.BodyTrackingCalibrationState: 1 Valid, 2 Calibrating, 3 Invalid; 0 unread.
+        private static int bodyCalibration;
+        private static long bodyCalibrationSinceTicks = NoPose;
+        // Since when the body rate has refused a start; NoPose while it admits or is unmeasured.
+        private static long bodyDegradedSinceTicks = NoPose;
+        private static int bodyTrackerRestarts;
         private struct BodySample
         {
             public ControllerSample LeftShoulder;
@@ -118,6 +132,11 @@ namespace RealityLog
                 lastEvent = null;
                 lastEventTicks = NoPose;
             }
+            bodyRate.Reset();
+            Interlocked.Exchange(ref bodyCalibration, 0);
+            Interlocked.Exchange(ref bodyCalibrationSinceTicks, NoPose);
+            Interlocked.Exchange(ref bodyDegradedSinceTicks, NoPose);
+            Interlocked.Exchange(ref bodyTrackerRestarts, 0);
             lock (controllerLock)
             {
                 bodySample = default;
@@ -237,6 +256,11 @@ namespace RealityLog
             left.SourceAgeMs = SourceAgeMs(left.SourceTime, sourceNow);
             right.SourceAgeMs = SourceAgeMs(right.SourceTime, sourceNow);
             body.AgeMs = SourceAgeMs(body.SourceTime, sourceNow);
+            bodyRate.Observe(body.SourceTime > 0 ? body.SourceTime : null, sourceNow);
+            if (bodyRate.Hz is double hz && hz < StartMinBodyHz)
+                Interlocked.CompareExchange(ref bodyDegradedSinceTicks, now, NoPose);
+            else
+                Interlocked.Exchange(ref bodyDegradedSinceTicks, NoPose);
             if (body.AgeMs == null) body = default;
             lock (controllerLock)
             {
@@ -258,6 +282,7 @@ namespace RealityLog
         {
             if (!OVRPlugin.GetBodyState4(OVRPlugin.Step.Render, OVRPlugin.BodyJointSet.FullBody, ref bodyState))
                 return default;
+            ObserveCalibration((int)bodyState.CalibrationStatus);
             if (bodyState.JointLocations == null || bodyState.JointLocations.Length <= 13)
                 return default;
             return new BodySample
@@ -300,6 +325,54 @@ namespace RealityLog
             }
             return sample;
         }
+
+        // Logged on every change, recording or not: OQC#22 found every degraded episode at
+        // status 2 (Calibrating) while healthy ones mixed 1 and 2, and no headset log had it.
+        private static void ObserveCalibration(int status)
+        {
+            var previous = Interlocked.Exchange(ref bodyCalibration, status);
+            if (previous == status) return;
+            var now = Stopwatch.GetTimestamp();
+            var since = Interlocked.Exchange(ref bodyCalibrationSinceTicks, now);
+            var held = since == NoPose ? "" : $" after {TicksToMs(now - since) / 1000.0:F1} s";
+            Debug.LogWarning($"[{Constants.LOG_TAG}] HeadTrackingMonitor: body calibration_status {CalibrationName(previous)} -> " +
+                $"{CalibrationName(status)}{held} (bodyHz={Number(bodyRate.Hz)}, recording={recording})");
+        }
+
+        private static string CalibrationName(int status) => status switch
+        {
+            0 => "unread",
+            1 => "1 (valid)",
+            2 => "2 (calibrating)",
+            3 => "3 (invalid)",
+            _ => status.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
+
+        /// <summary>
+        /// Seconds the body rate has refused starts, measured on this process's clock; 0 while
+        /// it admits or has not filled a window. BodyTrackingLogger restarts a degraded tracker
+        /// from it while nothing records. Any thread.
+        /// </summary>
+        public static double BodyDegradedSeconds
+        {
+            get
+            {
+                var since = Interlocked.Read(ref bodyDegradedSinceTicks);
+                return since == NoPose ? 0 : TicksToMs(Stopwatch.GetTimestamp() - since) / 1000.0;
+            }
+        }
+
+        /// <summary>Called by BodyTrackingLogger when it restarted a degraded tracker; starts the rate over.</summary>
+        public static void NoteBodyTrackerRestart()
+        {
+            Interlocked.Increment(ref bodyTrackerRestarts);
+            bodyRate.Reset();
+            Interlocked.Exchange(ref bodyDegradedSinceTicks, NoPose);
+        }
+
+        /// <summary>The body figures for a log line. Any thread.</summary>
+        public static string BodySummary =>
+            $"bodyHz={Number(bodyRate.Hz)}, calibration_status={CalibrationName(Volatile.Read(ref bodyCalibration))}";
 
         private static double? SourceAgeMs(double timestamp, double now)
         {
@@ -410,8 +483,20 @@ namespace RealityLog
                 if (refusal != null) return refusal;
                 if (!Fresh(body.AgeMs, snapshotAgeMs))
                     return "body tracking has no fresh active sample (max 100 ms); wear the headset and wait for tracking";
-                return null;
+                return BodyRateRefusal(bodyRate.Hz);
             }
+        }
+
+        private static string? BodyRateRefusal(double? hz)
+        {
+            if (hz is not double rate)
+                return "body tracking is still being measured; keep the headset on and wait 2 s";
+            if (rate < StartMinBodyHz)
+            {
+                return $"body tracking is updating at {rate:F0} Hz (needs {StartMinBodyHz:F0} Hz); stand in view facing forward " +
+                    "and wait. It restarts on its own after 15 s; if it stays low, restart the capture app";
+            }
+            return null;
         }
 
         private static string? PoseStartRefusal(string name, ControllerSample sample, double snapshotAgeMs, bool needsConnection)
@@ -454,6 +539,11 @@ namespace RealityLog
                 $"{indent}  \"vrFocus\": {Bool(vrFocus)},\n" +
                 $"{indent}  \"inputFocus\": {Bool(inputFocus)},\n" +
                 $"{indent}  \"startRefusal\": {Str(refusal)},\n" +
+                $"{indent}  \"bodyUpdateHz\": {Number(bodyRate.Hz)},\n" +
+                $"{indent}  \"bodyCalibrationStatus\": {Volatile.Read(ref bodyCalibration)},\n" +
+                $"{indent}  \"bodyRecordingGaps\": {Number(BodyGapCounter.Current?.Gaps)},\n" +
+                $"{indent}  \"bodyLongestGapMs\": {Number(BodyGapCounter.Current?.LongestGapMs)},\n" +
+                $"{indent}  \"bodyTrackerRestarts\": {Volatile.Read(ref bodyTrackerRestarts)},\n" +
                 $"{indent}  \"recordingStalls\": {Interlocked.CompareExchange(ref recordingStalls, 0, 0)},\n" +
                 $"{indent}  \"longestStallMs\": {TicksToMs(Interlocked.Read(ref longestStallTicks)):F0},\n" +
                 $"{indent}  \"lastEvent\": {Str(evt)},\n" +
