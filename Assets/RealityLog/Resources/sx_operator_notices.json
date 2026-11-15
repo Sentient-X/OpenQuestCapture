@@ -352,6 +352,54 @@
       "still_fine": "They count once reviewed.",
       "action": "The floor manager reviews them in the Console."
     },
+    "seal_body_tracking_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: body tracking dropped out",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Face forward with your shoulders and arms in view of the headset, then record again. If it repeats, restart the capture app."
+    },
+    "seal_head_tracking_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: head tracking paused",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Record again. If it repeats, restart the capture app."
+    },
+    "seal_controller_tracking_gap": {
+      "who": "collector",
+      "headline": "Last episode not kept: the {side} controller's tracking dropped out",
+      "still_fine": "The cameras and grippers recorded fine.",
+      "action": "Keep both controllers in view of the headset, then record again."
+    },
+    "controllers_not_in_hand": {
+      "who": "collector",
+      "headline": "Controllers not in hand",
+      "still_fine": "Nothing was recorded.",
+      "action": "Pick up both grippers, then start again."
+    },
+    "controllers_wrong_side": {
+      "who": "collector",
+      "headline": "The grippers are on the wrong sides",
+      "still_fine": "Nothing was recorded.",
+      "action": "Hold the left gripper on your left and the right gripper on your right, then start again."
+    },
+    "body_tracking_unavailable": {
+      "who": "collector",
+      "headline": "Body tracking cannot place you",
+      "still_fine": "Nothing was recorded.",
+      "action": "Stand facing forward with the grippers in hand and wait for tracking, then start again. If it persists, call a technician."
+    },
+    "head_tracking_stopped": {
+      "who": "collector",
+      "headline": "Head tracking stopped on the headset",
+      "still_fine": "Nothing was recorded.",
+      "action": "Restart the capture app or reboot the headset, then start again."
+    },
+    "controller_lost": {
+      "who": "collector",
+      "headline": "The {side} controller is out of hand",
+      "still_fine": "Recording continues; its poses are frozen until it is back.",
+      "action": "Wake it and hold it."
+    },
     "unknown": {
       "who": "technician",
       "headline": "Recording failed",
