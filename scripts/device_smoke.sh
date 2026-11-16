@@ -36,6 +36,8 @@ fails=()
 fail() { fails+=("$1"); echo "FAIL: $1"; }
 ok() { echo "ok: $1"; }
 
+# A network serial survives another session restarting the adb server only if it is reconnected.
+[[ "$serial" != *:* ]] || adb connect "$serial" >/dev/null 2>&1 || true
 a get-state >/dev/null || { echo "adb cannot reach $serial" >&2; exit 2; }
 
 # 1. Never during collection: the last heartbeat must say not recording, and no episode may sit
@@ -44,15 +46,14 @@ heartbeat="$(a logcat -d -s Unity | grep 'HEARTBEAT:' | tail -n 1 || true)"
 if grep -q 'Recording: True' <<<"$heartbeat"; then
     echo "REFUSED: $pkg is recording ($heartbeat); run the gate when it is idle" >&2; exit 3
 fi
-# provision-headset.sh's unsealed() rule (a stop.json, no purge.json, no seal.json whose state is
-# sealed or refused), limited to stops in the last 30 min: a seal runs in minutes, and pod5 holds
-# episodes from 11-06 and 11-11 that never sealed through many relaunches (stuck, not running).
-unsealed="$(a shell "now=\$(date +%s); for d in $files/rig_staging/*/; do [ -f \"\$d\"stop.json ] || continue; [ -f \"\$d\"purge.json ] && continue; \
-grep -qE '\"state\" *: *\"(sealed|refused)\"' \"\$d\"seal.json 2>/dev/null && continue; \
-age=\$((now - \$(stat -c %Y \"\$d\"stop.json))); echo \"\$age \$d\"; done" 2>/dev/null | tr -d '\r' || true)"
-pending="$(awk '$1 < 1800 { print $2 }' <<<"$unsealed")"
-stuck="$(awk '$1 >= 1800 { print $2 }' <<<"$unsealed")"
-[[ -z "$stuck" ]] || echo "note: unsealed for over 30 min (stuck, not blocking the gate): $(tr '\n' ' ' <<<"$stuck")"
+# A seal is running only for a stop the rig will seal: a stop.json whose outcome is not "failed", no
+# purge.json, and no seal.json saying sealed or refused. A failed stop never gets a seal (seal.rs
+# sealable()); libsx_rig keeps an unreported one on purpose (custody.rs), so it is not pending.
+# pod5 11-16: 20261106_013831 and 20261111_160917 (camera dropout, never reported) blocked the
+# older rule, which provision-headset.sh still uses.
+pending="$(a shell "for d in $files/rig_staging/*/; do [ -f \"\$d\"stop.json ] || continue; [ -f \"\$d\"purge.json ] && continue; \
+grep -qE '\"outcome\" *: *\"failed\"' \"\$d\"stop.json && continue; \
+grep -qE '\"state\" *: *\"(sealed|refused)\"' \"\$d\"seal.json 2>/dev/null || echo \"\$d\"; done" 2>/dev/null | tr -d '\r' || true)"
 if [[ -n "$pending" ]]; then
     echo "REFUSED: a seal is pending ($pending); run the gate when it is idle" >&2; exit 3
 fi
