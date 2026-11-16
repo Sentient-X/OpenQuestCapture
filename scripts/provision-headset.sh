@@ -147,11 +147,14 @@ recording_state() {
   esac
 }
 
-# Episodes the rig has stopped but not settled: a stop.json and no seal.json saying sealed or
-# refused (seal.rs requeued() puts exactly these back on the queue at launch). A force-stop
-# would drop that seal mid-way and redo it from the start.
+# Episodes the rig is still sealing: a stop.json whose outcome is not "failed" and no seal.json
+# saying sealed or refused. A failed stop is never sealed (seal.rs sealable(); requeued() skips
+# it) and an unreported one stays on purpose (custody.rs): pod5's 20261106_013831 and
+# 20261111_160917 blocked every relaunch under the old rule (sx#4210). A force-stop would drop a
+# running seal mid-way and redo it from the start.
 unsealed() {
   q shell "for d in $staging/*/; do [ -f \"\$d\"stop.json ] || continue; [ -f \"\$d\"purge.json ] && continue; \
+grep -qE '\"outcome\" *: *\"failed\"' \"\$d\"stop.json && continue; \
 grep -qE '\"state\" *: *\"(sealed|refused)\"' \"\$d\"seal.json 2>/dev/null || echo \"\$d\"; done" 2>/dev/null \
     | tr -d '\r' || true
 }

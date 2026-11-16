@@ -29,9 +29,9 @@
     "pill_last_failed": "Last failed",
     "pill_warnings": "Warnings",
     "ready": "Ready to record",
-    "ready_action": "Press the menu button to start",
+    "ready_action": "Press the menu button, or hold the right gripper button for 2 s, to start",
     "ready_local": "Ready (Local only)",
-    "ready_local_action": "Press the menu button to record. Nothing is delivered.",
+    "ready_local_action": "Press the menu button, or hold the right gripper button for 2 s, to record. Nothing is delivered.",
     "recording": "Recording",
     "recording_action": "Press the menu button to stop",
     "local_only": "Local only: nothing is delivered",
@@ -79,11 +79,23 @@
       "still_fine": "The rig is fine.",
       "action": "Restart the app and record again. If it repeats, call a technician."
     },
+    "seal_raw_files_removed": {
+      "who": "technician",
+      "headline": "Episode not kept: its raw files were removed from the headset",
+      "still_fine": "The rig and your other episodes are fine.",
+      "action": "Nothing to record again here. A technician can clear it from the headset."
+    },
     "seal_quality": {
       "who": "technician",
       "headline": "Last episode not kept: it did not pass the quality check",
       "still_fine": "The rig is fine.",
       "action": "Record again. If it repeats, call a technician."
+    },
+    "head_camera_failed": {
+      "who": "collector",
+      "headline": "Last episode stopped: the {side} head camera failed",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Restart the app, then record again. If it happens twice in a row, call a technician."
     },
     "video_behind": {
       "who": "collector",
@@ -425,6 +437,12 @@
       "headline": "The {side} controller is out of hand",
       "still_fine": "Recording continues; its poses are frozen until it is back.",
       "action": "Wake it and hold it."
+    },
+    "gripper_switch_mismatch": {
+      "who": "technician",
+      "headline": "The {side} gripper sensor names the wrong side",
+      "still_fine": "The menu button still starts and stops recording.",
+      "action": "Tell a technician: the gripper's start button works only when its sensor is set to its own side."
     },
     "unknown": {
       "who": "technician",

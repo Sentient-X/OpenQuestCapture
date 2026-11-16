@@ -5,11 +5,18 @@
 #   ~/p3/quest-apk-releases/<versionName>-<versionCode>/build.json
 # Unity APKs are not byte-reproducible, so the registry cites this exact file's sha256; the
 # record says what it was built from. A release directory is never overwritten.
-#   archive_release.sh <apk>      archive an APK built from this commit (tree clean of tracked changes)
-#   archive_release.sh --build    the one release command: embodiment assets, Unity player build of
-#                                 the committed tree, archive. libsx_rig.so, questcameralib.aar and
-#                                 sx-companion-release.aar are committed inputs: refresh them
-#                                 (copy_rig_artifacts.sh, rebuild_kotlin_library.sh) and commit first.
+#   archive_release.sh <apk> --device <serial>     archive an APK built from this commit (tree clean
+#                                                  of tracked changes)
+#   archive_release.sh --build --device <serial>   the one release command: embodiment assets, Unity
+#                                 player build of the committed tree, the gates, archive.
+#                                 libsx_rig.so, questcameralib.aar and sx-companion-release.aar are
+#                                 committed inputs: refresh them (copy_rig_artifacts.sh,
+#                                 rebuild_kotlin_library.sh) and commit first.
+# Gates (sx#4210: builds 74 and 75 passed every host harness and failed the first recording on
+# pod5): check_jni_abi.py (the AAR has every JNI method the C# binds) before the build, and
+# device_smoke.sh on the headset <serial> (it installs the APK there, never while recording) before
+# the archive. A failed gate archives nothing. NO_DEVICE_GATE=1 archives without the device gate,
+# and build.json then says "device_gate": null: such a build is not ready for anyone.
 #   RELEASES      archive root (default ~/p3/quest-apk-releases)
 #   UNITY_EDITOR  the editor binary (default ~/p3/Unity/Hub/Editor/<ProjectVersion>/Editor/Unity)
 #   SX_QUEST_RIG  --build: an sx checkout's packages/sx-pod-runtime (its packages/sx-embodiments at its pin)
@@ -29,7 +36,18 @@ require_clean() {
     fi
 }
 
-if [[ "${1:-}" == "--build" ]]; then
+mode="${1:?usage: archive_release.sh <apk> | --build  [--device <serial>]}"
+shift
+device=""
+if [[ "${1:-}" == "--device" ]]; then device="${2:?--device needs an adb serial}"; shift 2; fi
+if [[ -z "$device" && "${NO_DEVICE_GATE:-0}" != 1 ]]; then
+    echo "pass --device <adb-serial>: no APK is archived before it passed scripts/device_smoke.sh on a headset" >&2
+    echo "(NO_DEVICE_GATE=1 archives one marked not ready)" >&2
+    exit 1
+fi
+python3 "$root/scripts/check_jni_abi.py" "$root/Assets/Plugins/Android/questcameralib.aar"
+
+if [[ "$mode" == "--build" ]]; then
     require_clean
     rig="${SX_QUEST_RIG:?set SX_QUEST_RIG to packages/sx-pod-runtime in an sx checkout}"
     sx="$(git -C "$rig" rev-parse --show-toplevel)"
@@ -88,8 +106,18 @@ if [[ "${1:-}" == "--build" ]]; then
     apk="$out"
     rig_commit="$(git -C "$sx" rev-parse HEAD)"
 else
-    apk="${1:?usage: archive_release.sh <apk> | --build}"
+    apk="$mode"
     rig_commit=""
+fi
+
+gate_json=null
+if [[ -n "$device" ]]; then
+    gate_dir="$root/Builds/device-gate-$(date -u +%Y%m%dT%H%M%SZ)"
+    if ! "$root/scripts/device_smoke.sh" "$device" "$apk" "$gate_dir"; then
+        echo "device gate failed on $device: $apk is not archived and not ready ($gate_dir)" >&2
+        exit 1
+    fi
+    gate_json="$(tr -d '\n' < "$gate_dir/verdict.json")"
 fi
 
 badging_all="$("$aapt2" dump badging "$apk")"   # whole output: a head pipe would SIGPIPE under pipefail
@@ -136,6 +164,7 @@ cat > "$target/build.json" <<JSON
   "sx_companion_aar_sha256": "$(sha256sum "$companion" | cut -d' ' -f1)",
   "embodiment_assets_sx_commit": "$rig_commit",
   "unity_version": "$unity",
+  "device_gate": $gate_json,
   "archived_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON

@@ -16,7 +16,7 @@ export SX_OPERATOR_NOTICES="$repo/Assets/RealityLog/Resources/sx_operator_notice
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" \
     -r:"$editor/Data/MonoBleedingEdge/lib/mono/4.5/Facades/netstandard.dll" \
     -out:"$out/review-harness.exe" "$here/PodReviewHarness.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/OperatorNotices.cs"

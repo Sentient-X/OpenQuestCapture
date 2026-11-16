@@ -73,6 +73,24 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodSetupJson.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigApiGuard.cs"
 "$mono" "$out/pod-setup-harness.exe"
 
+# GripperSwitch: the right gripper's start/stop holds, once each, from libsx_rig's counters.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -out:"$out/gripper-switch-harness.exe" "$here/GripperSwitchHarness.cs" "$notices" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs"
+"$mono" "$out/gripper-switch-harness.exe"
+
+# MenuButtons: ☰ starts or stops, a busy press is ignored, a dropped one buzzes; Y never records.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/menu-button-harness.exe" "$here/MenuButtonHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/MenuButtons.cs"
+"$mono" "$out/menu-button-harness.exe"
+
+# CaptureFailureWatch: a head camera failing mid-episode is reported once, as itself.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/capture-failure-harness.exe" "$here/CaptureFailureHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Camera/CaptureFailureWatch.cs"
+"$mono" "$out/capture-failure-harness.exe"
+
 # PodStatusBoard: the recordings menu's Pod status block and the last start's refusal.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" "$notices" \
@@ -82,14 +100,14 @@ cp "$newtonsoft" "$out/"
 # PodScreenBoard: the Pod card's status screen (blocker, devices, collection, episodes).
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-screen-harness.exe" "$here/PodScreenHarness.cs" "$notices" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/pod-screen-harness.exe"
 
 # The operator's words: the shipped table is libsx_rig's (SX_RIG_INCLUDE), every code renders, no raw text.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/notices-harness.exe" "$here/OperatorNoticesHarness.cs" "$notices" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/notices-harness.exe" "$SX_OPERATOR_NOTICES" "$include/sx_operator_notices.json"
 
@@ -97,7 +115,7 @@ cp "$newtonsoft" "$out/"
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/companion-harness.exe"
 
@@ -124,7 +142,7 @@ bash "$here/test_tracking_readiness.sh"
     -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/device-presence-harness.exe"
 

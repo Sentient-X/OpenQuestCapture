@@ -9,7 +9,8 @@ namespace RealityLog.Rig
     /// display, so start, stop, a sealed episode, a refused one and a collector's sign-in are
     /// told by sound only. Synthesized (no audio assets); each cue is distinct by contour:
     /// start rises, stop falls, sealed is three quick high blips, refused a low buzz, sign-in a
-    /// rising two-tone chime. Main thread only.
+    /// rising two-tone chime. Main thread only. Every cue logs one line,
+    /// <c>[RealityLog] cue: &lt;name&gt; (&lt;reason&gt;)</c>, so a device log proves what played.
     /// </summary>
     public static class RigCues
     {
@@ -26,8 +27,9 @@ namespace RealityLog.Rig
         private static AudioSource? source;
         private static readonly AudioClip?[] clips = new AudioClip?[5];
 
-        public static void Play(Cue cue, GameObject host)
+        public static void Play(Cue cue, string reason, GameObject host)
         {
+            Debug.Log(Line(cue, reason));
             if (source == null)
             {
                 source = host.GetComponent<AudioSource>() ?? host.AddComponent<AudioSource>();
@@ -37,6 +39,10 @@ namespace RealityLog.Rig
             var clip = clips[(int)cue] ??= Build(cue);
             source.PlayOneShot(clip);
         }
+
+        /// <summary>The log line a cue writes as it plays.</summary>
+        public static string Line(Cue cue, string reason) =>
+            $"[{RealityLog.Common.Constants.LOG_TAG}] cue: {cue} ({(string.IsNullOrWhiteSpace(reason) ? "no reason given" : reason)})";
 
         private static AudioClip Build(Cue cue)
         {

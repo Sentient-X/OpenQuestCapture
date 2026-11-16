@@ -56,6 +56,14 @@ namespace RealityLog.Rig
         private const float IdentityPollSeconds = 5f;
         public const string StagingDirectoryName = "rig_staging";
         private const string BridgeClassName = "com.samusynth.questcamera.usb.RigUsbBridge";
+        // The bridge methods the USB worker calls, bound on the main thread (JniObject, sx#4210);
+        // scripts/check_jni_abi.py holds them to the shipped AAR.
+        public static readonly JniSignatures UsbBridgeJni = new JniSignatures(BridgeClassName, new[]
+        {
+            ("refresh", "()Ljava/lang/String;"),
+            ("release", "(Ljava/lang/String;)V"),
+            ("close", "()V"),
+        });
         private const string PodIdentityClassName = "com.samusynth.questcamera.pod.PodIdentity";
         private const string EmbodimentAssetsClassName = "com.samusynth.questcamera.pod.EmbodimentAssets";
         private const float PollIntervalSeconds = 0.5f;
@@ -203,7 +211,12 @@ namespace RealityLog.Rig
         private bool sealsObserved;
         // The episode a seal is writing now (a seal state "sealing"), null when none is.
         private volatile string? sealingNow;
-        private readonly System.Collections.Concurrent.ConcurrentQueue<RigCues.Cue> cues = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(RigCues.Cue cue, string reason)> cues = new();
+        // The right gripper's start/stop switch: libsx_rig's gripper_switch counters, read on the
+        // native-status worker; each new hold is handled on the main thread.
+        private readonly GripperSwitch gripperSwitch = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<GripperSwitchPress> switchPresses = new();
+        private float hapticUntil = float.NegativeInfinity;
         private bool floorObserved; // native-status timer thread only
         private bool collectorRestored; // native-status timer thread only
 
@@ -302,7 +315,7 @@ namespace RealityLog.Rig
                             ["detail"] = $"{PodConfigFileName} has keys neither the app nor the rig accepts: {string.Join(", ", unknownAtLaunch)}",
                         };
                         podConfigProblem = string.Join(",", unknownAtLaunch);
-                        QueueCue(RigCues.Cue.Refused);
+                        QueueCue(RigCues.Cue.Refused, "pod_config.json has unknown keys");
                     }
                 }
                 catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
@@ -413,7 +426,7 @@ namespace RealityLog.Rig
         private void RecordStartupError(string what, Exception ex)
         {
             startupErrors[what] = ex.ToString();
-            QueueCue(RigCues.Cue.Refused); // the operator cannot read /api/status
+            QueueCue(RigCues.Cue.Refused, what + " failed at startup"); // the operator cannot read /api/status
             Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {what} failed at startup: {ex}");
         }
 
@@ -474,17 +487,26 @@ namespace RealityLog.Rig
             if (signInCuePending)
             {
                 signInCuePending = false;
-                RigCues.Play(RigCues.Cue.SignedIn, gameObject);
+                RigCues.Play(RigCues.Cue.SignedIn, "collector signed in", gameObject);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector signed in");
             }
-            while (cues.TryDequeue(out var cue))
+            while (switchPresses.TryDequeue(out var press))
             {
-                RigCues.Play(cue, gameObject);
+                OnGripperSwitch(press);
+            }
+            if (hapticUntil > float.NegativeInfinity && Time.unscaledTime >= hapticUntil)
+            {
+                hapticUntil = float.NegativeInfinity;
+                OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.RTouch);
+            }
+            while (cues.TryDequeue(out var queued))
+            {
+                RigCues.Play(queued.cue, queued.reason, gameObject);
             }
             while (failures.TryDequeue(out var failed))
             {
                 // The operator hears it at once; the recording stops through its normal path.
-                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                RigCues.Play(RigCues.Cue.Refused, "rig episode failed", gameObject);
                 Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: rig episode '{failed.session}' failed: {failed.failure.ToString(Formatting.None)}");
                 EpisodeFailed?.Invoke(failed.session, failed.failure);
             }
@@ -751,8 +773,8 @@ namespace RealityLog.Rig
             }
         }
 
-        /// <summary>Queues a cue for the main thread (any thread).</summary>
-        public void QueueCue(RigCues.Cue cue) => cues.Enqueue(cue);
+        /// <summary>Queues a cue for the main thread (any thread); <paramref name="reason"/> is logged with it.</summary>
+        public void QueueCue(RigCues.Cue cue, string reason) => cues.Enqueue((cue, reason));
 
         /// <summary>
         /// Main thread, before <see cref="Enroll"/>: opens the rig (even when no rig is expected
@@ -1198,15 +1220,18 @@ namespace RealityLog.Rig
             RefreshStatus();
         }
 
-        private void StartUsbRefresh(AndroidJavaObject usbBridge)
+        private void StartUsbRefresh(AndroidJavaObject usbBridgeObject)
         {
             // Android's UsbManager uses binder and may wait behind system USB work. Keep
             // that wait off FixedUpdate's thread, while all SDK tracking calls stay there.
+            // Bound here, on the main thread: the worker makes raw JNI calls on its own global
+            // reference, never an AndroidJavaObject lookup off the main thread.
+            var usbBridge = JniObject.Bind(usbBridgeObject, UsbBridgeJni);
             usbRefresh = new RigUsbRefresh(() =>
             {
                 if (AndroidJNI.AttachCurrentThread() != 0)
                     throw new InvalidOperationException("cannot attach USB refresh thread to the Android VM");
-                try { return usbBridge.Call<string>("refresh"); }
+                try { return usbBridge.CallString("refresh", "()Ljava/lang/String;") ?? ""; }
                 finally { AndroidJNI.DetachCurrentThread(); }
             }, () =>
             {
@@ -1214,7 +1239,7 @@ namespace RealityLog.Rig
                 {
                     if (AndroidJNI.AttachCurrentThread() != 0)
                         throw new InvalidOperationException("cannot attach USB close thread to the Android VM");
-                    try { usbBridge.Call("close"); }
+                    try { usbBridge.CallVoid("close", "()V"); }
                     finally
                     {
                         try { usbBridge.Dispose(); }
@@ -1229,7 +1254,7 @@ namespace RealityLog.Rig
             {
                 if (AndroidJNI.AttachCurrentThread() != 0)
                     throw new InvalidOperationException("cannot attach USB release thread to the Android VM");
-                try { usbBridge.Call("release", key); }
+                try { usbBridge.CallVoid("release", "(Ljava/lang/String;)V", key); }
                 finally { AndroidJNI.DetachCurrentThread(); }
             });
         }
@@ -1288,7 +1313,7 @@ namespace RealityLog.Rig
                     if (podConfigProblem != signature)
                     {
                         podConfigProblem = signature;
-                        QueueCue(RigCues.Cue.Refused);
+                        QueueCue(RigCues.Cue.Refused, "pod_config.json has unknown keys");
                         Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {problem["detail"]}");
                     }
                     return;
@@ -1832,6 +1857,15 @@ namespace RealityLog.Rig
                     collectorName = RigStatusJson.CollectorName(status);
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
+                    if (gripperSwitch.SidesLine(status["gripper_switch"] as JObject) is string sidesLine)
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: {sidesLine}");
+                    }
+                    if (gripperSwitch.Observe(status["gripper_switch"] as JObject) is GripperSwitchPress press)
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch {(press == GripperSwitchPress.Toggle ? "hold" : "refused hold")} read: {(status["gripper_switch"]?[press == GripperSwitchPress.Toggle ? "last_hold" : "last_refusal"]?.ToString(Formatting.None) ?? "null")}");
+                        switchPresses.Enqueue(press);
+                    }
                     sealingNow = Sealing(status["seals"] as JObject);
                     var episodeId = activeEpisodeId;
                     if (episodeId != null && failureHandledFor != episodeId
@@ -1902,8 +1936,8 @@ namespace RealityLog.Rig
                 sealStates.TryGetValue(entry.Key, out var previous);
                 if (sealsObserved && state != previous)
                 {
-                    if (state == "sealed") cues.Enqueue(RigCues.Cue.Sealed);
-                    else if (state == "refused") cues.Enqueue(RigCues.Cue.Refused);
+                    if (state == "sealed") QueueCue(RigCues.Cue.Sealed, "episode " + entry.Key + " sealed");
+                    else if (state == "refused") QueueCue(RigCues.Cue.Refused, "episode " + entry.Key + " seal refused");
                 }
                 sealStates[entry.Key] = state;
             }
@@ -1911,7 +1945,55 @@ namespace RealityLog.Rig
         }
 
         /// <summary>Plays a cue (main thread) when the rig took part in the recording.</summary>
-        public void Cue(RigCues.Cue cue) => RigCues.Play(cue, gameObject);
+        public void Cue(RigCues.Cue cue, string reason) => RigCues.Play(cue, reason, gameObject);
+
+        /// <summary>
+        /// A new hold of the right gripper's start/stop switch (main thread). A hold is the left
+        /// menu button pressed: <see cref="PodControls.StartOrStop"/> with no side asked runs
+        /// exactly its start-or-stop against the recorder's actual state (the tracking gate,
+        /// the armed start, the stop, seal and review) and its cues: start rises, stop falls,
+        /// a refusal buzzes and the Pod card shows why. The right Touch controller pulses at
+        /// once so the collector feels the hold was taken: short for a hold, long for one the
+        /// rig refused (its sensor names the wrong side; the card shows that notice). While a
+        /// start or stop is in progress (arming) a hold is ignored silently, as the menu button
+        /// is then: no pulse, no cue.
+        /// </summary>
+        private void OnGripperSwitch(GripperSwitchPress press)
+        {
+            var action = GripperSwitch.Act(press, PodControls.StartOrStopInProgress?.Invoke() == true);
+            if (action == GripperSwitchAction.Ignore)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold ignored: a start or stop is in progress");
+                return;
+            }
+            if (action == GripperSwitchAction.Refuse)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold refused by the rig (its sensor names the wrong side)");
+                Pulse(0.45f, 1f);
+                RigCues.Play(RigCues.Cue.Refused, "gripper switch hold refused: sensor names the wrong side", gameObject);
+                return;
+            }
+            Pulse(0.12f, 0.8f);
+            if (PodControls.StartOrStop is not { } startOrStop)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold, but the recorder is not running");
+                RigCues.Play(RigCues.Cue.Refused, "gripper switch hold: recorder not running", gameObject);
+                return;
+            }
+            Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold: the menu button's start or stop");
+            var refused = startOrStop(null, null);
+            if (refused != null)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold not taken: {refused}");
+            }
+        }
+
+        /// <summary>The right Touch controller vibrates for <paramref name="seconds"/> (main thread).</summary>
+        private void Pulse(float seconds, float amplitude)
+        {
+            OVRInput.SetControllerVibration(1f, amplitude, OVRInput.Controller.RTouch);
+            hapticUntil = Time.unscaledTime + seconds;
+        }
 
         /// <summary>floor.operator.signed_in of a status, or null when the status has no floor.</summary>
         private static bool? CollectorSignedIn(JObject? status) => RigStatusJson.CollectorSignedIn(status);
@@ -1976,10 +2058,12 @@ namespace RealityLog.Rig
             appLog = null;
             if (usbRefresh != null)
             {
-                // Its worker owns close/dispose after any outstanding refresh completes.
-                // The native owners above have already detached, so no fd is closed early.
+                // Its worker owns close (on its own global reference) after any outstanding
+                // refresh completes. The native owners above have already detached, so no fd is
+                // closed early; the main thread's wrapper is released here.
                 usbRefresh.Dispose();
                 usbRefresh = null;
+                bridge?.Dispose();
             }
             else
             {

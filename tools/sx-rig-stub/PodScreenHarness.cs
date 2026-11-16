@@ -57,6 +57,16 @@ static class PodScreenHarness
             + string.Join("; ", untracked.Warnings.ConvertAll(w => w.Headline)));
         var bothHeld = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\"," + held));
         Expect(bothHeld.Warnings.Count == 0, "tracked, connected, charged controllers raise no warning");
+        // The right gripper's sensor names the wrong side (libsx_rig's gripper_switch.notice):
+        // a warning before a start, in the table's words; Start stays offered (the menu works).
+        var mismatch = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\"," + held)
+            + ",\"native\":{\"gripper_switch\":{\"holds\":0,\"refusals\":1,\"notice\":{\"code\":\"gripper_switch_mismatch\",\"who\":\"technician\",\"args\":{\"side\":\"right\"}}}}");
+        Expect(mismatch.Warnings.Count == 1 && mismatch.Warnings[0].Headline == "The right gripper sensor names the wrong side"
+            && !mismatch.StartBlocked, "a gripper switch mismatch warns: "
+            + string.Join("; ", mismatch.Warnings.ConvertAll(w => w.Headline)));
+        var agreed = Screen(Controllers("{\"side\":\"left\"," + held, "{\"side\":\"right\"," + held)
+            + ",\"native\":{\"gripper_switch\":{\"holds\":2,\"refusals\":0,\"notice\":null}}");
+        Expect(agreed.Warnings.Count == 0, "a switch whose sides agree raises no warning");
         var asleep = Screen(Controllers("{\"side\":\"left\",\"connected\":false,\"tracked\":false,\"percent\":80}", "{\"side\":\"right\"," + held));
         Expect(asleep.Warnings.Count == 1 && asleep.Warnings[0].Headline == "The left controller is not connected",
             "a disconnected controller says so, not 'not tracked'");

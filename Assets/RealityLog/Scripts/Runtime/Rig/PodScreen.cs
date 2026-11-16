@@ -559,6 +559,11 @@ namespace RealityLog.Rig
                     screen.Warnings.Add(PodBlocker.Of("display_rate", PodTone.Warning, ("hz", ((double)hz).ToString("F0", CultureInfo.InvariantCulture))));
                 }
             }
+            // The right gripper's sensor names the wrong side: its start/stop switch is refused.
+            if (GripperSwitch.Notice(Lifted(status, "gripper_switch") as JObject) is { } mismatch)
+            {
+                screen.Warnings.Add(PodBlocker.Of(mismatch, PodTone.Warning));
+            }
             // Room for this episode, but not for the one after it.
             if (Storage(status) is { } space && space.Free >= space.Needed && space.Free < space.Needed + space.NextEpisode)
             {
