@@ -11,7 +11,8 @@
 #      file only adb or the app can write): both head cameras record 15 s through OQC's own C# start
 #      and stop; each eye must leave a finished MP4, timestamp rows == encoded frames, no capture_error
 #   5. reads logcat: no crash or fatal signal, no ClassNotFound/NoSuchMethod/NoSuchField/
-#      UnsatisfiedLink, the rig and gripper status lines, the self-test's cue line
+#      UnsatisfiedLink, no Unity exception outside device_smoke_known_exceptions.txt, the rig and
+#      gripper status lines, the self-test's cue line
 # Exit 0 only when every check passed; the verdict and logs land in <out>.
 #
 #   scripts/device_smoke.sh [--no-install] <adb-serial> <apk> [out-dir]
@@ -118,6 +119,13 @@ if [[ -n "$linkage" ]]; then
     fail "linkage errors in the app's log:"$'\n'"$(cut -c1-300 <<<"$linkage" | sort -u | head -n 8)"
 else
     ok "no ClassNotFound/NoSuchMethod/NoSuchField/UnsatisfiedLink"
+fi
+# Any Unity exception not in the reviewed baseline (scripts/device_smoke_known_exceptions.txt) fails:
+# a new launch exception is a regression until someone reads it and lists it with its reason.
+if unknown="$(python3 "$root/scripts/unity_exceptions.py" "$out/logcat.txt" "${pid:-none}")"; then
+    ok "no Unity exception outside the reviewed baseline"
+else
+    fail "new Unity exceptions:"$'\n'"$unknown"
 fi
 for line in 'RigCoordinator: rig opened' 'RigCoordinator: gripper switch status:' 'cue: Sealed (camera self-test passed)'; do
     grep -qF "$line" "$out/logcat.txt" && ok "logged: $line" || fail "never logged: $line"

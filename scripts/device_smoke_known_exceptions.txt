@@ -1,0 +1,8 @@
+# Unity exceptions the device gate tolerates at launch, one "<Type> at <first frame>" per line
+# (scripts/device_smoke.sh). Anything else an APK logs fails the gate. Each entry names where it
+# comes from and why it is harmless; delete it when its cause is fixed.
+#
+# Meta Interaction SDK distance reticles enable before their injected dependencies (8 per launch,
+# identical in builds 75 and 76 on pod5, 2026-11-16; before any recording, the self-test passes after).
+NullReferenceException at Oculus.Interaction.DistanceReticles.InteractorReticle`1[TReticleData].OnEnable ()
+NullReferenceException at Oculus.Interaction.DistanceReticles.InteractorReticle`1[TReticleData].OnDisable ()
