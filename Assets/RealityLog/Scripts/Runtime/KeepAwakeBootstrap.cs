@@ -13,6 +13,31 @@ namespace RealityLog
     /// </summary>
     public class KeepAwakeBootstrap : MonoBehaviour
     {
+        /// <summary>
+        /// Sets FLAG_KEEP_SCREEN_ON on Android's UI thread, which owns the window (Unity's main
+        /// thread is not it: "CalledFromWrongThreadException ... Expected: main Calling: Thread-2"
+        /// at every launch through build 75). Takes ownership of <paramref name="activity"/>.
+        /// </summary>
+        public static void KeepScreenOn(AndroidJavaObject activity)
+        {
+            activity.Call("runOnUiThread", new AndroidJavaRunnable(() =>
+            {
+                try
+                {
+                    using var window = activity.Call<AndroidJavaObject>("getWindow");
+                    window.Call("addFlags", 128 /* FLAG_KEEP_SCREEN_ON */);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: Window flag failed: {ex.Message}");
+                }
+                finally
+                {
+                    activity.Dispose();
+                }
+            }));
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
@@ -45,54 +70,30 @@ namespace RealityLog
             }
         }
 
+        // One partial wake lock for the process, however many pauses re-apply keep-awake.
+        private static AndroidJavaObject? wakeLock;
+
         private void ApplyKeepAwake()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            try
-            {
-                using var runtime = new AndroidJavaClass("java.lang.Runtime")
-                    .CallStatic<AndroidJavaObject>("getRuntime");
-
-                // Disable proximity sensor — THE key fix for headset removal freeze
-                using var p1 = runtime.Call<AndroidJavaObject>("exec",
-                    new string[] { "/system/bin/setprop", "debug.oculus.proximityDisabled", "1" });
-                p1.Call<int>("waitFor");
-                Debug.Log($"[{Constants.LOG_TAG}] KeepAwakeBootstrap: Proximity sensor DISABLED");
-
-                // Max screen timeout
-                using var p2 = runtime.Call<AndroidJavaObject>("exec",
-                    new string[] { "/system/bin/settings", "put", "system", "screen_off_timeout", "2147483647" });
-                p2.Call<int>("waitFor");
-
-                // Stay on while plugged in (AC + USB + Wireless = 7)
-                using var p3 = runtime.Call<AndroidJavaObject>("exec",
-                    new string[] { "/system/bin/settings", "put", "global", "stay_on_while_plugged_in", "7" });
-                p3.Call<int>("waitFor");
-
-                Debug.Log($"[{Constants.LOG_TAG}] KeepAwakeBootstrap: All keep-awake settings applied");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[{Constants.LOG_TAG}] KeepAwakeBootstrap: Failed: {ex.Message}");
-            }
-
-            // Acquire wake lock
+            // The headset's stay-on, screen-timeout and proximity settings are written over adb by
+            // scripts/provision-headset.sh --keep-awake: an app may not write them. Through build 75
+            // this ran Runtime.exec(String[]), which Unity's params expansion turned into
+            // exec(String,String,String): NoSuchMethodError at every launch, so it never ran
+            // (sx#4210, the on-device gate's logcat check).
             try
             {
                 using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
-
-                // FLAG_KEEP_SCREEN_ON = 128
-                using var window = activity.Call<AndroidJavaObject>("getWindow");
-                window.Call("addFlags", 128);
-
-                // Partial wake lock
-                using var powerManager = activity.Call<AndroidJavaObject>("getSystemService", "power");
-                var wakeLock = powerManager.Call<AndroidJavaObject>("newWakeLock",
-                    1 /* PARTIAL_WAKE_LOCK */, "RealityLog:BootKeepAwake");
-                wakeLock.Call("acquire");
-
-                Debug.Log($"[{Constants.LOG_TAG}] KeepAwakeBootstrap: Wake lock acquired + screen on flag set");
+                var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                if (wakeLock == null)
+                {
+                    using var powerManager = activity.Call<AndroidJavaObject>("getSystemService", "power");
+                    wakeLock = powerManager.Call<AndroidJavaObject>("newWakeLock",
+                        1 /* PARTIAL_WAKE_LOCK */, "RealityLog:BootKeepAwake");
+                    wakeLock.Call("acquire");
+                    Debug.Log($"[{Constants.LOG_TAG}] KeepAwakeBootstrap: Wake lock acquired");
+                }
+                KeepScreenOn(activity);
             }
             catch (Exception ex)
             {

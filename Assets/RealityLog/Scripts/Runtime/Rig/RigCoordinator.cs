@@ -56,6 +56,14 @@ namespace RealityLog.Rig
         private const float IdentityPollSeconds = 5f;
         public const string StagingDirectoryName = "rig_staging";
         private const string BridgeClassName = "com.samusynth.questcamera.usb.RigUsbBridge";
+        // The bridge methods the USB worker calls, bound on the main thread (JniObject, sx#4210);
+        // scripts/check_jni_abi.py holds them to the shipped AAR.
+        public static readonly JniSignatures UsbBridgeJni = new JniSignatures(BridgeClassName, new[]
+        {
+            ("refresh", "()Ljava/lang/String;"),
+            ("release", "(Ljava/lang/String;)V"),
+            ("close", "()V"),
+        });
         private const string PodIdentityClassName = "com.samusynth.questcamera.pod.PodIdentity";
         private const string EmbodimentAssetsClassName = "com.samusynth.questcamera.pod.EmbodimentAssets";
         private const float PollIntervalSeconds = 0.5f;
@@ -1212,15 +1220,18 @@ namespace RealityLog.Rig
             RefreshStatus();
         }
 
-        private void StartUsbRefresh(AndroidJavaObject usbBridge)
+        private void StartUsbRefresh(AndroidJavaObject usbBridgeObject)
         {
             // Android's UsbManager uses binder and may wait behind system USB work. Keep
             // that wait off FixedUpdate's thread, while all SDK tracking calls stay there.
+            // Bound here, on the main thread: the worker makes raw JNI calls on its own global
+            // reference, never an AndroidJavaObject lookup off the main thread.
+            var usbBridge = JniObject.Bind(usbBridgeObject, UsbBridgeJni);
             usbRefresh = new RigUsbRefresh(() =>
             {
                 if (AndroidJNI.AttachCurrentThread() != 0)
                     throw new InvalidOperationException("cannot attach USB refresh thread to the Android VM");
-                try { return usbBridge.Call<string>("refresh"); }
+                try { return usbBridge.CallString("refresh", "()Ljava/lang/String;") ?? ""; }
                 finally { AndroidJNI.DetachCurrentThread(); }
             }, () =>
             {
@@ -1228,7 +1239,7 @@ namespace RealityLog.Rig
                 {
                     if (AndroidJNI.AttachCurrentThread() != 0)
                         throw new InvalidOperationException("cannot attach USB close thread to the Android VM");
-                    try { usbBridge.Call("close"); }
+                    try { usbBridge.CallVoid("close", "()V"); }
                     finally
                     {
                         try { usbBridge.Dispose(); }
@@ -1243,7 +1254,7 @@ namespace RealityLog.Rig
             {
                 if (AndroidJNI.AttachCurrentThread() != 0)
                     throw new InvalidOperationException("cannot attach USB release thread to the Android VM");
-                try { usbBridge.Call("release", key); }
+                try { usbBridge.CallVoid("release", "(Ljava/lang/String;)V", key); }
                 finally { AndroidJNI.DetachCurrentThread(); }
             });
         }
@@ -2047,10 +2058,12 @@ namespace RealityLog.Rig
             appLog = null;
             if (usbRefresh != null)
             {
-                // Its worker owns close/dispose after any outstanding refresh completes.
-                // The native owners above have already detached, so no fd is closed early.
+                // Its worker owns close (on its own global reference) after any outstanding
+                // refresh completes. The native owners above have already detached, so no fd is
+                // closed early; the main thread's wrapper is released here.
                 usbRefresh.Dispose();
                 usbRefresh = null;
+                bridge?.Dispose();
             }
             else
             {

@@ -9,7 +9,6 @@ using UnityEngine;
 using UnityEngine.Events;
 using RealityLog.Camera;
 using RealityLog.Common;
-using RealityLog.Core;
 using RealityLog.Depth;
 using RealityLog.OVR;
 using RealityLog.Rig;
@@ -154,6 +153,11 @@ namespace RealityLog
                 infoCanvasAnimator = infoCanvas.GetComponent<Animator>();
             }
 
+            // The on-device gate's camera self-test, only when adb left its request (sx#4210).
+            StartCoroutine(CameraSelfTest.RunIfRequested(
+                cameraProviders.OfType<VideoRecorderSurfaceProvider>().ToList(),
+                () => State == RecordingState.Idle));
+
             // After the body loggers are discovered: the close-out lists the stop's own streams.
             // Sessions a killed process left without stream_manifest.json are closed out as
             // interrupted, so the rig's seal can judge them instead of waiting forever. Off the
@@ -185,6 +189,13 @@ namespace RealityLog
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Already recording!");
                 return;
+            }
+
+            if (CameraSelfTest.Running)
+            {
+                const string busy = "RecordingManager: refusing to start — the camera self-test (adb, scripts/device_smoke.sh) is recording";
+                Debug.LogError($"[{Constants.LOG_TAG}] {busy}");
+                throw new InvalidOperationException(busy);
             }
 
             foreach (var provider in cameraProviders)
@@ -343,7 +354,6 @@ namespace RealityLog
                 DeviceInfo.WriteToSession(Path.Combine(Application.persistentDataPath, currentSessionDirectory ?? ""));
 
                 onRecordingStarted?.Invoke();
-                ForegroundServiceManager.UpdateNotification("Recording in progress");
 
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
                 StartCaptureFailureWatch(currentSessionDirectory ?? "");
@@ -568,9 +578,15 @@ namespace RealityLog
         /// </summary>
         public event Action<string, CaptureFailure>? CameraFailed;
 
+        // This session's watch, polled from Update on the main thread; null while none records.
+        private (CaptureFailureWatch watch, int generation, string session)? captureWatch;
+        private float nextCaptureWatchPollAt;
+
         /// <summary>
-        /// Polls both eyes' recorders for their first failure (<see cref="CaptureFailureWatch"/>)
-        /// at ~4 Hz on a JVM-attached worker while this session records; exits on the stop.
+        /// Arms the poll of both eyes' recorders for their first failure (<see cref="CaptureFailureWatch"/>),
+        /// at ~4 Hz from <see cref="Update"/>, on Unity's main thread: one JNI call per eye
+        /// (sx#4210). Build 75 polled from a worker thread; the JNI objects are touched only from
+        /// the main thread, or through <see cref="JniObject"/> on a thread attached to the JVM.
         /// </summary>
         private void StartCaptureFailureWatch(string session)
         {
@@ -578,39 +594,28 @@ namespace RealityLog
             var generation = System.Threading.Interlocked.Increment(ref captureWatchGeneration);
             var eyes = cameraProviders.OfType<VideoRecorderSurfaceProvider>()
                 .Select(p => (p.OutputVideoFileName, (Func<string?>)p.PollCaptureError)).ToArray();
-            if (eyes.Length == 0) return;
-            var watch = new CaptureFailureWatch(eyes);
-            var thread = new System.Threading.Thread(() =>
+            captureWatch = eyes.Length == 0 ? null : (new CaptureFailureWatch(eyes), generation, session);
+            nextCaptureWatchPollAt = Time.realtimeSinceStartup + CaptureFailureWatch.PollIntervalMs / 1000f;
+        }
+
+        /// <summary>Main thread, from Update: one poll when due; the watch ends with its generation.</summary>
+        private void PollCaptureWatch()
+        {
+            if (captureWatch is not { } armed) return;
+            if (System.Threading.Volatile.Read(ref captureWatchGeneration) != armed.generation
+                || State != RecordingState.Recording)
             {
-#if UNITY_ANDROID && !UNITY_EDITOR
-                var attached = AndroidJNI.AttachCurrentThread() == 0;
-#endif
-                try
-                {
-                    while (System.Threading.Volatile.Read(ref captureWatchGeneration) == generation
-                        && State == RecordingState.Recording)
-                    {
-                        if (watch.Poll() is { } failure)
-                        {
-                            Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {failure.Describe()}");
-                            mainThreadWork.Enqueue(() => OnCaptureFailure(generation, session, failure));
-                            return;
-                        }
-                        System.Threading.Thread.Sleep(CaptureFailureWatch.PollIntervalMs);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: camera failure watch ended: {ex}");
-                }
-                finally
-                {
-#if UNITY_ANDROID && !UNITY_EDITOR
-                    if (attached) AndroidJNI.DetachCurrentThread();
-#endif
-                }
-            }) { IsBackground = true, Name = "CaptureFailureWatch" };
-            thread.Start();
+                captureWatch = null;
+                return;
+            }
+            if (Time.realtimeSinceStartup < nextCaptureWatchPollAt) return;
+            nextCaptureWatchPollAt = Time.realtimeSinceStartup + CaptureFailureWatch.PollIntervalMs / 1000f;
+            if (armed.watch.Poll() is { } failure)
+            {
+                captureWatch = null;
+                Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {failure.Describe()}");
+                OnCaptureFailure(armed.generation, armed.session, failure);
+            }
         }
 
         private void OnCaptureFailure(int generation, string session, CaptureFailure failure)
@@ -638,6 +643,7 @@ namespace RealityLog
                 try { work(); }
                 catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: main-thread work failed: {ex}"); }
             }
+            PollCaptureWatch();
             MainThreadFrames.Frame(Time.unscaledDeltaTime);
         }
 
@@ -662,7 +668,6 @@ namespace RealityLog
 
             onRecordingSaved?.Invoke(savedDirectory);
             ValidateSavedSession(savedDirectory);
-            ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped successfully. Files saved to '{savedDirectory}'");
             stopCoroutine = null;
@@ -781,7 +786,6 @@ namespace RealityLog
                     onRecordingSaved?.Invoke(savedDirectory);
                     ValidateSavedSession(savedDirectory);
                 }
-                ForegroundServiceManager.UpdateNotification("Ready — waiting for commands");
             }
         }
 

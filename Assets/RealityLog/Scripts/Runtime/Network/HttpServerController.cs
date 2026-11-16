@@ -10,7 +10,6 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using RealityLog.Common;
-using RealityLog.Core;
 using RealityLog.FileOperations;
 using RealityLog.Rig;
 using RealityLog.UI;
@@ -91,10 +90,9 @@ namespace RealityLog.Network
 
         private void Start()
         {
-            // Start foreground service FIRST — this is the critical fix that prevents
-            // Android from killing the app when it goes to background. Must happen
-            // before any other initialization so the process is protected immediately.
-            ForegroundServiceManager.StartService();
+            // No foreground service: the manifest's RecordingForegroundService was never in any
+            // QuestCameraLib build (ClassNotFoundException at every launch through build 75,
+            // sx#4210), so none ever ran; the app keeps itself awake (KeepAwakeBootstrap).
 
             cachedDataPath = Application.persistentDataPath; // Cache on main thread
             appStartUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -127,10 +125,21 @@ namespace RealityLog.Network
             if (inputFocus != hadInputFocus)
             {
                 hadInputFocus = inputFocus;
-                if (!inputFocus) inputFocusLostAt = Time.realtimeSinceStartup;
+                if (!inputFocus) { inputFocusLostAt = Time.realtimeSinceStartup; inputFocusLossCued = false; }
                 Debug.Log(inputFocus
                     ? $"[{Constants.LOG_TAG}] input focus back after {Time.realtimeSinceStartup - inputFocusLostAt:F1} s; button presses in that time never reached the app"
                     : $"[{Constants.LOG_TAG}] input focus lost: menu, Y and controller presses do not reach the app until it returns");
+            }
+            // pod5 2026-11-16 (build 75): "Y does not open the menu". No Y press reached the app:
+            // the system Navigator (vrshell, NavigatorInvoked 13:58:36: the Meta button or the
+            // palm pinch of a hand whose controller sits on the rig) held input focus 8 times in
+            // 3 min, once for 97 s, and OpenXR delivers no presses then. The wearer never sees the
+            // display, so a loss that lasts says so aloud, once.
+            if (!inputFocus && !inputFocusLossCued
+                && Time.realtimeSinceStartup - inputFocusLostAt > InputFocusLossCueSeconds)
+            {
+                inputFocusLossCued = true;
+                RigCues.Play(RigCues.Cue.Refused, "the system menu holds the controllers; Y and the menu button do nothing until it closes", gameObject);
             }
             if (OVRInput.GetDown(OVRInput.Button.Start, OVRInput.Controller.LTouch))
             {
@@ -335,6 +344,8 @@ namespace RealityLog.Network
 
         private bool hadInputFocus = true;
         private float inputFocusLostAt;
+        private bool inputFocusLossCued;
+        private const float InputFocusLossCueSeconds = 3f;
 
         private void OnMenuButton(bool inputFocus) => MenuButtons.Start(
             inputFocus, StartOrStopInProgress, recordingManager != null && recordingManager.State != RecordingState.Idle,
@@ -1248,54 +1259,19 @@ namespace RealityLog.Network
                 Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: Wake lock failed: {ex.Message}");
             }
 
-            // 2. Keep screen on via Window flag (FLAG_KEEP_SCREEN_ON = 128)
+            // 2. Keep screen on via Window flag, set on Android's UI thread. The stay-on, screen
+            // timeout and proximity settings are provision-headset.sh --keep-awake's (adb): an app
+            // cannot write them, and the Runtime.exec calls that tried threw NoSuchMethodError at
+            // every launch through build 75 (sx#4210).
             try
             {
                 using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
-                using var window = activity.Call<AndroidJavaObject>("getWindow");
-                window.Call("addFlags", 128);
+                KeepAwakeBootstrap.KeepScreenOn(unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"));
                 log?.Add("flag_keep_screen_on");
-                Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: FLAG_KEEP_SCREEN_ON set");
             }
             catch (Exception ex)
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: Window flag failed: {ex.Message}");
-            }
-
-            // 3. Disable proximity sensor via system property + set power settings
-            try
-            {
-                using var processClass = new AndroidJavaClass("java.lang.Runtime");
-                using var runtime = processClass.CallStatic<AndroidJavaObject>("getRuntime");
-
-                // Disable proximity-triggered sleep — THE key fix
-                using var p1 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/setprop", "debug.oculus.proximityDisabled", "1" });
-                int p1Exit = p1.Call<int>("waitFor");
-                if (p1Exit == 0)
-                {
-                    log?.Add("proximity_sensor_disabled");
-                    Debug.Log($"[{Constants.LOG_TAG}] KeepAwake: Proximity sensor disabled");
-                }
-                else
-                {
-                    log?.Add("proximity_sensor_disable_failed");
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: setprop proximityDisabled returned exit code {p1Exit} — proximity sensor may still be active. Recording may stop if headset is jostled.");
-                }
-
-                // Set screen timeout to max
-                using var p2 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/settings", "put", "system", "screen_off_timeout", "2147483647" });
-                p2.Call<int>("waitFor");
-                log?.Add("screen_timeout_max");
-
-                // Stay on while plugged in (all sources: AC=1 + USB=2 + Wireless=4 = 7)
-                using var p3 = runtime.Call<AndroidJavaObject>("exec", new string[] { "/system/bin/settings", "put", "global", "stay_on_while_plugged_in", "7" });
-                p3.Call<int>("waitFor");
-                log?.Add("stay_on_while_plugged");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] KeepAwake: System settings failed: {ex.Message}");
             }
 #else
             log?.Add("editor_mock_applied");

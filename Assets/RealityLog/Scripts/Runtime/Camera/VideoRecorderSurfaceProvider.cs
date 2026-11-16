@@ -12,18 +12,31 @@ namespace RealityLog.Camera
     public class VideoRecorderSurfaceProvider : SurfaceProviderBase
     {
         private const string VIDEO_RECORDER_SURFACE_PROVIDER_CLASS_NAME = "com.samusynth.questcamera.io.VideoRecorderSurfaceProvider";
-        private const string UPDATE_OUTPUT_FILE_METHOD_NAME = "updateOutputFile";
-        private const string START_RECORDING_METHOD_NAME = "startRecording";
-        private const string REQUEST_STOP_RECORDING_METHOD_NAME = "requestStopRecording";
-        private const string STOP_RECORDING_METHOD_NAME = "stopRecording";
-        private const string GET_SOURCE_FRAME_COUNT_METHOD_NAME = "getSourceFrameCount";
-        private const string GET_SOURCE_DROPPED_FRAME_COUNT_METHOD_NAME = "getSourceDroppedFrameCount";
-        private const string GET_SELECTED_FRAME_COUNT_METHOD_NAME = "getSelectedFrameCount";
-        private const string GET_CAPTURE_REPORT_JSON_METHOD_NAME = "getCaptureReportJson";
-        private const string GET_STREAM_GEOMETRY_JSON_METHOD_NAME = "getStreamGeometryJson";
-        private const string CLOSE_METHOD_NAME = "close";
-        // QuestCameraLib a6e6bd3: a recorder thread's first failure, "" while healthy.
-        private const string GET_CAPTURE_ERROR_METHOD_NAME = "getCaptureError";
+        // Every recorder method OQC calls, with its JNI descriptor: bound once when the recorder
+        // is made (JniObject), and held to the shipped AAR by scripts/check_jni_abi.py. Build 75
+        // asked for stopRecording ()V of an AAR whose stopRecording was ()Lkotlin/Unit; and found
+        // out at the first stop on pod5 (sx#4210). getCaptureError (QuestCameraLib a6e6bd3): a
+        // recorder thread's first failure, "" while healthy.
+        private const string V = "()V";
+        private const string J = "()J";
+        private const string S = "()Ljava/lang/String;";
+        public static readonly JniSignatures RecorderJni = new JniSignatures(VIDEO_RECORDER_SURFACE_PROVIDER_CLASS_NAME, new[]
+        {
+            ("updateOutputFile", "(Ljava/lang/String;Ljava/lang/String;)V"),
+            ("startRecording", "()V"),
+            ("requestStopRecording", "()V"),
+            ("stopRecording", "()V"),
+            ("startQrScan", "()V"),
+            ("stopQrScan", "()V"),
+            ("getQrResult", "()Ljava/lang/String;"),
+            ("getSourceFrameCount", "()J"),
+            ("getSourceDroppedFrameCount", "()J"),
+            ("getSelectedFrameCount", "()J"),
+            ("getCaptureError", "()Ljava/lang/String;"),
+            ("getCaptureReportJson", "()Ljava/lang/String;"),
+            ("getStreamGeometryJson", "()Ljava/lang/String;"),
+            ("close", "()V"),
+        });
         // 1.4.1: exposure_time_ns / capture_frame_number may be -1 (unknown) per row,
         // metadata carries capture_report counters and capture_error; the recorder
         // never truncates an eye for sidecar bookkeeping.
@@ -71,6 +84,8 @@ namespace RealityLog.Camera
         [SerializeField] private float maxWaitForCameraOpenSeconds = 1.5f;
 
         private AndroidJavaObject? currentInstance;
+        // currentInstance's methods, resolved on the main thread when it is made (any attached thread calls them).
+        private JniObject? recorder;
         private CameraMetadata? cameraMetadata;
         private bool isRecordingSessionActive;
         private bool waitingForCameraReopen;
@@ -110,6 +125,14 @@ namespace RealityLog.Camera
         /// <summary>Per-encoded-frame Camera2 exposure timestamp sidecar.</summary>
         public string FrameTimestampsFileName => frameTimestampsFileName;
 
+        /// <summary>This eye's recording metadata sidecar (capture_error, frame counts).</summary>
+        public string VideoMetadataFileName => videoMetadataFileName;
+
+        /// <summary>Main thread: a recorder is bound, nothing refuses it and its camera session is open.</summary>
+        public bool IsReadyToRecord =>
+            recorder != null && startRefusal == null && !isRecordingSessionActive
+            && (cameraSessionManager?.IsSessionOpen ?? false);
+
         /// <summary>
         /// True while the video file is still being finalized by the OS after stopRecording().
         /// RecordingManager should wait for this to become false before validating files.
@@ -120,24 +143,24 @@ namespace RealityLog.Camera
         private volatile bool captureErrorUnsupported;
 
         /// <summary>
-        /// The recorder's first failure while this eye records, or null while it is healthy (or
-        /// not recording). One JNI call: any thread attached to the JVM, never the main thread's
-        /// business (RecordingManager polls it at ~4 Hz from a worker). The failure is also kept
-        /// as this eye's capture_error, so the metadata names it even if the stop does not.
+        /// Main thread: the recorder's first failure while this eye records, or null while it is
+        /// healthy (or not recording). One JNI call; RecordingManager.Update asks at ~4 Hz. The
+        /// failure is also kept as this eye's capture_error, so the metadata names it even if the
+        /// stop does not.
         /// </summary>
         public string? PollCaptureError()
         {
-            var instance = currentInstance;
-            if (instance == null || !isRecordingSessionActive || captureErrorUnsupported) return null;
+            var bound = recorder;
+            if (bound == null || !isRecordingSessionActive || captureErrorUnsupported) return null;
             string? text;
             try
             {
-                text = instance.Call<string>(GET_CAPTURE_ERROR_METHOD_NAME);
+                text = bound.CallString("getCaptureError", S);
             }
             catch (Exception ex)
             {
                 captureErrorUnsupported = true;
-                Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider ({outputVideoFileName}): getCaptureError unavailable, mid-episode failures surface only at stop: {ex.Message}");
+                Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider ({outputVideoFileName}): getCaptureError failed, mid-episode failures surface only at stop: {ex.Message}");
                 return null;
             }
             if (string.IsNullOrEmpty(text)) return null;
@@ -191,6 +214,7 @@ namespace RealityLog.Camera
                     audioBitrate,
                     audioSamplingRate
                 );
+                recorder = JniObject.Bind(currentInstance, RecorderJni);
                 startRefusal = null;
 
                 Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider initialized ({sourceSize.width}x{sourceSize.height} source -> {outputWidth}x{outputHeight} output, {targetFrameRate}fps, {targetBitrateMbps}Mbps, audio={enableAudio}).");
@@ -199,8 +223,11 @@ namespace RealityLog.Camera
             {
                 // No recorder means no head video: the same refusal as a bad geometry,
                 // with the Java cause verbatim.
-                startRefusal = $"recorder could not be created: {ex}";
+                startRefusal = $"recorder could not be created: {ex.Message}";
                 Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider ({outputVideoFileName}) refuses to record: {startRefusal}");
+                recorder?.Dispose();
+                recorder = null;
+                currentInstance?.Dispose();
                 currentInstance = null;
             }
 
@@ -245,7 +272,7 @@ namespace RealityLog.Camera
             if (currentInstance == null) return false;
             try
             {
-                currentInstance.Call("startQrScan");
+                recorder!.CallVoid("startQrScan", V);
                 return true;
             }
             catch (Exception ex)
@@ -259,7 +286,7 @@ namespace RealityLog.Camera
         {
             try
             {
-                currentInstance?.Call("stopQrScan");
+                recorder?.CallVoid("stopQrScan", V);
             }
             catch (Exception ex)
             {
@@ -272,7 +299,7 @@ namespace RealityLog.Camera
         {
             try
             {
-                var text = currentInstance?.Call<string>("getQrResult");
+                var text = recorder?.CallString("getQrResult", S);
                 return string.IsNullOrEmpty(text) ? null : text;
             }
             catch (Exception)
@@ -316,11 +343,8 @@ namespace RealityLog.Camera
             var frameTimestampFilePath = BuildFrameTimestampOutputPath();
             try
             {
-                currentInstance.Call(
-                    UPDATE_OUTPUT_FILE_METHOD_NAME,
-                    outputFilePath,
-                    frameTimestampFilePath
-                );
+                recorder!.CallVoid("updateOutputFile", "(Ljava/lang/String;Ljava/lang/String;)V",
+                    outputFilePath, frameTimestampFilePath);
                 WriteCameraMetadataFile();
                 // The native MediaCodec pipeline keeps a persistent Camera2-facing
                 // SurfaceTexture, so changing the MP4 output no longer requires a
@@ -369,7 +393,7 @@ namespace RealityLog.Camera
 
             try
             {
-                currentInstance.Call(REQUEST_STOP_RECORDING_METHOD_NAME);
+                recorder!.CallVoid("requestStopRecording", V);
             }
             catch (Exception ex)
             {
@@ -430,7 +454,10 @@ namespace RealityLog.Camera
             return detached;
         }
 
-        /// <summary>The blocking stop: JNI and files only, so any thread attached to the JVM.</summary>
+        /// <summary>
+        /// The blocking stop: raw JNI on the bound recorder (method ids resolved on the main
+        /// thread) and files only, so any thread attached to the JVM.
+        /// </summary>
         private void FinishRecordingSession(string videoPath, string sessionDirName, string dataPath, bool scheduleFinalizationPoll)
         {
             if (currentInstance == null)
@@ -441,8 +468,8 @@ namespace RealityLog.Camera
             bool stopSucceeded = false;
             try
             {
-                currentInstance.Call(REQUEST_STOP_RECORDING_METHOD_NAME);
-                currentInstance.Call(STOP_RECORDING_METHOD_NAME);
+                recorder!.CallVoid("requestStopRecording", V);
+                recorder.CallVoid("stopRecording", V);
                 stopSucceeded = true;
             }
             catch (Exception ex)
@@ -559,7 +586,7 @@ namespace RealityLog.Camera
             {
                 VideoStartUnixTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 VideoStartMonoTimeNs = MonotonicClock.Nanos();
-                currentInstance.Call(START_RECORDING_METHOD_NAME);
+                recorder!.CallVoid("startRecording", V);
                 isRecordingSessionActive = true;
             }
             catch (Exception ex)
@@ -660,13 +687,11 @@ namespace RealityLog.Camera
 
             try
             {
-                sourceFrameCount = currentInstance.Call<long>(GET_SOURCE_FRAME_COUNT_METHOD_NAME);
-                sourceDroppedFrameCount = currentInstance.Call<long>(
-                    GET_SOURCE_DROPPED_FRAME_COUNT_METHOD_NAME
-                );
-                selectedFrameCount = currentInstance.Call<long>(GET_SELECTED_FRAME_COUNT_METHOD_NAME);
-                captureReportJson = currentInstance.Call<string>(GET_CAPTURE_REPORT_JSON_METHOD_NAME);
-                streamGeometryJson = currentInstance.Call<string>(GET_STREAM_GEOMETRY_JSON_METHOD_NAME);
+                sourceFrameCount = recorder!.CallLong("getSourceFrameCount", J);
+                sourceDroppedFrameCount = recorder.CallLong("getSourceDroppedFrameCount", J);
+                selectedFrameCount = recorder.CallLong("getSelectedFrameCount", J);
+                captureReportJson = recorder.CallString("getCaptureReportJson", S) ?? "{}";
+                streamGeometryJson = recorder.CallString("getStreamGeometryJson", S) ?? NoStreamGeometryJson;
             }
             catch (Exception ex)
             {
@@ -719,7 +744,7 @@ namespace RealityLog.Camera
                 {
                     FinalizeRecordingSession(scheduleFinalizationPoll: false);
                 }
-                currentInstance.Call(CLOSE_METHOD_NAME);
+                recorder?.CallVoid("close", V);
             }
             catch (Exception ex)
             {
@@ -727,6 +752,8 @@ namespace RealityLog.Camera
             }
             finally
             {
+                recorder?.Dispose();
+                recorder = null;
                 currentInstance.Dispose();
                 currentInstance = null;
                 isRecordingSessionActive = false;
