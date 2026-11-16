@@ -203,7 +203,7 @@ namespace RealityLog.Rig
         private bool sealsObserved;
         // The episode a seal is writing now (a seal state "sealing"), null when none is.
         private volatile string? sealingNow;
-        private readonly System.Collections.Concurrent.ConcurrentQueue<RigCues.Cue> cues = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(RigCues.Cue cue, string reason)> cues = new();
         // The right gripper's start/stop switch: libsx_rig's gripper_switch counters, read on the
         // native-status worker; each new hold is handled on the main thread.
         private readonly GripperSwitch gripperSwitch = new();
@@ -307,7 +307,7 @@ namespace RealityLog.Rig
                             ["detail"] = $"{PodConfigFileName} has keys neither the app nor the rig accepts: {string.Join(", ", unknownAtLaunch)}",
                         };
                         podConfigProblem = string.Join(",", unknownAtLaunch);
-                        QueueCue(RigCues.Cue.Refused);
+                        QueueCue(RigCues.Cue.Refused, "pod_config.json has unknown keys");
                     }
                 }
                 catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
@@ -418,7 +418,7 @@ namespace RealityLog.Rig
         private void RecordStartupError(string what, Exception ex)
         {
             startupErrors[what] = ex.ToString();
-            QueueCue(RigCues.Cue.Refused); // the operator cannot read /api/status
+            QueueCue(RigCues.Cue.Refused, what + " failed at startup"); // the operator cannot read /api/status
             Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {what} failed at startup: {ex}");
         }
 
@@ -479,7 +479,7 @@ namespace RealityLog.Rig
             if (signInCuePending)
             {
                 signInCuePending = false;
-                RigCues.Play(RigCues.Cue.SignedIn, gameObject);
+                RigCues.Play(RigCues.Cue.SignedIn, "collector signed in", gameObject);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector signed in");
             }
             while (switchPresses.TryDequeue(out var press))
@@ -491,14 +491,14 @@ namespace RealityLog.Rig
                 hapticUntil = float.NegativeInfinity;
                 OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.RTouch);
             }
-            while (cues.TryDequeue(out var cue))
+            while (cues.TryDequeue(out var queued))
             {
-                RigCues.Play(cue, gameObject);
+                RigCues.Play(queued.cue, queued.reason, gameObject);
             }
             while (failures.TryDequeue(out var failed))
             {
                 // The operator hears it at once; the recording stops through its normal path.
-                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                RigCues.Play(RigCues.Cue.Refused, "rig episode failed", gameObject);
                 Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: rig episode '{failed.session}' failed: {failed.failure.ToString(Formatting.None)}");
                 EpisodeFailed?.Invoke(failed.session, failed.failure);
             }
@@ -765,8 +765,8 @@ namespace RealityLog.Rig
             }
         }
 
-        /// <summary>Queues a cue for the main thread (any thread).</summary>
-        public void QueueCue(RigCues.Cue cue) => cues.Enqueue(cue);
+        /// <summary>Queues a cue for the main thread (any thread); <paramref name="reason"/> is logged with it.</summary>
+        public void QueueCue(RigCues.Cue cue, string reason) => cues.Enqueue((cue, reason));
 
         /// <summary>
         /// Main thread, before <see cref="Enroll"/>: opens the rig (even when no rig is expected
@@ -1302,7 +1302,7 @@ namespace RealityLog.Rig
                     if (podConfigProblem != signature)
                     {
                         podConfigProblem = signature;
-                        QueueCue(RigCues.Cue.Refused);
+                        QueueCue(RigCues.Cue.Refused, "pod_config.json has unknown keys");
                         Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {problem["detail"]}");
                     }
                     return;
@@ -1846,8 +1846,13 @@ namespace RealityLog.Rig
                     collectorName = RigStatusJson.CollectorName(status);
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
+                    if (gripperSwitch.SidesLine(status["gripper_switch"] as JObject) is string sidesLine)
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: {sidesLine}");
+                    }
                     if (gripperSwitch.Observe(status["gripper_switch"] as JObject) is GripperSwitchPress press)
                     {
+                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch {(press == GripperSwitchPress.Toggle ? "hold" : "refused hold")} read: {(status["gripper_switch"]?[press == GripperSwitchPress.Toggle ? "last_hold" : "last_refusal"]?.ToString(Formatting.None) ?? "null")}");
                         switchPresses.Enqueue(press);
                     }
                     sealingNow = Sealing(status["seals"] as JObject);
@@ -1920,8 +1925,8 @@ namespace RealityLog.Rig
                 sealStates.TryGetValue(entry.Key, out var previous);
                 if (sealsObserved && state != previous)
                 {
-                    if (state == "sealed") cues.Enqueue(RigCues.Cue.Sealed);
-                    else if (state == "refused") cues.Enqueue(RigCues.Cue.Refused);
+                    if (state == "sealed") QueueCue(RigCues.Cue.Sealed, "episode " + entry.Key + " sealed");
+                    else if (state == "refused") QueueCue(RigCues.Cue.Refused, "episode " + entry.Key + " seal refused");
                 }
                 sealStates[entry.Key] = state;
             }
@@ -1929,7 +1934,7 @@ namespace RealityLog.Rig
         }
 
         /// <summary>Plays a cue (main thread) when the rig took part in the recording.</summary>
-        public void Cue(RigCues.Cue cue) => RigCues.Play(cue, gameObject);
+        public void Cue(RigCues.Cue cue, string reason) => RigCues.Play(cue, reason, gameObject);
 
         /// <summary>
         /// A new hold of the right gripper's start/stop switch (main thread). A hold is the left
@@ -1954,14 +1959,14 @@ namespace RealityLog.Rig
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold refused by the rig (its sensor names the wrong side)");
                 Pulse(0.45f, 1f);
-                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                RigCues.Play(RigCues.Cue.Refused, "gripper switch hold refused: sensor names the wrong side", gameObject);
                 return;
             }
             Pulse(0.12f, 0.8f);
             if (PodControls.StartOrStop is not { } startOrStop)
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold, but the recorder is not running");
-                RigCues.Play(RigCues.Cue.Refused, gameObject);
+                RigCues.Play(RigCues.Cue.Refused, "gripper switch hold: recorder not running", gameObject);
                 return;
             }
             Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold: the menu button's start or stop");

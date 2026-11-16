@@ -239,7 +239,7 @@ namespace RealityLog.Rig
                         Status = "Enrollment failed: " + detail;
                         Debug.LogWarning($"[{Constants.LOG_TAG}] PodSetup: {Status}");
                         if (steps.Count > 0) StartCoroutine(PlaySteps(steps, enrolled: false));
-                        else rig.QueueCue(RigCues.Cue.Refused);
+                        else rig.QueueCue(RigCues.Cue.Refused, "enrollment failed");
                     });
                 }
             });
@@ -261,11 +261,11 @@ namespace RealityLog.Rig
                 };
                 if (cue is RigCues.Cue play)
                 {
-                    rig.Cue(play);
+                    rig.Cue(play, $"enrollment step {step.State}");
                     yield return new WaitForSecondsRealtime(StepCueSpacingSeconds);
                 }
             }
-            if (enrolled) rig.Cue(RigCues.Cue.SignedIn);
+            if (enrolled) rig.Cue(RigCues.Cue.SignedIn, "pod enrolled");
         }
 
         private void Update()
@@ -293,7 +293,7 @@ namespace RealityLog.Rig
                         AuthUrl = auth!;
                         JoinCode = code!;
                         Status = $"Scanned the code for {FactoryUrl}.";
-                        RigCoordinator.Instance?.QueueCue(RigCues.Cue.Sealed);
+                        RigCoordinator.Instance?.QueueCue(RigCues.Cue.Sealed, "setup code scanned");
                         Enroll(); // the wearer cannot see a button: a scanned code enrolls at once
                     }
                 }
@@ -327,7 +327,7 @@ namespace RealityLog.Rig
         {
             Status = message;
             Debug.LogWarning($"[{Constants.LOG_TAG}] PodSetup: {message}");
-            RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+            RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused, "pod setup: " + message);
             return message;
         }
 

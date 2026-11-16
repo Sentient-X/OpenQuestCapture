@@ -82,7 +82,8 @@ namespace RealityLog.Rig
 
     /// <summary>
     /// The outcome of the last POST /api/start-recording (the HTTP route and the left menu
-    /// button): a refusal with its time, cleared by a start that succeeds. Any thread.
+    /// button): a refusal with its time, cleared by a start that succeeds; or the failure that
+    /// stopped the episode it started (<see cref="RecordFailure"/>). Any thread.
     /// </summary>
     public sealed class PodStartLog
     {
@@ -97,6 +98,20 @@ namespace RealityLog.Rig
 
         /// <summary>True once a start succeeded after any refusal; the rig's own refusal is then stale.</summary>
         public bool Succeeded { get { lock (gate) return succeeded; } }
+
+        /// <summary>
+        /// Records that the app stopped the episode the last start began, as failed (a head camera
+        /// failed mid-episode): shown as the last refusal, in its notice's words, until the next
+        /// start succeeds.
+        /// </summary>
+        public void RecordFailure(string code, string message, OperatorNotice notice, DateTime at)
+        {
+            lock (gate)
+            {
+                last = new StartRefusal(code, message, at, notice);
+                succeeded = false;
+            }
+        }
 
         /// <summary>Records a start's answer: 2xx clears, anything else is the refusal its body names.</summary>
         public void Record(int statusCode, string? body, DateTime at)

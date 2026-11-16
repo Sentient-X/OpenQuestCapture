@@ -91,6 +91,12 @@
       "still_fine": "The rig is fine.",
       "action": "Record again. If it repeats, call a technician."
     },
+    "head_camera_failed": {
+      "who": "collector",
+      "headline": "Last episode stopped: the {side} head camera failed",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Restart the app, then record again. If it happens twice in a row, call a technician."
+    },
     "video_behind": {
       "who": "collector",
       "headline": "Last episode stopped: the {side} wrist camera video could not keep up",

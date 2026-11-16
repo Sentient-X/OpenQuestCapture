@@ -51,7 +51,7 @@ Depth capture and dual raw-YUV capture are disabled by default to reduce storage
 3. **Start recording**: Launch the app and press the Menu button on the left controller to start a capture session.
 4. **Stop recording**: To stop, press the left controller's Menu button again.
 5. **Move the data from your Quest to your computer**: The data is stored on the Quest's internal storage. You can move it to your computer using a USB cable by connecting the Quest to your computer and using Windows File Explorer. The data is stored in the `/Quest 3/Internal Shared Storage/data/com.samusynth.OpenQuestCapture/files` directory.
-Or, you can use press the Y button on the left controller to toggle the Recording Menu. Select "Export Data" to export the data to a zip file in the Quest 3 Download folder which can be uploaded to Google Drive or other cloud storage services.
+Or, press the Y button on the left controller to toggle the Recording Menu (Y never starts or stops a recording; the Menu button ☰ does). Select "Export Data" to export the data to a zip file in the Quest 3 Download folder which can be uploaded to Google Drive or other cloud storage services.
 6. **Post-process on laptop**: Combine `left_camera.mp4` / `right_camera.mp4` + pose/IMU CSV files into your downstream format (for example, MCAP/Foxglove pipelines).
 
 ### 📸 How to take a good capture
@@ -214,9 +214,14 @@ any rig USB device is on the bus; with neither, nothing below happens and record
 * **Controls.** The operator wears the headset on the forehead and never sees the display. The
   **left controller's menu button** (three lines) starts a recording and, pressed again, stops it
   (the same path as `POST /api/start-recording` / `/api/stop-recording`, with the operator from
-  `pod_config.json`); presses while a start or stop is running are ignored. Outcomes are sounds:
-  start rises, stop falls, a refusal buzzes, a sealed episode blips three times. **Home** is the
-  right controller's Oculus button.
+  `pod_config.json`); presses while a start or stop is running are ignored (logged
+  `menu-button press ignored`). The **Y button** only opens and closes the recordings menu; a Y
+  within 0.75 s of the last toggle is ignored and buzzes. A press seen while the app has no input
+  focus is dropped and buzzes. Outcomes are sounds: start rises, stop falls, a refusal buzzes, a
+  sealed episode blips three times; every cue logs `[RealityLog] cue: <name> (<reason>)`. A head
+  camera whose recorder fails mid-episode (QuestCameraLib `getCaptureError`, polled at 4 Hz) stops
+  the episode as failed, buzzes and shows `head_camera_failed`. **Home** is the right
+  controller's Oculus button.
 * **USB permission on Horizon OS:** a UVC camera's USB permission is silently denied unless the
   app holds `android.permission.CAMERA` and `horizonos.permission.USB_CAMERA`; both are asked at
   first launch with the passthrough permissions (someone wearing the headset accepts them once).
@@ -350,8 +355,10 @@ Side-loading is required to install this app on the Quest. [This video](https://
 
 1. **Start/Stop Recording**: 
    - Launch the app.
-   - Press the **Menu button** on the left controller to dismiss the instruction panel and start logging.
-   - To stop, simply close the app or pause the session.
+   - Press the **Menu button** (☰, three lines) on the left controller to start logging, or on a
+     headset pod hold the right gripper button for 2 s.
+   - Press the same Menu button (or hold the gripper button again) to stop. The **Y button** never
+     starts or stops a recording.
 
 2. **Manage Recordings**:
    - Press the **Y button** on the left controller to toggle the **Recording Menu**.

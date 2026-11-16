@@ -85,6 +85,8 @@ namespace RealityLog.Network
 
             if (recordingManager == null)
                 Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: RecordingManager not found!");
+            else
+                recordingManager.CameraFailed += OnCameraFailed;
         }
 
         private void Start()
@@ -117,11 +119,22 @@ namespace RealityLog.Network
                 rigFailureSubscribed = true;
             }
 
-            // The left controller's menu button (three lines; in OpenXR the app's menu button,
-            // never the system one, which is the right Oculus button) toggles recording.
+            // The left controller's menu button (☰, three lines; in OpenXR the app's menu button,
+            // never the system one, which is the right Oculus button) toggles recording. Every
+            // press logs; one dropped for lost input focus buzzes (MenuButtons). While focus is
+            // lost the runtime delivers no presses at all, so the loss and return are logged too.
+            var inputFocus = OVRManager.hasInputFocus;
+            if (inputFocus != hadInputFocus)
+            {
+                hadInputFocus = inputFocus;
+                if (!inputFocus) inputFocusLostAt = Time.realtimeSinceStartup;
+                Debug.Log(inputFocus
+                    ? $"[{Constants.LOG_TAG}] input focus back after {Time.realtimeSinceStartup - inputFocusLostAt:F1} s; button presses in that time never reached the app"
+                    : $"[{Constants.LOG_TAG}] input focus lost: menu, Y and controller presses do not reach the app until it returns");
+            }
             if (OVRInput.GetDown(OVRInput.Button.Start, OVRInput.Controller.LTouch))
             {
-                OnMenuButton();
+                OnMenuButton(inputFocus);
             }
 
             // Refresh cached values on main thread (safe for JNI)
@@ -166,6 +179,7 @@ namespace RealityLog.Network
 
         private void OnDestroy()
         {
+            if (recordingManager != null) recordingManager.CameraFailed -= OnCameraFailed;
             if (ReferenceEquals(Instance, this))
             {
                 Instance = null;
@@ -216,6 +230,38 @@ namespace RealityLog.Network
                 ["detail"] = failure,
             };
             WriteSessionJson(session, "rig_refusal.json", refusal.ToString(Formatting.None));
+            StopFailedRecording(session, "rig-failure");
+        }
+
+        /// <summary>
+        /// Main thread, once per recording whose head camera failed while it recorded
+        /// (RecordingManager's watch of QuestCameraLib's getCaptureError, sx#4210): the episode
+        /// is stopped as failed with that cause. The operator hears the refused cue at once and
+        /// the Pod card and phone show the head_camera_failed notice; the cause is kept beside the
+        /// session as rig_refusal.json (code camera_failed) and as the eye's capture_error, which
+        /// the seal refuses the episode on. The stop runs the normal path, so the rig's receipt
+        /// and seal follow as for any stop.
+        /// </summary>
+        private void OnCameraFailed(string session, RealityLog.Camera.CaptureFailure failure)
+        {
+            var refusal = new JObject
+            {
+                ["code"] = "camera_failed",
+                ["message"] = failure.Describe(),
+                ["detail"] = new JObject { ["eye"] = failure.Eye, ["side"] = failure.Side, ["capture_error"] = failure.Error },
+            };
+            WriteSessionJson(session, "rig_refusal.json", refusal.ToString(Formatting.None));
+            var notice = OperatorNotice.Of(RealityLog.Camera.CaptureFailure.NoticeCode, ("side", failure.Side), ("camera", "head"));
+            PodStartLog.Shared.RecordFailure("camera_failed", failure.Describe(), notice, DateTime.Now);
+            var reason = $"{failure.Side} head camera failed mid-episode";
+            if (RigCoordinator.Instance is { } rig) rig.Cue(RigCues.Cue.Refused, reason);
+            else RigCues.Play(RigCues.Cue.Refused, reason, gameObject);
+            StopFailedRecording(session, "camera-failure");
+        }
+
+        /// <summary>Stops <paramref name="session"/> through POST /api/stop-recording's path, off the main thread.</summary>
+        private void StopFailedRecording(string session, string why)
+        {
             if (recordingManager == null || !recordingManager.IsRecording
                 || recordingManager.CurrentSessionDirectory != session)
             {
@@ -226,11 +272,11 @@ namespace RealityLog.Network
                 try
                 {
                     var response = HandleStopRecording(new HttpRequest { Method = "POST", Path = "/api/stop-recording", Body = "{}" });
-                    Debug.Log($"[{Constants.LOG_TAG}] rig-failure stop -> {response.StatusCode} {response.Body}");
+                    Debug.Log($"[{Constants.LOG_TAG}] {why} stop -> {response.StatusCode} {response.Body}");
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError($"[{Constants.LOG_TAG}] rig-failure stop failed: {ex}");
+                    Debug.LogError($"[{Constants.LOG_TAG}] {why} stop failed: {ex}");
                 }
             });
         }
@@ -287,7 +333,14 @@ namespace RealityLog.Network
         /// <summary>The scene's controller, for the Pod card's and the phone's Start and Stop.</summary>
         public static HttpServerController? Instance { get; private set; }
 
-        private void OnMenuButton() => StartOrStop(null, null);
+        private bool hadInputFocus = true;
+        private float inputFocusLostAt;
+
+        private void OnMenuButton(bool inputFocus) => MenuButtons.Start(
+            inputFocus, StartOrStopInProgress, recordingManager != null && recordingManager.State != RecordingState.Idle,
+            recordingManager == null ? null : StartOrStop,
+            line => Debug.Log($"[{Constants.LOG_TAG}] {line}"),
+            reason => RigCues.Play(RigCues.Cue.Refused, reason, gameObject));
 
         /// <summary>A start or stop runs now, so a press is ignored (any thread).</summary>
         public bool StartOrStopInProgress =>
@@ -329,7 +382,7 @@ namespace RealityLog.Network
             {
                 Volatile.Write(ref menuBusy, 0);
                 Debug.Log($"[{Constants.LOG_TAG}] menu-button start not offered: {blocked.Headline} ({blocked.Action})");
-                if (done == null) RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+                if (done == null) RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused, "start not offered: " + blocked.Headline);
                 return blocked.Headline + ": " + blocked.Action;
             }
             Debug.Log($"[{Constants.LOG_TAG}] menu-button {(starting ? "start" : "stop")}{(start == null ? "" : " (asked)")}");
@@ -360,13 +413,13 @@ namespace RealityLog.Network
                     };
                     if (cue is RigCues.Cue play && RigCoordinator.Instance is { } rig)
                     {
-                        rig.QueueCue(play);
+                        rig.QueueCue(play, $"menu-button {(starting ? "start" : "stop")} -> {response.StatusCode}");
                     }
                 }
                 catch (Exception ex)
                 {
                     Debug.LogError($"[{Constants.LOG_TAG}] menu-button {(starting ? "start" : "stop")} failed: {ex}");
-                    RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+                    RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused, $"menu-button {(starting ? "start" : "stop")} failed");
                     words = ex.Message;
                 }
                 finally
@@ -682,7 +735,7 @@ namespace RealityLog.Network
                 }
                 rigStartJson = started ?? "null";
                 WriteSessionJson(reservedSession, "rig_start.json", rigStartJson);
-                rig.QueueCue(RigCues.Cue.Start); // the operator cannot see the display
+                rig.QueueCue(RigCues.Cue.Start, "rig armed and anchored"); // the operator cannot see the display
             }
 
             var json = "{\n" +
@@ -1868,7 +1921,7 @@ namespace RealityLog.Network
         /// </summary>
         private static HttpResponse RigRefusalResponse(RigCoordinator rig, RigRefusal refusal, string? session = null)
         {
-            rig.QueueCue(RigCues.Cue.Refused);
+            rig.QueueCue(RigCues.Cue.Refused, "rig refused: " + refusal.Code);
             var status = refusal.Code switch
             {
                 "rig_storage_low" => 507,

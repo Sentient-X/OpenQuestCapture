@@ -7842,8 +7842,8 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: "Press the left menu button \nto start logging. Press the Y button to open
-    the recording menu."
+  m_text: "Start or stop recording: the left menu button (three lines)\nor hold
+    the right gripper button for 2 s.\nY only opens the recordings list; it never records."
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
   m_sharedMaterial: {fileID: 2180264, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}

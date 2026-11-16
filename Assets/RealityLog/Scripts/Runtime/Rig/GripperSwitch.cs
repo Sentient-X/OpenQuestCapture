@@ -37,6 +37,30 @@ namespace RealityLog.Rig
     {
         private long? holds;
         private long? refusals;
+        private string? sidesSeen;
+
+        /// <summary>
+        /// One log line when what the rig reads from the encoders' status lines changes: which
+        /// roles' encoders send them (firmware side, switch enabled), or that none does; null when
+        /// nothing changed. The proof on a device that the right encoder's <c># {...}</c> status
+        /// lines are read, without a line per status poll.
+        /// </summary>
+        public string? SidesLine(JObject? block)
+        {
+            if (block?["sides"] is not JArray sides) return null;
+            var parts = new System.Collections.Generic.List<string>();
+            foreach (var side in sides)
+            {
+                if (side is not JObject s || s["firmware"] is not JValue { Type: JTokenType.String } firmware) continue;
+                var role = s["role"] is JValue { Type: JTokenType.String } r ? r.ToString() : "?";
+                var enabled = s["switch_enabled"] is JValue { Type: JTokenType.Boolean } e ? ((bool)e ? "switch enabled" : "switch disabled") : "switch unknown";
+                parts.Add($"{role} encoder reads as the {firmware} gripper, {enabled}");
+            }
+            var seen = parts.Count == 0 ? "no encoder status lines read yet" : string.Join("; ", parts);
+            if (seen == sidesSeen) return null;
+            sidesSeen = seen;
+            return "gripper switch status: " + seen;
+        }
 
         /// <summary>What this status block newly asks for, or null.</summary>
         public GripperSwitchPress? Observe(JObject? block)

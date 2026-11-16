@@ -346,6 +346,7 @@ namespace RealityLog
                 ForegroundServiceManager.UpdateNotification("Recording in progress");
 
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording started successfully");
+                StartCaptureFailureWatch(currentSessionDirectory ?? "");
             }
             catch
             {
@@ -389,6 +390,7 @@ namespace RealityLog
 
             Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Stopping recording session");
             System.Threading.Volatile.Write(ref state, (int)RecordingState.Stopping);
+            System.Threading.Interlocked.Increment(ref captureWatchGeneration); // the stop reports its own failures
             MainThreadFrames.Watch("stop", 10);
 
             var stopTimer = System.Diagnostics.Stopwatch.StartNew();
@@ -508,10 +510,12 @@ namespace RealityLog
             long mainMs, List<string> phases, System.Threading.Tasks.TaskCompletionSource<bool> completion)
         {
             LastRigStopReceiptJson = receipt;
-            // A failed rig episode already buzzed when it failed; a clean one chimes stop.
-            if (receipt != null && RigCoordinator.Instance is { } rigForCue && !RigStatusJson.StopFailed(receipt))
+            // A failed rig episode, or a camera that failed mid-episode, already buzzed when it
+            // failed; a clean one chimes stop.
+            var cameraFailed = CaptureFailed is { } failedCamera && failedCamera.session == savedDirectory;
+            if (receipt != null && RigCoordinator.Instance is { } rigForCue && !RigStatusJson.StopFailed(receipt) && !cameraFailed)
             {
-                rigForCue.Cue(RigCues.Cue.Stop);
+                rigForCue.Cue(RigCues.Cue.Stop, "recording stopped");
             }
 
             HeadTrackingMonitor.EndRecording();
@@ -543,6 +547,82 @@ namespace RealityLog
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Recording stopped (no session directory)");
             }
             completion.TrySetResult(true);
+        }
+
+        // ── A head camera failing mid-episode (sx#4210) ──
+
+        // Bumped by every start and stop: a watch whose generation is gone exits.
+        private int captureWatchGeneration;
+
+        /// <summary>
+        /// The session whose head camera failed mid-episode, with the failure, or null. Set on
+        /// the main thread when the watch reports, before <see cref="CameraFailed"/> runs; kept
+        /// until the next start.
+        /// </summary>
+        public (string session, CaptureFailure failure)? CaptureFailed { get; private set; }
+
+        /// <summary>
+        /// Main thread, once per recording whose head camera failed while it recorded (the
+        /// recording is still running): the HTTP controller buzzes, shows the notice and stops it
+        /// as failed through the stop path.
+        /// </summary>
+        public event Action<string, CaptureFailure>? CameraFailed;
+
+        /// <summary>
+        /// Polls both eyes' recorders for their first failure (<see cref="CaptureFailureWatch"/>)
+        /// at ~4 Hz on a JVM-attached worker while this session records; exits on the stop.
+        /// </summary>
+        private void StartCaptureFailureWatch(string session)
+        {
+            CaptureFailed = null;
+            var generation = System.Threading.Interlocked.Increment(ref captureWatchGeneration);
+            var eyes = cameraProviders.OfType<VideoRecorderSurfaceProvider>()
+                .Select(p => (p.OutputVideoFileName, (Func<string?>)p.PollCaptureError)).ToArray();
+            if (eyes.Length == 0) return;
+            var watch = new CaptureFailureWatch(eyes);
+            var thread = new System.Threading.Thread(() =>
+            {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                var attached = AndroidJNI.AttachCurrentThread() == 0;
+#endif
+                try
+                {
+                    while (System.Threading.Volatile.Read(ref captureWatchGeneration) == generation
+                        && State == RecordingState.Recording)
+                    {
+                        if (watch.Poll() is { } failure)
+                        {
+                            Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {failure.Describe()}");
+                            mainThreadWork.Enqueue(() => OnCaptureFailure(generation, session, failure));
+                            return;
+                        }
+                        System.Threading.Thread.Sleep(CaptureFailureWatch.PollIntervalMs);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: camera failure watch ended: {ex}");
+                }
+                finally
+                {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                    if (attached) AndroidJNI.DetachCurrentThread();
+#endif
+                }
+            }) { IsBackground = true, Name = "CaptureFailureWatch" };
+            thread.Start();
+        }
+
+        private void OnCaptureFailure(int generation, string session, CaptureFailure failure)
+        {
+            if (System.Threading.Volatile.Read(ref captureWatchGeneration) != generation
+                || State != RecordingState.Recording || currentSessionDirectory != session)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {failure.Eye} failure arrived after '{session}' stopped; the stop reports it");
+                return;
+            }
+            CaptureFailed = (session, failure);
+            CameraFailed?.Invoke(session, failure);
         }
 
         // The stop that runs (worker started, completion not yet applied); null otherwise.

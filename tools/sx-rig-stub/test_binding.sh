@@ -79,6 +79,18 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs"
 "$mono" "$out/gripper-switch-harness.exe"
 
+# MenuButtons: ☰ starts or stops, a busy press is ignored, a dropped one buzzes; Y never records.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/menu-button-harness.exe" "$here/MenuButtonHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/MenuButtons.cs"
+"$mono" "$out/menu-button-harness.exe"
+
+# CaptureFailureWatch: a head camera failing mid-episode is reported once, as itself.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/capture-failure-harness.exe" "$here/CaptureFailureHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Camera/CaptureFailureWatch.cs"
+"$mono" "$out/capture-failure-harness.exe"
+
 # PodStatusBoard: the recordings menu's Pod status block and the last start's refusal.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" "$notices" \

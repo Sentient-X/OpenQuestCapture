@@ -22,6 +22,8 @@ namespace RealityLog.Camera
         private const string GET_CAPTURE_REPORT_JSON_METHOD_NAME = "getCaptureReportJson";
         private const string GET_STREAM_GEOMETRY_JSON_METHOD_NAME = "getStreamGeometryJson";
         private const string CLOSE_METHOD_NAME = "close";
+        // QuestCameraLib a6e6bd3: a recorder thread's first failure, "" while healthy.
+        private const string GET_CAPTURE_ERROR_METHOD_NAME = "getCaptureError";
         // 1.4.1: exposure_time_ns / capture_frame_number may be -1 (unknown) per row,
         // metadata carries capture_report counters and capture_error; the recorder
         // never truncates an eye for sidecar bookkeeping.
@@ -113,6 +115,35 @@ namespace RealityLog.Camera
         /// RecordingManager should wait for this to become false before validating files.
         /// </summary>
         public bool IsFinalizingVideo { get; private set; }
+
+        // Set once the AAR answered getCaptureError with "no such method": never asked again.
+        private volatile bool captureErrorUnsupported;
+
+        /// <summary>
+        /// The recorder's first failure while this eye records, or null while it is healthy (or
+        /// not recording). One JNI call: any thread attached to the JVM, never the main thread's
+        /// business (RecordingManager polls it at ~4 Hz from a worker). The failure is also kept
+        /// as this eye's capture_error, so the metadata names it even if the stop does not.
+        /// </summary>
+        public string? PollCaptureError()
+        {
+            var instance = currentInstance;
+            if (instance == null || !isRecordingSessionActive || captureErrorUnsupported) return null;
+            string? text;
+            try
+            {
+                text = instance.Call<string>(GET_CAPTURE_ERROR_METHOD_NAME);
+            }
+            catch (Exception ex)
+            {
+                captureErrorUnsupported = true;
+                Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider ({outputVideoFileName}): getCaptureError unavailable, mid-episode failures surface only at stop: {ex.Message}");
+                return null;
+            }
+            if (string.IsNullOrEmpty(text)) return null;
+            captureError ??= text;
+            return text;
+        }
 
         public override AndroidJavaObject? GetJavaInstance(CameraMetadata metadata)
         {

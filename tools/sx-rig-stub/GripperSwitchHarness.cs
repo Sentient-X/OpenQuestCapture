@@ -43,6 +43,19 @@ static class GripperSwitchHarness
         Expect(GripperSwitch.Act(GripperSwitchPress.Refused, true) == GripperSwitchAction.Ignore,
             "and is ignored too while a start or stop runs");
 
+        // The proof on a device that the right encoder's "# {...}" status lines are read: one log
+        // line per change of what the rig sees, never one per poll.
+        var seen = new GripperSwitch();
+        Expect(seen.SidesLine(null) == null, "no block (an older library) logs nothing");
+        var none = JObject.Parse("{\"sides\":[{\"role\":\"left\",\"firmware\":null},{\"role\":\"right\",\"firmware\":null}]}");
+        Expect(seen.SidesLine(none) == "gripper switch status: no encoder status lines read yet", "before any status line: said once");
+        Expect(seen.SidesLine(none) == null, "and not again");
+        var right = JObject.Parse("{\"sides\":[{\"role\":\"left\",\"firmware\":null},{\"role\":\"right\",\"firmware\":\"right\",\"switch_enabled\":true,\"event_id\":3}]}");
+        Expect(seen.SidesLine(right) == "gripper switch status: right encoder reads as the right gripper, switch enabled",
+            "the right encoder's status read: its firmware side and switch");
+        var later = JObject.Parse("{\"sides\":[{\"role\":\"left\",\"firmware\":null},{\"role\":\"right\",\"firmware\":\"right\",\"switch_enabled\":true,\"event_id\":4}]}");
+        Expect(seen.SidesLine(later) == null, "a new event id alone logs nothing (holds log on their own)");
+
         Console.WriteLine(failures == 0 ? "gripper switch: all passed" : $"gripper switch: {failures} FAILED");
         return failures == 0 ? 0 : 1;
     }

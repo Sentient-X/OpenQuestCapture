@@ -212,7 +212,7 @@ namespace RealityLog.Rig
                         : "that QR is not a phone's pairing code");
                     return;
                 }
-                RigCoordinator.Instance?.QueueCue(RigCues.Cue.Sealed);
+                RigCoordinator.Instance?.QueueCue(RigCues.Cue.Sealed, "phone pairing code scanned");
                 local = null;
                 tracker.PairStarted();
                 // A refused code (expired, malformed) arrives as an error, then the tracker shows it.
@@ -267,7 +267,7 @@ namespace RealityLog.Rig
             if (FindFirstObjectByType<RecordingManager>() is { State: not RecordingState.Idle })
             {
                 Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: sign-out asked while recording; refused");
-                rig.QueueCue(RigCues.Cue.Refused);
+                rig.QueueCue(RigCues.Cue.Refused, "phone sign-out refused while recording");
                 return;
             }
             Task.Run(() =>
@@ -388,7 +388,7 @@ namespace RealityLog.Rig
             local = CompanionPhase.Failed;
             Error = reason;
             Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: {reason}");
-            RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+            RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused, "phone: " + reason);
         }
 
         /// <summary>

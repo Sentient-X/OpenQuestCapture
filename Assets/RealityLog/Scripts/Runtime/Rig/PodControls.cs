@@ -147,7 +147,8 @@ namespace RealityLog.Rig
                 if (result.Control is PodControl.Check or PodControl.EndCollection)
                 {
                     RigCoordinator.Instance?.QueueCue(!result.Ok ? RigCues.Cue.Refused
-                        : result.Control == PodControl.Check ? RigCues.Cue.Sealed : RigCues.Cue.Stop);
+                        : result.Control == PodControl.Check ? RigCues.Cue.Sealed : RigCues.Cue.Stop,
+                        $"pod card {result.Control} {(result.Ok ? "done" : "refused")}");
                 }
                 Publish(result);
             }
@@ -161,7 +162,7 @@ namespace RealityLog.Rig
         /// <summary>A refusal before anything ran: buzzed, shown and sent like any result.</summary>
         private void Finish(PodControlResult result)
         {
-            RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused);
+            RigCoordinator.Instance?.QueueCue(RigCues.Cue.Refused, $"pod card {result.Control} refused before it ran");
             Publish(result);
         }
 
