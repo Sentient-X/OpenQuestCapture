@@ -188,19 +188,6 @@
       "still_fine": "Nothing was recorded or lost.",
       "action": "Put the headset on, keep the app open, then start again."
     },
-    "signed_out": {
-      "who": "collector",
-      "headline": "Nobody is signed in",
-      "still_fine": "Your earlier episodes are safe.",
-      "action": "Tap Sign in and approve the code on your phone.",
-      "button": "sign_in"
-    },
-    "sign_in_pending": {
-      "who": "collector",
-      "headline": "Waiting for you to approve sign-in",
-      "still_fine": "Nothing is lost.",
-      "action": "Approve code {code} on your phone."
-    },
     "not_enrolled": {
       "who": "floor_manager",
       "headline": "This headset is not set up as a pod",
