@@ -79,6 +79,15 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs"
 "$mono" "$out/gripper-switch-harness.exe"
 
+# EpisodeLength: the take's 15 min ceiling warns once a minute before and stops once at it,
+# and the warning cue is its own sound (RigCues against Unity's managed engine modules).
+unity_managed="$editor/Data/Managed/UnityEngine"
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
+    -r:"$unity_managed/UnityEngine.CoreModule.dll" -r:"$unity_managed/UnityEngine.AudioModule.dll" \
+    -out:"$out/episode-length-harness.exe" "$here/EpisodeLengthHarness.cs" "$notices" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigCues.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Common/Constants.cs"
+MONO_PATH="$unity_managed" "$mono" "$out/episode-length-harness.exe"
+
 # MenuButtons: ☰ starts or stops, a busy press is ignored, a dropped one buzzes; Y never records.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 \
     -out:"$out/menu-button-harness.exe" "$here/MenuButtonHarness.cs" \
@@ -100,14 +109,14 @@ cp "$newtonsoft" "$out/"
 # PodScreenBoard: the Pod card's status screen (blocker, devices, collection, episodes).
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-screen-harness.exe" "$here/PodScreenHarness.cs" "$notices" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/pod-screen-harness.exe"
 
 # The operator's words: the shipped table is libsx_rig's (SX_RIG_INCLUDE), every code renders, no raw text.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/notices-harness.exe" "$here/OperatorNoticesHarness.cs" "$notices" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/notices-harness.exe" "$SX_OPERATOR_NOTICES" "$include/sx_operator_notices.json"
 
@@ -115,7 +124,7 @@ cp "$newtonsoft" "$out/"
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/companion-harness.exe"
 
@@ -142,7 +151,7 @@ bash "$here/test_tracking_readiness.sh"
     -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/DevicePresence.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/device-presence-harness.exe"
 

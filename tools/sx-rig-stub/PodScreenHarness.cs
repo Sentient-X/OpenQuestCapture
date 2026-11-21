@@ -190,6 +190,20 @@ static class PodScreenHarness
         Expect(PodScreenBoard.ControllerLost(JObject.Parse("{\"native\":{\"tracking\":{\"controllers_lost\":[{\"code\":\"controller_lost\",\"args\":{\"side\":\"right\"}}]}}}"))?.Code
             == "controller_lost", "controllers_lost is read from the native status when not lifted");
 
+        // The take's 15 min ceiling (libsx_rig episode_length): amber a minute before it while
+        // recording goes on; once it stopped itself, idle, why it stopped until the next start.
+        var nearLimit = Screen(Recording(32, 102) + ",\"episode_length\":{\"episode_id\":\"e1\",\"recording\":true,\"phase\":\"near_limit\","
+            + "\"notice\":{\"code\":\"recording_limit_near\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\",\"left\":\"1\"}}}", live: lostLive, at: T0.AddSeconds(2));
+        Expect(nearLimit.Blocker.Headline == "This take stops in 1 min, at the 15-minute limit" && nearLimit.Blocker.Tone == PodTone.Warning
+            && nearLimit.Recording, "a minute before the limit: its notice, amber, recording goes on: " + nearLimit.Blocker.Headline);
+        var stoppedAtLimit = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
+            + ",\"native\":{\"episode_length\":{\"episode_id\":\"e1\",\"recording\":false,\"phase\":\"reached\","
+            + "\"notice\":{\"code\":\"recording_limit_reached\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\"}}}}");
+        Expect(stoppedAtLimit.Blocker.Headline == "This take reached the 15-minute limit and was stopped"
+            && stoppedAtLimit.Blocker.Action == "Start a new one to continue." && stoppedAtLimit.Blocker.Tone == PodTone.Warning,
+            "stopped at the limit, idle: why, and to start a new one: " + stoppedAtLimit.Blocker.Headline + " / " + stoppedAtLimit.Blocker.Action);
+        Expect(!stoppedAtLimit.StartBlocked, "and Start stays offered");
+
         // No rig resolved yet: devices by kind, the missing ones named.
         var unresolved = Screen(Pod + "," + SignedIn + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"},{\"kind\":\"encoder\",\"port\":\"1-1.3\"}],\"roles\":["
             + "{\"role\":\"left_hand_camera\",\"registered\":null}]");

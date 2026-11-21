@@ -216,6 +216,10 @@ namespace RealityLog.Rig
         // native-status worker; each new hold is handled on the main thread.
         private readonly GripperSwitch gripperSwitch = new();
         private readonly System.Collections.Concurrent.ConcurrentQueue<GripperSwitchPress> switchPresses = new();
+        // The take's ceiling: libsx_rig's episode_length, read on the status timer thread; its
+        // warning and stop run on the main thread, once per episode.
+        private readonly EpisodeLength episodeLength = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(string session, EpisodeLengthAction action)> lengthActions = new();
         private float hapticUntil = float.NegativeInfinity;
         private bool floorObserved; // native-status timer thread only
         private bool collectorRestored; // native-status timer thread only
@@ -502,6 +506,10 @@ namespace RealityLog.Rig
             while (cues.TryDequeue(out var queued))
             {
                 RigCues.Play(queued.cue, queued.reason, gameObject);
+            }
+            while (lengthActions.TryDequeue(out var length))
+            {
+                OnEpisodeLength(length.session, length.action);
             }
             while (failures.TryDequeue(out var failed))
             {
@@ -1868,6 +1876,10 @@ namespace RealityLog.Rig
                     }
                     sealingNow = Sealing(status["seals"] as JObject);
                     var episodeId = activeEpisodeId;
+                    if (episodeLength.Observe(status["episode_length"] as JObject, episodeId) is EpisodeLengthAction length && episodeId != null)
+                    {
+                        lengthActions.Enqueue((episodeId, length));
+                    }
                     if (episodeId != null && failureHandledFor != episodeId
                         && RigStatusJson.EpisodeFailure(status, episodeId) is JObject failure)
                     {
@@ -1985,6 +1997,42 @@ namespace RealityLog.Rig
             if (refused != null)
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: right gripper switch hold not taken: {refused}");
+            }
+        }
+
+        /// <summary>
+        /// The take's ceiling (main thread; libsx_rig's <c>episode_length</c>, sx-pod-core's
+        /// 15 min, warned a minute before). A minute before it the warning cue plays and the Pod
+        /// card shows recording_limit_near. At it the take is stopped through the menu button's
+        /// own stop (<see cref="PodControls.StartOrStop"/> asked to stop), so the stop cue
+        /// plays, the rig writes an ordinary receipt and the seal follows as for any stop; the
+        /// card then says recording_limit_reached until the next start. A collector's own
+        /// stop already running takes its place.
+        /// </summary>
+        private void OnEpisodeLength(string session, EpisodeLengthAction action)
+        {
+            if (activeEpisodeId != session)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{session}' length {action}: no longer recording");
+                return;
+            }
+            if (action == EpisodeLengthAction.Warn)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{session}' is a minute from its length limit");
+                RigCues.Play(RigCues.Cue.Warning, "episode " + session + " a minute from its length limit", gameObject);
+                return;
+            }
+            Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{session}' reached its length limit: the menu button's stop");
+            if (PodControls.StartOrStop is not { } startOrStop)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: episode '{session}' reached its length limit, but the recorder is not running");
+                return;
+            }
+            var refused = startOrStop(false, (ok, words) =>
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: length-limit stop of '{session}' -> ok={ok}: {words}"));
+            if (refused != null)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: length-limit stop of '{session}' not taken: {refused}");
             }
         }
 

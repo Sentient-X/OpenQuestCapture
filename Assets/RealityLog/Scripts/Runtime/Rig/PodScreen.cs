@@ -704,6 +704,8 @@ namespace RealityLog.Rig
                 // controller is out of hand its poses freeze, so the collector hears it now, not at
                 // the seal (sx#4210). Recording goes on.
                 if (ControllerLost(status) is { } lost) return PodBlocker.Of(lost, PodTone.Warning);
+                // The take's 15 min ceiling: a minute before it, and while it stops itself.
+                if (EpisodeLength.Notice(Lifted(status, "episode_length") as JObject, true) is { } limit) return PodBlocker.Of(limit, PodTone.Warning);
                 return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
             }
             // The newest attempt failed or its seal refused it: shown until the next start.
@@ -712,6 +714,8 @@ namespace RealityLog.Rig
                 screen.LastFailed = true;
                 return PodBlocker.Of(failed, PodTone.Error);
             }
+            // The last take stopped itself at its ceiling: said until the next start.
+            if (EpisodeLength.Notice(Lifted(status, "episode_length") as JObject, false) is { } stopped) return PodBlocker.Of(stopped, PodTone.Warning);
             if (Bool(status, "expected") == true && status?["lastCheck"] is JObject lastCheck
                 && RigStatusJson.Check(lastCheck.ToString(Formatting.None)) is { ready: false } failedCheck)
             {

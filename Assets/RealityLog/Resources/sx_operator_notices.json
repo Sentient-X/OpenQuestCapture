@@ -444,6 +444,18 @@
       "still_fine": "Recording continues; its poses are frozen until it is back.",
       "action": "Wake it and hold it."
     },
+    "recording_limit_near": {
+      "who": "collector",
+      "headline": "This take stops in {left} min, at the {minutes}-minute limit",
+      "still_fine": "It is kept and sealed as usual when it stops.",
+      "action": "Finish the step you are on, then start a new take to continue."
+    },
+    "recording_limit_reached": {
+      "who": "collector",
+      "headline": "This take reached the {minutes}-minute limit and was stopped",
+      "still_fine": "It was kept and is sealed as usual.",
+      "action": "Start a new one to continue."
+    },
     "gripper_switch_mismatch": {
       "who": "technician",
       "headline": "The {side} gripper sensor names the wrong side",
