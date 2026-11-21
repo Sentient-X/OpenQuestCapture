@@ -91,6 +91,12 @@
       "still_fine": "The rig is fine.",
       "action": "Record again. If it repeats, call a technician."
     },
+    "seal_held": {
+      "who": "technician",
+      "headline": "An episode is waiting: sealing it stopped the same way three times",
+      "still_fine": "Its recorded files are kept, and you can keep recording.",
+      "action": "Tell a technician (code {code}). The next app update seals it again."
+    },
     "head_camera_failed": {
       "who": "collector",
       "headline": "Last episode stopped: the {side} head camera failed",
