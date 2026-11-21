@@ -2001,8 +2001,8 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The take's ceiling (main thread; libsx_rig's <c>episode_length</c>, sx-pod-core's
-        /// 15 min, warned a minute before). A minute before it the warning cue plays and the Pod
+        /// The take's ceiling (main thread; libsx_rig's <c>episode_length</c>, the Factory's
+        /// per-pod ceiling, 30 min by default, warned a minute before). A minute before it the warning cue plays and the Pod
         /// card shows recording_limit_near. At it the take is stopped through the menu button's
         /// own stop (<see cref="PodControls.StartOrStop"/> asked to stop), so the stop cue
         /// plays, the rig writes an ordinary receipt and the seal follows as for any stop; the

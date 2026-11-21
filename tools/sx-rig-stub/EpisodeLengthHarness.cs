@@ -1,5 +1,6 @@
 // Host check of Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs: libsx_rig's
-// episode_length block becomes one warning a minute before the take's 15 min ceiling and one
+// episode_length block becomes one warning a minute before the take's ceiling (the Factory's,
+// 30 min by default; the words name the take's own) and one
 // stop at it, each once per episode and only for the episode the app is recording; and the
 // warning cue is its own sound (RigCues.Line). Run by test_binding.sh; not part of the Unity project.
 using System;
@@ -11,11 +12,11 @@ static class EpisodeLengthHarness
     static int failures;
     static void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) failures++; }
 
-    static JObject Block(string episode, string phase, bool recording = true) =>
+    static JObject Block(string episode, string phase, bool recording = true, int minutes = 30) =>
         JObject.Parse("{\"episode_id\":\"" + episode + "\",\"recording\":" + (recording ? "true" : "false")
-            + ",\"elapsed_s\":840,\"limit_s\":900,\"phase\":\"" + phase + "\",\"notice\":"
-            + (phase == "near_limit" ? "{\"code\":\"recording_limit_near\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\",\"left\":\"1\"}}"
-               : phase == "reached" ? "{\"code\":\"recording_limit_reached\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\"}}" : "null") + "}");
+            + ",\"elapsed_s\":" + (minutes - 1) * 60 + ",\"limit_s\":" + minutes * 60 + ",\"phase\":\"" + phase + "\",\"notice\":"
+            + (phase == "near_limit" ? "{\"code\":\"recording_limit_near\",\"who\":\"collector\",\"args\":{\"minutes\":\"" + minutes + "\",\"left\":\"1\"}}"
+               : phase == "reached" ? "{\"code\":\"recording_limit_reached\",\"who\":\"collector\",\"args\":{\"minutes\":\"" + minutes + "\"}}" : "null") + "}");
 
     static int Main()
     {
@@ -38,14 +39,17 @@ static class EpisodeLengthHarness
         var nearNotice = EpisodeLength.Notice(Block("a", "near_limit"), recording: true);
         Expect(nearNotice?.Code == "recording_limit_near", "the live warning is read from the block");
         var near = OperatorNotices.Render(nearNotice!);
-        Expect(near.Headline == "This take stops in 1 min, at the 15-minute limit" && near.Who == "collector",
+        Expect(near.Headline == "This take stops in 1 min, at the 30-minute limit" && near.Who == "collector",
             "the warning's words: " + near.Headline);
         var reachedNotice = EpisodeLength.Notice(Block("a", "reached", recording: false), recording: false);
         Expect(reachedNotice?.Code == "recording_limit_reached", "the stopped take's notice is read while idle");
         var reached = OperatorNotices.Render(reachedNotice!);
         Expect(reached.Headline + "; " + reached.Action.ToLowerInvariant()
-            == "This take reached the 15-minute limit and was stopped; start a new one to continue.",
+            == "This take reached the 30-minute limit and was stopped; start a new one to continue.",
             "the stop's words: " + reached.Headline + "; " + reached.Action);
+        var tuned = OperatorNotices.Render(EpisodeLength.Notice(Block("d", "near_limit", minutes: 10), recording: true)!);
+        Expect(tuned.Headline == "This take stops in 1 min, at the 10-minute limit",
+            "a ceiling the Factory set is named as the rig says it: " + tuned.Headline);
         Expect(reached.StillFine == "It was kept and is sealed as usual.", "it says the take is kept");
         Expect(EpisodeLength.Notice(Block("a", "reached", recording: false), recording: true) == null,
             "a stopped take's notice is not shown as the live one");

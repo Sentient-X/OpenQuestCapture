@@ -704,7 +704,7 @@ namespace RealityLog.Rig
                 // controller is out of hand its poses freeze, so the collector hears it now, not at
                 // the seal (sx#4210). Recording goes on.
                 if (ControllerLost(status) is { } lost) return PodBlocker.Of(lost, PodTone.Warning);
-                // The take's 15 min ceiling: a minute before it, and while it stops itself.
+                // The take's ceiling (30 min unless the Factory set another): a minute before it, and while it stops itself.
                 if (EpisodeLength.Notice(Lifted(status, "episode_length") as JObject, true) is { } limit) return PodBlocker.Of(limit, PodTone.Warning);
                 return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
             }
