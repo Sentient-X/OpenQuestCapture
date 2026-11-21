@@ -282,7 +282,7 @@ public static class PodCardSnapshot
             "\"startupErrors\":{},\"lastCheck\":null,\"native\":null,\"lastRefusal\":null}";
         return new PodCardState
         {
-            Lines = PodStatusBoard.Lines(status, null, false, false),
+            Lines = PodStatusBoard.Lines(status, null, false),
             Screen = PodScreenBoard.Build(status, null, false, new StreamLiveness(), DateTime.UtcNow),
             HeadsetPct = 81,
             LeftPct = null,
