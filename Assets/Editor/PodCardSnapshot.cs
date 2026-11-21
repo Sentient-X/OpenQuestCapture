@@ -189,6 +189,8 @@ public static class PodCardSnapshot
         yield return ("i-prestart-warnings", PreStartWarnings());
         yield return ("j-refused-not-in-hand", RefusedNotInHand());
         yield return ("k-recording-controller-lost", RecordingControllerLost());
+        yield return ("l-recording-limit-near", RecordingLimitNear());
+        yield return ("m-recording-limit-reached", RecordingLimitReached());
     }
 
     // ---- The operator's words, through the real board from the status the rig and the app write ----
@@ -264,6 +266,19 @@ public static class PodCardSnapshot
         "\"native\":{\"state\":\"recording\",\"episode\":{\"episode_id\":\"20261115_120000\"}}," +
         "\"tracking\":{\"start_refusal\":null,\"controllers_lost\":[{\"code\":\"controller_lost\",\"who\":\"collector\",\"args\":{\"side\":\"left\"}}]}",
         PodReadiness.Ready, "Recording"));
+
+    /// <summary>(l) A minute before the take's 15 min ceiling (libsx_rig episode_length): amber, recording goes on.</summary>
+    private static PodCardState RecordingLimitNear() => Recording(Live(LivePod + ",\"episodeActive\":true,\"factory\":{" + LiveFactory + "}," +
+        "\"native\":{\"state\":\"recording\",\"episode\":{\"episode_id\":\"20261121_120000\"}}," +
+        "\"episode_length\":{\"episode_id\":\"20261121_120000\",\"recording\":true,\"phase\":\"near_limit\"," +
+        "\"notice\":{\"code\":\"recording_limit_near\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\",\"left\":\"1\"}}}",
+        PodReadiness.Ready, "Recording"));
+
+    /// <summary>(m) The take stopped itself at its ceiling; idle, said until the next start, Start offered.</summary>
+    private static PodCardState RecordingLimitReached() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
+        "\"native\":{\"episode_length\":{\"episode_id\":\"20261121_120000\",\"recording\":false,\"phase\":\"reached\"," +
+        "\"notice\":{\"code\":\"recording_limit_reached\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\"}}}}",
+        PodReadiness.Ready, "Ready");
 
     private static PodCardState Recording(PodCardState state)
     {
