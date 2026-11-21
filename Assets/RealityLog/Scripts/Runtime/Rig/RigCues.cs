@@ -9,7 +9,7 @@ namespace RealityLog.Rig
     /// display, so start, stop, a sealed episode, a refused one and a collector's sign-in are
     /// told by sound only. Synthesized (no audio assets); each cue is distinct by contour:
     /// start rises, stop falls, sealed is three quick high blips, refused a low buzz, sign-in a
-    /// rising two-tone chime. Main thread only. Every cue logs one line,
+    /// rising two-tone chime, a take near its length limit two level mid tones. Main thread only. Every cue logs one line,
     /// <c>[RealityLog] cue: &lt;name&gt; (&lt;reason&gt;)</c>, so a device log proves what played.
     /// </summary>
     public static class RigCues
@@ -21,11 +21,13 @@ namespace RealityLog.Rig
             Sealed,
             Refused,
             SignedIn,
+            /// <summary>A take a minute from its length limit: two short mid tones, level.</summary>
+            Warning,
         }
 
         private const int Rate = 44100;
         private static AudioSource? source;
-        private static readonly AudioClip?[] clips = new AudioClip?[5];
+        private static readonly AudioClip?[] clips = new AudioClip?[6];
 
         public static void Play(Cue cue, string reason, GameObject host)
         {
@@ -53,6 +55,7 @@ namespace RealityLog.Rig
                 Cue.Stop => new[] { (783.99f, 0.12f), (523.25f, 0.18f) },
                 Cue.Sealed => new[] { (1318.5f, 0.06f), (0f, 0.05f), (1318.5f, 0.06f), (0f, 0.05f), (1318.5f, 0.06f) },
                 Cue.Refused => new[] { (196f, 0.55f) },
+                Cue.Warning => new[] { (659.25f, 0.14f), (0f, 0.1f), (659.25f, 0.14f) },
                 _ => new[] { (880f, 0.15f), (1320f, 0.15f) },
             };
             var total = 0;
