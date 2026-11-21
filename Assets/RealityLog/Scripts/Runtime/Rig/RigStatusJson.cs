@@ -166,33 +166,29 @@ namespace RealityLog.Rig
     public static class RigStatusJson
     {
         /// <summary>
-        /// floor.operator.signed_in, or null when the status carries no floor (local mode, not
-        /// enrolled): no collector, and none required.
+        /// The collector the pod records for: <c>floor.collector</c>
+        /// (<c>{"id", "name"}</c>), the person whose paired phone opened the Factory shift (or
+        /// whom a floor manager put on the pod). Its name, else its id when the name is empty;
+        /// null when the pod records unattributed (<c>"collector": null</c>), and when the
+        /// status carries no floor (Local only, not enrolled). The headset never signs anyone
+        /// in; the rig seals this collector itself.
         /// </summary>
-        public static bool? CollectorSignedIn(JObject? status) =>
-            status?["floor"] is JObject floor
-            && floor["operator"] is JObject collector
-            && collector["signed_in"] is JValue { Type: JTokenType.Boolean } signedIn
-                ? (bool?)(bool)signedIn
-                : null;
+        public static string? CollectorName(JObject? status)
+        {
+            if (status?["floor"] is not JObject floor || floor["collector"] is not JObject collector) return null;
+            if (Text(collector["name"]) is { } name) return name;
+            return Text(collector["id"]);
+        }
 
         /// <summary>
-        /// floor.operator.restored: a sign-in kept from before this launch that the Factory has
-        /// not confirmed yet; false otherwise.
+        /// floor.collector.id, the collector's principal id (the subject a collector review is
+        /// answered as); null when the pod records unattributed or has no floor.
         /// </summary>
-        public static bool CollectorRestored(JObject? status) =>
-            CollectorSignedIn(status) == true
-            && status!["floor"]!["operator"]!["restored"] is JValue { Type: JTokenType.Boolean } restored
-            && (bool)restored;
+        public static string? CollectorId(JObject? status) =>
+            status?["floor"] is JObject floor && floor["collector"] is JObject collector ? Text(collector["id"]) : null;
 
-        /// <summary>
-        /// The signed-in collector's name (floor.operator.display_name while signed_in is true),
-        /// the identity sx-pod seals an episode under; null when nobody is signed in.
-        /// </summary>
-        public static string? CollectorName(JObject? status) =>
-            CollectorSignedIn(status) == true
-            && status!["floor"]!["operator"]!["display_name"] is JValue { Type: JTokenType.String } name
-            && ((string?)name)?.Trim() is { Length: > 0 } trimmed
+        private static string? Text(JToken? token) =>
+            token is JValue { Type: JTokenType.String } value && ((string?)value)?.Trim() is { Length: > 0 } trimmed
                 ? trimmed
                 : null;
 

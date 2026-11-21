@@ -120,7 +120,7 @@ MONO_PATH="$unity_managed" "$mono" "$out/episode-length-harness.exe"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
 "$mono" "$out/notices-harness.exe" "$SX_OPERATOR_NOTICES" "$include/sx_operator_notices.json"
 
-# The phone companion: HeadsetStatus from the status screen, the sign-in hand-off, the Phone section.
+# The phone companion: HeadsetStatus from the status screen (the collector or unattributed), the phone link report, the Phone section.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/companion-harness.exe" "$here/CompanionHarness.cs" "$notices" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/Companion.cs" \

@@ -32,7 +32,7 @@ namespace RealityLog.Rig
         public string StillFine { get; }
         /// <summary>"Collector", "Floor manager" or "Technician"; "" without a notice.</summary>
         public string Who { get; }
-        /// <summary>"check", "sign_in" or "": the control that clears it.</summary>
+        /// <summary>"check" or "": the control that clears it.</summary>
         public string Button { get; }
         /// <summary>The notice it words; null for Ready and Recording.</summary>
         public OperatorNotice? Notice { get; }
@@ -223,14 +223,16 @@ namespace RealityLog.Rig
         {
             if (!CanSubmit) throw new InvalidOperationException(BlockedReason.Length > 0 ? BlockedReason : "This review is already saved");
             if (commandId == Guid.Empty) throw new ArgumentException("A review needs a nonempty command ID", nameof(commandId));
-            if (string.IsNullOrWhiteSpace(collectorSubject)) throw new ArgumentException("A review needs a confirmed collector", nameof(collectorSubject));
+            if (string.IsNullOrWhiteSpace(collectorSubject)) throw new ArgumentException("A review needs the paired phone's collector", nameof(collectorSubject));
+            // The command names no operator: the rig answers it as the pod's collector
+            // (floor.collector); RigCoordinator.SubmitCollectorReviewAsync checks that it is still
+            // collectorSubject before sending.
             return new JObject
             {
                 ["command"] = success ? "review_success" : "review_failure",
                 ["command_id"] = commandId.ToString(),
                 ["session_id"] = SessionId,
                 ["episode_id"] = EpisodeId,
-                ["expected_operator"] = collectorSubject,
                 ["answers"] = new JArray(),
             }.ToString(Formatting.None);
         }
@@ -251,7 +253,7 @@ namespace RealityLog.Rig
 
         public PodReviewSubmission(PodReviewItem item, bool success, Guid commandId, string collectorSubject)
         {
-            if (string.IsNullOrWhiteSpace(collectorSubject)) throw new ArgumentException("A review needs a confirmed collector", nameof(collectorSubject));
+            if (string.IsNullOrWhiteSpace(collectorSubject)) throw new ArgumentException("A review needs the paired phone's collector", nameof(collectorSubject));
             CommandId = commandId.ToString();
             Success = success;
             CollectorSubject = collectorSubject;
@@ -293,7 +295,7 @@ namespace RealityLog.Rig
             {
                 "pending" => "Review saved on this headset; waiting for Factory. Do not submit it again.",
                 "completed" => "Review accepted by Factory. Sealing and delivery still follow their checks.",
-                _ => "Review refused: " + (string.IsNullOrWhiteSpace(message) ? "check sign-in and the current review questions before choosing again." : message),
+                _ => "Review refused: " + (string.IsNullOrWhiteSpace(message) ? "check the paired phone and the current review questions before choosing again." : message),
             };
         }
     }
@@ -404,13 +406,15 @@ namespace RealityLog.Rig
         {
             var floor = Lifted(status, "floor") as JObject;
             var queue = floor?["review_queue"] as JArray;
-            screen.ReviewCollectorSubject = Str((floor?["operator"] as JObject)?["subject"]);
+            // The collector is the paired phone's person (floor.collector); an unattributed pod has
+            // nobody to answer its reviews.
+            screen.ReviewCollectorSubject = Str((floor?["collector"] as JObject)?["id"]).Trim();
             screen.ReviewQueueAvailable = queue != null;
             screen.ReviewUnavailable = status == null || Bool(status, "open") != true
                 ? "Waiting for the headset's review status."
                 : screen.LocalOnly ? "Local only recordings have no Factory review queue."
                 : Bool(status, "enrolled") != true ? "Set up this headset on Factory before reviewing."
-                : RigStatusJson.CollectorSignedIn(status) != true || screen.ReviewCollectorSubject.Length == 0 ? "Sign in as the collector before reviewing."
+                : screen.ReviewCollectorSubject.Length == 0 ? "Pair your phone to review your recordings."
                 : screen.Recording ? "Stop recording before reviewing an episode."
                 : queue == null ? "Review status is unavailable. Refresh the Pod page after Factory reconnects."
                 : "";
@@ -464,13 +468,14 @@ namespace RealityLog.Rig
         /// <summary>
         /// What makes a start now certainly refused, as a blocker in the notice table's words; null
         /// when a start may go ahead (or while recording, when the button stops). The refusals named
-        /// here are the ones the start itself would meet: a rig that cannot run, no collector, a
-        /// device without USB access, too little room for the episode (the rig's own estimate), and
+        /// here are the ones the start itself would meet: a rig that cannot run, a device without
+        /// USB access, too little room for the episode (the rig's own estimate), and
         /// the Factory's own refusals as libsx_rig reads them from its capture workspace
         /// (factory.start_refusal: no task, a readiness check the start's device check cannot fix,
         /// no episodes left, with how many unfinished attempts hold). Anything less certain (a
         /// device the start's check may find again, an unheard Factory, a controller asleep) leaves
-        /// Start offered and shows as a warning.
+        /// Start offered and shows as a warning. No collector is needed: with no phone paired the
+        /// pod records unattributed.
         /// </summary>
         public static PodBlocker? StartBlocker(string? rigStatusJson)
         {
@@ -489,8 +494,8 @@ namespace RealityLog.Rig
             if (Bool(status, "expected") != true || Recording(status)) return null;
             if (Str(status?["library"]) == "missing") return PodBlocker.Of("library_missing", PodTone.Error);
             if (Bool(status, "open") != true && status?["openError"] is JObject) return PodBlocker.Of("rig_open_failed", PodTone.Error);
+            // No collector is needed: with no phone paired the pod records unattributed.
             var localOnly = Bool(status, "localOnly") ?? true;
-            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false) return SignIn(status);
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
                 return PodBlocker.Of("usb_permission", PodTone.Warning);
@@ -507,14 +512,6 @@ namespace RealityLog.Rig
                 "readiness" => PodBlocker.Of("readiness_other", PodTone.Error),
                 _ => null,
             };
-        }
-
-        private static PodBlocker SignIn(JObject? status)
-        {
-            var (code, _) = PodStatusBoard.PendingSignIn(status, false);
-            return code.Length > 0
-                ? PodBlocker.Of("sign_in_pending", PodTone.Warning, ("code", code))
-                : PodBlocker.Of("signed_out", PodTone.Warning);
         }
 
         // ---- Before a start ----
@@ -671,7 +668,6 @@ namespace RealityLog.Rig
                 // Recording goes on on the headset; idle, a start may not open a collection.
                 return recording ? PodBlocker.Of("factory_unheard_local", PodTone.Warning) : PodBlocker.Of("factory_unheard", PodTone.Error);
             }
-            if (!localOnly && RigStatusJson.CollectorSignedIn(status) == false) return SignIn(status);
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
                 return PodBlocker.Of("usb_permission", PodTone.Warning);
@@ -688,7 +684,9 @@ namespace RealityLog.Rig
                     foreach (var check in blocking.OfType<JObject>())
                     {
                         var id = Str(check["id"]);
-                        if (id == "operator") continue; // the collector, above
+                        // A pod with no collector still records (unattributed): a Factory check
+                        // on the operator never blocks the headset.
+                        if (id == "operator") continue;
                         // A failing hardware check alone never refuses a start (its own check runs first).
                         if (Str(check["category"]) == "hardware") continue;
                         if (id == "recorder_build") return PodBlocker.Of("build_not_accepted", PodTone.Error);
@@ -1036,10 +1034,10 @@ namespace RealityLog.Rig
         private static string Next(JObject factory, JObject? task, JObject? progress, JObject? status, long target, long credited)
         {
             if (task == null) return "a task assigned to this pod in the Console";
-            if (factory["blocking"] is JArray blocking && blocking.OfType<JObject>().FirstOrDefault() is JObject check)
+            if (factory["blocking"] is JArray blocking
+                && blocking.OfType<JObject>().FirstOrDefault(c => Str(c["id"]) != "operator") is JObject check)
             {
                 if (Str(check["id"]) == "recorder_build") return "this app version approved in the Console (build " + ShortBuild(Str(status?["apkBuildId"])) + ")";
-                if (Str(check["id"]) == "operator") return "a collector signed in";
                 var remediation = Str(check["remediation"]);
                 return Clip(remediation.Length > 0 ? remediation : Str(check["summary"]), 70);
             }

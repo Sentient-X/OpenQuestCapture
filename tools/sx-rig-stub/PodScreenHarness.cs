@@ -13,7 +13,8 @@ static class PodScreenHarness
     static readonly DateTime T0 = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
 
     const string Pod = "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\"";
-    const string SignedIn = "\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha\"}}";
+    const string Attributed = "\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"}}";
+    const string Unattributed = "\"floor\":{\"collector\":null}";
     const string Heard = "\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}";
     const string Task = "\"task\":{\"name\":\"fold towel\",\"status\":\"active\",\"target\":2,\"done\":1}";
 
@@ -39,15 +40,15 @@ static class PodScreenHarness
         var nothing = PodScreenBoard.Build("not json", null, false, new StreamLiveness(), T0);
         Expect(nothing.Blocker.Headline.Length > 0 && nothing.Devices.Count == 0, "unreadable status -> a blocker, no devices");
 
-        // Ready: every role ready, signed in, a task, the link heard.
-        var ready = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+        // Ready: every role ready, the paired phone's person collecting, a task, the link heard.
+        var ready = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"progress\":{\"target\":2,\"credited\":1,\"awaiting_review\":1},\"collection\":null}");
         Expect(ready.Blocker.Headline == "Ready to record" && ready.Blocker.Tone == PodTone.Good, "ready: " + ready.Blocker.Headline);
 
         // The controller warnings read the app's own headset.controllers (RigCoordinator.ReadHeadset):
         // "tracked" is position AND orientation, so an IMU-only controller warns before a start.
         // The native device report carries no "tracked" (sx_rig.h refuses unknown keys).
-        string Controllers(string left, string right) => Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles
+        string Controllers(string left, string right) => Pod + "," + Attributed + ",\"roles\":" + ReadyRoles
             + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
             + ",\"headset\":{\"displayHz\":90,\"controllers\":[" + left + "," + right + "]}";
         const string held = "\"connected\":true,\"tracked\":true,\"percent\":80}";
@@ -75,94 +76,98 @@ static class PodScreenHarness
         Expect(ready.Next == "a review verdict on the recorded episode", "next: " + ready.Next);
         Expect(ready.Link == "OK · heard 3 s ago" && ready.LinkTone == PodTone.Good, "link: " + ready.Link);
 
-        Expect(!ready.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + SignedIn + "}")) == null, "ready: Start offered");
+        Expect(!ready.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + Attributed + "}")) == null, "ready: Start offered");
 
         // A collection that cannot finish (factory.unfinished, from quest-rig) is shown, never
         // hidden behind "Ready", and goes to the phone as the blocker; Start stays offered.
-        var stuck = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+        var stuck = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"progress\":{\"target\":2,\"credited\":1},\"unfinished\":["
             + "{\"collection\":\"cs_1\",\"reason\":\"the Factory refused its verdict on episode 1 (no confirmed recorder stop); sent again once the collection changes\"},"
             + "{\"collection\":null,\"reason\":\"a7: its record cannot be read\"}]}");
         Expect(stuck.Blocker.Tone == PodTone.Warning && stuck.Blocker.Headline == "A collection cannot finish yet"
             && stuck.Blocker.Who == "Floor manager" && !stuck.Blocker.Headline.Contains("verdict") && !stuck.StartBlocked, "unfinished, in words, the reason kept for the log: " + stuck.Blocker.Headline);
         Expect(stuck.Next.StartsWith("a collection to finish") && !stuck.Next.Contains("a7"), "unfinished next: " + stuck.Next);
-        var none = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + ",\"unfinished\":[]}");
+        var none = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + ",\"unfinished\":[]}");
         Expect(none.Blocker.Headline == "Ready to record", "nothing unfinished: ready: " + none.Blocker.Headline);
 
         // Start only when the Factory would take it (factory.start_refusal, from quest-rig).
-        var full = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[],\"admissible\":0," + Task
+        var full = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[],\"admissible\":0," + Task
             + ",\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[]}}");
         Expect(full.StartBlocked && full.Blocker.Headline == "No episodes left in this task" && full.Blocker.Who == "Floor manager"
             && full.Blocker.Action == "The floor manager adds episodes or assigns a new task in the Console.", "no episodes left: Start blocked: " + full.Blocker.Headline);
-        var clock = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
+        var clock = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
             + "{\"id\":\"rig_check\",\"state\":\"fail\",\"category\":\"hardware\",\"summary\":\"rig check is stale\"},"
             + "{\"id\":\"clock\",\"state\":\"fail\",\"category\":\"clock\",\"summary\":\"clock is not synchronized\",\"remediation\":\"Enable network time\"}]," + Task
             + ",\"start_refusal\":{\"reason\":\"readiness\",\"checks\":[\"clock is not synchronized\"],\"notice\":{\"code\":\"readiness_clock\",\"who\":\"collector\",\"args\":{}}}}");
         Expect(clock.StartBlocked && clock.Blocker.Headline == "The headset's clock is not synced" && clock.Blocker.Who == "Collector",
             "a non-hardware check blocks Start, named with its owner: " + clock.Blocker.Headline);
-        var clockBlocker = PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + SignedIn + ",\"factory\":{\"start_refusal\":{\"reason\":\"readiness\",\"checks\":[\"x\"]}}}"));
+        var clockBlocker = PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + Attributed + ",\"factory\":{\"start_refusal\":{\"reason\":\"readiness\",\"checks\":[\"x\"]}}}"));
         Expect(clockBlocker is { } c && c.Headline == "A Factory check is failing" && c.Who == "Technician" && !c.Action.Contains("run Check"),
             "a readiness refusal with no notice (an older library) names no check and never says run Check");
-        var stale = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
+        var stale = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
             + "{\"id\":\"rig_check\",\"state\":\"fail\",\"category\":\"hardware\",\"summary\":\"rig check is stale\"}]," + Task + ",\"start_refusal\":null}");
         Expect(!stale.StartBlocked, "a stale rig check alone leaves Start offered (the start checks first)");
-        var signedOut = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(signedOut.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}}}"))?.Headline == "Nobody is signed in",
-            "signed out: Start blocked, Sign in to record");
+        // Recording is never blocked by the absence of a person: no phone paired records unattributed.
+        var unpaired = Screen(Pod + "," + Unattributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}");
+        Expect(!unpaired.StartBlocked && PodScreenBoard.StartBlocker(JObject.Parse("{" + Pod + "," + Unattributed + "}")) == null
+            && unpaired.Blocker.Headline == "Ready to record", "no phone paired: Start offered, ready: " + unpaired.Blocker.Headline);
+        var retired = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}");
+        Expect(!retired.StartBlocked && retired.Blocker.Headline == "Ready to record", "an older library's floor.operator signed_in false blocks nothing");
+        var operatorCheck = Screen(Pod + "," + Unattributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":["
+            + "{\"id\":\"operator\",\"state\":\"fail\",\"category\":\"operator\",\"summary\":\"no collector\"}]," + Task + "}");
+        Expect(!operatorCheck.StartBlocked && operatorCheck.Blocker.Headline == "Ready to record" && !operatorCheck.Next.Contains("signed in"),
+            "a Factory operator check never blocks the headset, nor names a sign-in as next: " + operatorCheck.Next);
         var localOnly = Screen("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"factory\":{\"start_refusal\":{\"reason\":\"no_episodes\"}}");
         Expect(!localOnly.StartBlocked, "Local only never asks the Factory");
-        var refused409 = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
+        var refused409 = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
             new StartRefusal("rig_start_failed", "start_session: {\"code\":\"http_409\",\"message\":\"no assigned episodes remain available; unfinished attempts reserve demand\"}", T0));
         Expect(refused409.Blocker.Headline == "No episodes left in this task", "a 409 refusal in plain words: " + refused409.Blocker.Headline);
-        var refused422 = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}",
+        var refused422 = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}",
             new StartRefusal("rig_start_failed", "start_session: {\"code\":\"http_422\",\"message\":\"required readiness checks are not passing\"}", T0));
         Expect(refused422.Blocker.Headline == "A Factory check is failing" && !refused422.Blocker.Headline.Contains("start_session"), "a 422 refusal in plain words: " + refused422.Blocker.Headline);
 
         // No task.
-        var noTask = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"task_contract\",\"state\":\"fail\",\"summary\":\"no task\"}],\"task\":null,\"progress\":null,\"collection\":null}");
+        var noTask = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"task_contract\",\"state\":\"fail\",\"summary\":\"no task\"}],\"task\":null,\"progress\":null,\"collection\":null}");
         Expect(noTask.Blocker.Headline == "No task is assigned to this pod" && noTask.Blocker.Who == "Floor manager", "no task -> the floor manager assigns one");
         Expect(noTask.Task == "none assigned" && noTask.Next == "a task assigned to this pod in the Console", "no task: collection says so");
 
         // Recorder build trial not admitted.
-        var trial = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"summary\":\"build not accepted\",\"remediation\":null}]," + Task + "}");
+        var trial = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"summary\":\"build not accepted\",\"remediation\":null}]," + Task + "}");
         Expect(trial.Blocker.Headline == "App version not approved"
             && trial.Blocker.Action == "The floor manager approves the trial in the Console, or a technician installs an approved version.", "trial: " + trial.Blocker.Action);
         Expect(trial.Next == "this app version approved in the Console (build 0123456789ab)", "trial next: " + trial.Next);
 
-        // Signed out comes before the Factory's checks; a pending code names the code.
-        var out_ = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(out_.Blocker.Headline == "Nobody is signed in" && out_.Blocker.Action.StartsWith("Tap Sign in") && out_.Blocker.Button == "sign_in", "signed out -> sign in, with its button");
-        var pending = Screen(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}},\"factory\":{" + Heard + "}");
-        Expect(pending.Blocker.Action == "Approve code WXYZ-1234 on your phone.", "pending sign-in names the code");
+        // The notice table no longer words a sign-in: no blocker ever asks for one.
+        Expect(!System.Linq.Enumerable.Contains(OperatorNotices.Codes, "signed_out") && !System.Linq.Enumerable.Contains(OperatorNotices.Codes, "sign_in_pending"), "the notice table carries no sign-in notices");
 
         // The link down.
-        var down = Screen(Pod + "," + SignedIn + ",\"factory\":{\"link\":{\"ok\":false,\"heard_seconds_ago\":90,\"error\":\"heartbeat: connection refused\"}}");
+        var down = Screen(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":false,\"heard_seconds_ago\":90,\"error\":\"heartbeat: connection refused\"}}");
         Expect(down.Blocker.Headline == "The Factory is not answering" && down.LinkTone == PodTone.Error && down.Link == "not heard for 90 s", "link down blocks, the error kept for the log: " + down.Link);
 
         // A missing device; a silent encoder from the start refusal; out of memory on a camera.
         var missingRoles = "[" + Role("left_hand_camera", "/dev/bus/usb/001/002", true, "1-1.1", "ready") + ","
             + Role("right_hand_camera", "", false, "", "unavailable", "no device fills this role") + "]";
-        var missing = Screen(Pod + "," + SignedIn + ",\"roles\":" + missingRoles + ",\"factory\":{" + Heard + "," + Task + "}");
+        var missing = Screen(Pod + "," + Attributed + ",\"roles\":" + missingRoles + ",\"factory\":{" + Heard + "," + Task + "}");
         Expect(missing.Devices[1].Pill == "Missing" && missing.Devices[1].Hint == "Plug it into the hub, then press Check.", "missing camera: plug it in: " + missing.Devices[1].Hint);
         Expect(missing.Blocker.Headline == "The right wrist camera is not plugged in" && missing.Blocker.Tone == PodTone.Error && missing.Blocker.Button == "check", "missing device blocks: " + missing.Blocker.Headline);
         var silentRefusal = new StartRefusal("rig_start_failed",
             "left encoder: the encoder is attached but sends nothing during its two-second startup window (0 bytes received): is another app holding it? Replug it and choose OpenQuestCapture when Android asks", T0);
-        var silent = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}", silentRefusal);
+        var silent = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}", silentRefusal);
         Expect(silent.Devices[2].Pill == "Failed" && silent.Devices[2].Hint.Contains("choose OpenQuestCapture"), "silent encoder: replug, choose OQC: " + silent.Devices[2].Hint);
         Expect(silent.Blocker.Headline == "Another app holds the left gripper sensor" && silent.Blocker.Action.Contains("choose OpenQuestCapture"), "silent encoder blocks with its fix: " + silent.Blocker.Headline);
-        var oom = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
+        var oom = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
             new StartRefusal("rig_start_failed", "the rig did not arm: right camera: streaming: Out of memory (os error 12)", T0));
         Expect(oom.Devices[1].Pill == "Failed" && oom.Devices[1].Hint == "Put both wrist cameras on one powered hub, then press Check." && !oom.Devices[1].Value.Contains("os error"), "OOM camera: one hub, no os error shown");
         Expect(oom.Devices[0].Pill == "Ready", "the other camera stays ready");
         Expect(PodScreenBoard.FailureFor(new[] { "x; right_camera: streaming: Out of memory (os error 12); y" }, "right", "camera") == "right_camera: streaming: Out of memory (os error 12)", "a receipt's clause by stream key");
 
         // USB permission prompt.
-        var asking = Screen(Pod + "," + SignedIn + ",\"usb\":{\"awaitingPermission\":[\"/dev/bus/usb/001/007\"]},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
+        var asking = Screen(Pod + "," + Attributed + ",\"usb\":{\"awaitingPermission\":[\"/dev/bus/usb/001/007\"]},\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "}");
         Expect(asking.Blocker.Action.StartsWith("Choose OpenQuestCapture"), "USB permission -> choose OQC");
 
         // Live or silent while recording.
         var liveness = new StreamLiveness();
-        string Recording(long frames, long samples) => Pod + "," + SignedIn + ",\"episodeActive\":true,\"roles\":["
+        string Recording(long frames, long samples) => Pod + "," + Attributed + ",\"episodeActive\":true,\"roles\":["
             + Role("left_hand_camera", "/dev/bus/usb/001/002", true, "1-1.1", "ready", "", "{\"source_fps\":30.0,\"source_frames\":" + frames + "}") + ","
             + Role("right_hand_camera", "/dev/bus/usb/001/003", true, "1-1.2", "ready", "", "{\"source_fps\":30.0,\"source_frames\":" + frames + "}") + ","
             + Role("left_hand_encoder", "/dev/bus/usb/001/004", true, "1-1.3", "ready", "", "{\"samples\":" + samples + "}") + ","
@@ -196,7 +201,7 @@ static class PodScreenHarness
             + "\"notice\":{\"code\":\"recording_limit_near\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\",\"left\":\"1\"}}}", live: lostLive, at: T0.AddSeconds(2));
         Expect(nearLimit.Blocker.Headline == "This take stops in 1 min, at the 15-minute limit" && nearLimit.Blocker.Tone == PodTone.Warning
             && nearLimit.Recording, "a minute before the limit: its notice, amber, recording goes on: " + nearLimit.Blocker.Headline);
-        var stoppedAtLimit = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
+        var stoppedAtLimit = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
             + ",\"native\":{\"episode_length\":{\"episode_id\":\"e1\",\"recording\":false,\"phase\":\"reached\","
             + "\"notice\":{\"code\":\"recording_limit_reached\",\"who\":\"collector\",\"args\":{\"minutes\":\"15\"}}}}");
         Expect(stoppedAtLimit.Blocker.Headline == "This take reached the 15-minute limit and was stopped"
@@ -205,7 +210,7 @@ static class PodScreenHarness
         Expect(!stoppedAtLimit.StartBlocked, "and Start stays offered");
 
         // No rig resolved yet: devices by kind, the missing ones named.
-        var unresolved = Screen(Pod + "," + SignedIn + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"},{\"kind\":\"encoder\",\"port\":\"1-1.3\"}],\"roles\":["
+        var unresolved = Screen(Pod + "," + Attributed + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"},{\"kind\":\"encoder\",\"port\":\"1-1.3\"}],\"roles\":["
             + "{\"role\":\"left_hand_camera\",\"registered\":null}]");
         Expect(unresolved.Devices.Count == 4 && unresolved.Devices[0].Value == "port 1-1.1" && unresolved.Devices[1].Pill == "Missing", "unresolved: by kind, missing named");
         Expect(unresolved.DevicesNote.StartsWith("Roles are known"), "unresolved: says roles come with the check");
@@ -230,12 +235,12 @@ static class PodScreenHarness
         Expect(catalog.Reached == 6 && catalog.Stage == "In Catalog", "registered: all six");
 
         // The newest attempt failed: its device warns with the fix, and the blocker says so.
-        var afterOom = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "},\"attempts\":["
+        var afterOom = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "},\"attempts\":["
             + "{\"id\":\"20261020_120000\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right_camera: streaming: Out of memory (os error 12)\"}]");
         Expect(afterOom.Devices[1].Pill == "Failed last episode" && afterOom.Devices[1].Tone == PodTone.Warning, "the last episode's failed device warns");
         Expect(afterOom.Blocker.Headline == "Recording failed" && afterOom.Blocker.Action == "Tell a technician (code failed).",
             "last episode failed without a notice (an older library): the unknown code, never its words: " + afterOom.Blocker.Headline);
-        var withNotice = Screen(Pod + "," + SignedIn + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "},\"attempts\":["
+        var withNotice = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "},\"attempts\":["
             + "{\"id\":\"20261020_120000\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right_camera: streaming: Out of memory (os error 12)\",\"notice\":{\"code\":\"usb_bandwidth\",\"args\":{}}}]");
         Expect(withNotice.Blocker.Headline == "The USB hub ran out of bandwidth" && withNotice.Blocker.Who == "Technician", "last episode failed -> its notice: " + withNotice.Blocker.Headline);
         Expect(withNotice.Episodes[0].Fix == "Put both wrist cameras on one powered hub, then press Check.", "the episode row carries the fix");

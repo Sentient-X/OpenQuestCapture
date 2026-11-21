@@ -13,7 +13,7 @@ static class RigStartGateHarness
     static RigStartFacts Ready() => new RigStartFacts
     {
         EpisodeBusy = false, LibraryMissing = false, Opened = true, AwaitingPermission = new string[0],
-        ApkBuildIdKnown = true, CollectorReady = true,
+        ApkBuildIdKnown = true,
     };
 
     static RigStartFacts With(Action<RigStartFacts[]> change)
@@ -56,7 +56,6 @@ static class RigStartGateHarness
             ("rig_open_failed", With(f => f[0].Opened = false)),
             ("rig_usb_permission", With(f => f[0].AwaitingPermission = new[] { "/dev/bus/usb/001/008" })),
             ("rig_identity_pending", With(f => f[0].ApkBuildIdKnown = false)),
-            ("collector_signed_out", With(f => f[0].CollectorReady = false)),
         };
         foreach (var (code, facts) in cases)
         {
@@ -93,30 +92,25 @@ static class RigStartGateHarness
         Expect(RigStartGate.Tracking("{\"kind\":\"storage_low\"}") == null && RigStartGate.Tracking(null) == null
             && RigStartGate.Tracking("not json") == null, "anything but a tracking kind is not a tracking refusal");
         runs = 0;
-        r = RigStartGate.Evaluate(With(f => { f[0].TrackingRefusalJson = notInHand; f[0].CollectorReady = false; }), passing, _ => { });
-        Expect(r?.Code == "collector_signed_out" && runs == 0, "signing in is said before the hands");
+        r = RigStartGate.Evaluate(With(f => f[0].TrackingRefusalJson = null), passing, _ => { });
+        Expect(r == null && runs == 1, "no tracking refusal (PICO, an older library): the check decides");
         var armedTracking = RigStartGate.FromError(new SxRigException("sx_rig_start_armed", SxRigError.State,
             "{\"code\":\"state\",\"detail\":\"the right controller is on the left\",\"refusal\":{\"kind\":\"controllers_wrong_side\"}," +
             "\"notice\":{\"code\":\"controllers_wrong_side\",\"args\":{}}}"), "rig_start_failed");
         Expect(armedTracking.Code == "controllers_wrong_side" && armedTracking.DetailJson.Contains("\"notice\""),
             "a start the library refused on tracking -> its kind, its notice kept");
 
-        // The seal's operator_id is the signed-in collector, as sx-pod's (Principal.display_name).
-        var signedIn = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha Rao\"}}}");
-        var signedOut = JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":false,\"user_code\":\"WXYZ-1234\"}}}");
-        var collector = RigStartGate.SealOperatorId(true, false, RigStatusJson.CollectorName(signedIn), "someone-else");
-        Expect(collector == "Asha Rao", "enrolled, signed in: the collector names the seal, never the body: " + collector);
-        var body = RigStartGate.EpisodeBody("20261021_120000", collector!, "sha256:ab", "/data/20261021_120000", "1.0", null, null);
-        Expect((string?)body["operator_id"] == "Asha Rao" && (string?)body["episode_id"] == "20261021_120000",
-            "the start body carries the collector's id: " + body.ToString(Newtonsoft.Json.Formatting.None));
-        Expect(RigStartGate.SealOperatorId(true, false, RigStatusJson.CollectorName(signedOut), "bench-operator") == null,
-            "enrolled, nobody signed in: no operator (refused), whatever the body names");
-        Expect(RigStartGate.SealOperatorId(true, false, RigStatusJson.CollectorName(null), null) == null, "enrolled, no status: refused");
-        var refusal = RigStartGate.SignInToRecord();
-        Expect(refusal.Code == "collector_signed_out" && refusal.Message.StartsWith("Sign in to record"), "the refusal says Sign in to record: " + refusal.Message);
-        Expect(RigStartGate.SealOperatorId(true, true, null, null) == RigStartGate.LocalOperatorId, "Local only, no body: local-only");
-        Expect(RigStartGate.SealOperatorId(false, false, null, null) == RigStartGate.LocalOperatorId, "not enrolled: local-only");
-        Expect(RigStartGate.SealOperatorId(true, true, "Asha Rao", " bench ") == "bench", "Local only: the body's operator_id when it names one");
+        // No collector is required: with no phone paired the pod records unattributed.
+        runs = 0;
+        r = RigStartGate.Evaluate(Ready(), passing, _ => { });
+        Expect(r == null && runs == 1, "an unattributed start (no phone paired) arms on a passing check");
+        var body = RigStartGate.EpisodeBody("20261021_120000", "sha256:ab", "/data/20261021_120000", "1.0", null, null);
+        Expect(body["operator_id"] == null && (string?)body["episode_id"] == "20261021_120000"
+            && (string?)body["quest_apk_build_id"] == "sha256:ab",
+            "the start body names no operator; the rig seals the shift's collector: " + body.ToString(Newtonsoft.Json.Formatting.None));
+        var assigned = RigStartGate.EpisodeBody("20261021_120000", "sha256:ab", "/data/20261021_120000", "1.0", "ta_1", "practice");
+        Expect((string?)assigned["task_assignment_id"] == "ta_1" && (string?)assigned["mode"] == "practice" && assigned["operator_id"] == null,
+            "a task assignment and mode ride the body, still with no operator");
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;

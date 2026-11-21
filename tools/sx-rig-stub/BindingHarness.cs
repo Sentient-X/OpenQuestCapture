@@ -10,10 +10,21 @@ static class Harness {
         Expect(SxRig.Status().Contains("\"closed\""), "status before open: " + SxRig.Status());
         try { SxRig.AttachUsb(5, 0x32e4, 0x9230, "/dev/bus/usb/001/002"); Expect(false, "attach before open throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.ErrorJson.Contains("\"state\""), "attach before open -> State " + e.ErrorJson); }
+        // The paired phone is taken before the rig opens (sx_rig_phone_link keeps it outside the rig).
+        SxRig.PhoneLink("{\"collector_id\":\"usr_1\",\"connected\":true}");
+        Expect(true, "phone_link before open ok");
+        SxRig.PhoneLink("{}");
+        Expect(true, "phone_link unpaired ok");
+        try { SxRig.PhoneLink("{\"collector_id\":\"usr_1\"}"); Expect(false, "a phone link without connected throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_phone_link", "phone_link without connected -> Argument " + e.ErrorJson); }
+        try { SxRig.PhoneLink("[]"); Expect(false, "a phone link that is not an object throws"); }
+        catch (SxRigException e) { Expect(e.Error == SxRigError.Argument && e.Function == "sx_rig_phone_link", "phone_link not an object -> Argument"); }
         try { SxRig.Open("not json"); Expect(false, "bad config throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Argument, "bad config -> Argument " + e.ErrorJson); }
         SxRig.Open("{\"staging_dir\":\"/tmp/x\",\"rig\":{}}");
         Expect(SxRig.Status().Contains("no_rig"), "status after open: " + SxRig.Status());
+        Expect(SxRig.Status().Contains("\"collector\":null") && !SxRig.Status().Contains("\"operator\""),
+            "no phone paired: floor.collector is null (unattributed), no floor.operator");
         try { SxRig.RunCheck(); Expect(false, "check throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device && e.ErrorJson.Contains("no_rig") && e.Function == "sx_rig_check", "check -> Device " + e.ErrorJson); }
         try { SxRig.Enroll("nope"); Expect(false, "bad join code throws"); }
@@ -24,10 +35,6 @@ static class Harness {
         catch (SxRigException e) { Expect(e.Error == SxRigError.Device && e.Function == "sx_rig_enroll_site", "enroll_site -> Device"); }
         try { SxRig.ApiToken(); Expect(false, "api_token throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_api_token", "api_token before enrollment -> State"); }
-        try { SxRig.SignIn(); Expect(false, "sign-in throws"); }
-        catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_sign_in", "sign-in -> State " + e.ErrorJson); }
-        SxRig.SignOut();
-        Expect(true, "sign-out ok");
         Expect(SxRig.Command("{\"command\":\"finalize\"}").Contains("\"answer\""), "command finalize -> answer");
         try { SxRig.Command("{\"command\":\"end_collection\"}"); Expect(false, "command throws"); }
         catch (SxRigException e) { Expect(e.Error == SxRigError.State && e.Function == "sx_rig_command", "command -> State " + e.ErrorJson); }
@@ -62,6 +69,12 @@ static class Harness2 {
         var ok = s.Length == 5999 && s.EndsWith("\"}");
         Console.WriteLine((ok ? "PASS" : "FAIL") + " buffer retry, status length " + s.Length);
         SxRig.Close();
-        return ok ? 0 : 1;
+        // A paired phone opened the Factory shift: the floor names its person.
+        SxRig.Open("{\"staging_dir\":\"/tmp/x\",\"rig\":{},\"stub_collector\":true}");
+        var attributed = SxRig.Status();
+        var named = attributed.Contains("\"collector\":{\"id\":\"usr_stub\",\"name\":\"Stub Collector\"}");
+        Console.WriteLine((named ? "PASS" : "FAIL") + " attributed: floor.collector names the paired phone's person: " + attributed);
+        SxRig.Close();
+        return (ok ? 0 : 1) + (named ? 0 : 1);
     }
 }

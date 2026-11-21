@@ -136,17 +136,14 @@ namespace RealityLog.Rig
         [DllImport(Library, EntryPoint = "sx_rig_api_token")]
         private static extern int NativeApiToken(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
-        [DllImport(Library, EntryPoint = "sx_rig_sign_in")]
-        private static extern int NativeSignIn(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
-
-        [DllImport(Library, EntryPoint = "sx_rig_sign_out")]
-        private static extern int NativeSignOut();
-
         [DllImport(Library, EntryPoint = "sx_rig_command")]
         private static extern int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
         [DllImport(Library, EntryPoint = "sx_rig_report_device")]
         private static extern int NativeReportDevice(byte[] deviceJson);
+
+        [DllImport(Library, EntryPoint = "sx_rig_phone_link")]
+        private static extern int NativePhoneLink(byte[] phoneJson);
 
         [DllImport(Library, EntryPoint = "sx_rig_observe_tracking")]
         private static extern int NativeObserveTracking(byte[] trackingJson);
@@ -191,13 +188,11 @@ namespace RealityLog.Rig
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeApiToken(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
-        private static int NativeSignIn(byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
-            throw new DllNotFoundException(NotOnThisPlatform);
-        private static int NativeSignOut() => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeCommand(byte[] commandJson, byte[]? outJson, UIntPtr cap, out UIntPtr needed) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeReportDevice(byte[] deviceJson) => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeObserveTracking(byte[] trackingJson) => throw new DllNotFoundException(NotOnThisPlatform);
+        private static int NativePhoneLink(byte[] phoneJson) => throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeAttachUsb(int fd, ushort vendorId, ushort productId, byte[] deviceName) =>
             throw new DllNotFoundException(NotOnThisPlatform);
         private static int NativeDetachUsb(byte[] deviceName) => throw new DllNotFoundException(NotOnThisPlatform);
@@ -260,17 +255,6 @@ namespace RealityLog.Rig
         public static string ApiToken() => CallJson("sx_rig_api_token", NativeApiToken);
 
         /// <summary>
-        /// <c>sx_rig_sign_in</c>: start the collector's device sign-in. Returns
-        /// <c>{"user_code", "verification_uri_complete", "expires_in"}</c>; the rig polls for the
-        /// approval in the background and <c>floor.operator.signed_in</c> in the status turns true.
-        /// Network-bound: not on Unity's main thread.
-        /// </summary>
-        public static string SignIn() => CallJson("sx_rig_sign_in", NativeSignIn);
-
-        /// <summary><c>sx_rig_sign_out</c>: sign the collector out.</summary>
-        public static void SignOut() => Check("sx_rig_sign_out", NativeSignOut);
-
-        /// <summary>
         /// <c>sx_rig_command</c>: a collector command on the open collection
         /// (<c>review_success</c>, <c>review_failure</c>, <c>end_collection</c>, <c>finalize</c>,
         /// <c>close_failed_collection</c>). Returns <c>{"answer", "floor"}</c>. Network-bound.
@@ -291,6 +275,15 @@ namespace RealityLog.Rig
         /// </summary>
         public static void ReportDevice(string deviceJson) =>
             Check("sx_rig_report_device", () => NativeReportDevice(Utf8(deviceJson)));
+
+        /// <summary>
+        /// <c>sx_rig_phone_link</c>: the paired phone, <c>{}</c> while none is paired, else
+        /// <c>{"collector_id": "&lt;principal id&gt;", "connected": bool}</c> (<c>""</c> from a phone
+        /// paired before it named its person). Taken before <see cref="Open"/> too; the heartbeat
+        /// carries it as <c>paired_phone</c> and a change beats at once (PhoneLinkReport, Companion.cs).
+        /// </summary>
+        public static void PhoneLink(string phoneJson) =>
+            Check("sx_rig_phone_link", () => NativePhoneLink(Utf8(phoneJson)));
 
         /// <summary>
         /// <c>sx_rig_observe_tracking</c>: the app's <c>controllers</c> block, exactly as

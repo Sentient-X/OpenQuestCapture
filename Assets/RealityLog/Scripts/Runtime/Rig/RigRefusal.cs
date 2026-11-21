@@ -10,7 +10,7 @@ namespace RealityLog.Rig
         /// <summary>
         /// One of <c>rig_library_missing</c>, <c>rig_open_failed</c>, <c>rig_usb_permission</c>,
         /// <c>rig_check_failed</c>, <c>rig_start_failed</c>, <c>rig_not_armed</c>,
-        /// <c>rig_identity_pending</c>, <c>collector_signed_out</c>, <c>rig_storage_low</c>,
+        /// <c>rig_identity_pending</c>, <c>rig_storage_low</c>,
         /// <c>pod_config_incomplete</c>, or a tracking refusal of the rig's
         /// (<see cref="RigStartGate.TrackingKinds"/>: <c>controllers_not_in_hand</c>,
         /// <c>controllers_wrong_side</c>, <c>body_tracking_unavailable</c>, <c>head_tracking_stopped</c>).

@@ -26,7 +26,7 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// pod_config.json keys the app no longer reads, tolerated so a headset provisioned
-        /// before still opens: <c>operator_id</c> (the seal names the signed-in collector now).
+        /// before still opens: <c>operator_id</c> (the rig seals the Factory shift's collector now).
         /// </summary>
         public static readonly string[] RetiredKeys = { "operator_id" };
 

@@ -201,10 +201,11 @@ namespace RealityLog.Rig
         private readonly System.Collections.Concurrent.ConcurrentQueue<(string session, JObject failure)> failures = new();
         // pod_config.json's local_only (default true), re-read with the identity poll.
         private volatile bool localOnly = true;
-        private volatile bool collectorSignedIn;
-        // The signed-in collector's name from the last readable status: the seal's operator_id.
+        // floor.collector's name from the last readable status (the paired phone's person), or
+        // null while the pod records unattributed. Shown and sent to the phone; never sealed by
+        // this app (the rig seals the Factory shift's collector itself).
         private volatile string? collectorName;
-        private volatile bool signInCuePending;
+        private volatile bool collectorCuePending;
         // Seal verdicts seen so far (native-status timer thread); a change to sealed or refused
         // after the first observation queues a cue for the main thread.
         private readonly Dictionary<string, string> sealStates = new();
@@ -222,7 +223,6 @@ namespace RealityLog.Rig
         private readonly System.Collections.Concurrent.ConcurrentQueue<(string session, EpisodeLengthAction action)> lengthActions = new();
         private float hapticUntil = float.NegativeInfinity;
         private bool floorObserved; // native-status timer thread only
-        private bool collectorRestored; // native-status timer thread only
 
         private const string NotExpectedStatus =
             "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"localOnly\":true,\"headsetSerial\":null," +
@@ -488,11 +488,11 @@ namespace RealityLog.Rig
                 presence.KeyPressed();
                 RealityLog.OVR.Attendance.Shared.Input(System.Diagnostics.Stopwatch.GetTimestamp());
             }
-            if (signInCuePending)
+            if (collectorCuePending)
             {
-                signInCuePending = false;
-                RigCues.Play(RigCues.Cue.SignedIn, "collector signed in", gameObject);
-                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector signed in");
+                collectorCuePending = false;
+                RigCues.Play(RigCues.Cue.Chime, "recording for the paired phone's collector", gameObject);
+                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: recording for {collectorName ?? "nobody"}");
             }
             while (switchPresses.TryDequeue(out var press))
             {
@@ -537,12 +537,11 @@ namespace RealityLog.Rig
             // Check and reservation under one claim of the rig: no second start can slip
             // between a passing check and the reservation it allows. The lock itself is not
             // held across the check (up to about 16 s on a Factory).
-            var collectorReady = !enrolled || localOnly || CollectorSignedIn(SafeStatus()) != false;
             RigStartFacts facts;
             lock (episodeLock)
             {
                 ClaimRigLocked("check");
-                facts = StartFactsLocked(collectorReady);
+                facts = StartFactsLocked();
             }
             // Read with the rig claimed and episodeLock released: it waits on the library.
             facts.TrackingRefusalJson = facts.Opened ? TrackingRefusalNow() : null;
@@ -591,7 +590,7 @@ namespace RealityLog.Rig
             System.Threading.Monitor.PulseAll(episodeLock);
         }
 
-        private RigStartFacts StartFactsLocked(bool collectorReady) =>
+        private RigStartFacts StartFactsLocked() =>
             // No "is the rig expected" test here: the caller decided that once (IsExpected), and
             // re-reading it here once let a start skip sx_rig_check and arm on no passing check.
             new()
@@ -603,7 +602,6 @@ namespace RealityLog.Rig
                 OpenErrorJson = openErrorJson,
                 AwaitingPermission = awaitingPermission,
                 ApkBuildIdKnown = apkBuildId.Length > 0,
-                CollectorReady = collectorReady,
             };
 
         /// <summary>The start gate on <paramref name="facts"/>, with the rig claimed and episodeLock not held.</summary>
@@ -642,7 +640,7 @@ namespace RealityLog.Rig
         /// (<c>{"episode_id", "monotonic_anchor_ns", "utc_anchor_ns", "arm_utc_anchor",
         /// "arming_ms"}</c>) or a refusal; on a refusal the caller stops OQC's session.
         /// </summary>
-        public (string? start, RigRefusal? refusal) StartArmed(string sessionName, string operatorId,
+        public (string? start, RigRefusal? refusal) StartArmed(string sessionName,
             string? taskAssignmentId = null, string? mode = null)
         {
             lock (episodeLock)
@@ -663,7 +661,7 @@ namespace RealityLog.Rig
             (string? start, RigRefusal? refusal) result = (null, null);
             try
             {
-                result = StartArmedClaimed(sessionName, operatorId, taskAssignmentId, mode);
+                result = StartArmedClaimed(sessionName, taskAssignmentId, mode);
             }
             finally
             {
@@ -683,10 +681,10 @@ namespace RealityLog.Rig
             return result;
         }
 
-        private (string? start, RigRefusal? refusal) StartArmedClaimed(string sessionName, string operatorId,
+        private (string? start, RigRefusal? refusal) StartArmedClaimed(string sessionName,
             string? taskAssignmentId, string? mode)
         {
-            var episode = RigStartGate.EpisodeBody(sessionName, operatorId, apkBuildId,
+            var episode = RigStartGate.EpisodeBody(sessionName, apkBuildId,
                 Path.Combine(dataPath, sessionName), appVersion, taskAssignmentId, mode);
             string started;
             // The start is judged by the newest controllers block (sx_rig.h), not one up to
@@ -698,11 +696,6 @@ namespace RealityLog.Rig
             }
             catch (SxRigException ex)
             {
-                // A sign-out between the check and the start.
-                if (ex.Error == SxRigError.State && enrolled && CollectorSignedIn(SafeStatus()) == false)
-                {
-                    return (null, new RigRefusal("collector_signed_out", RigStartGate.SignInToRecord().Message, ex.ErrorJson));
-                }
                 return (null, Refusal(ex, "rig_start_failed"));
             }
             Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: episode '{sessionName}' armed and anchored: {started}");
@@ -727,16 +720,13 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// pod_config.json's <c>local_only</c> (default true): the app never contacts the
-        /// Factory (no enrollment, sign-in, commands or uplink, whatever factory_url says) and
+        /// Factory (no enrollment, commands or uplink, whatever factory_url says) and
         /// the rig opens in local mode. Any thread.
         /// </summary>
         public bool LocalOnly => localOnly;
 
         /// <summary>True when this headset holds a machine credential: it is enrolled as a pod.</summary>
         public bool Enrolled => enrolled;
-
-        /// <summary>True while the rig's floor says a collector is signed in on this headset.</summary>
-        public bool CollectorSignedInNow => collectorSignedIn;
 
         /// <summary>
         /// Main thread: sets local_only in pod_config.json and reopens the rig with the new
@@ -879,23 +869,6 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// The operator_id this headset's next episode is sealed under
-        /// (<see cref="RigStartGate.SealOperatorId"/>): the signed-in collector on an enrolled
-        /// headset, null when nobody is signed in there; else the start body's, or
-        /// <see cref="RigStartGate.LocalOperatorId"/>. Reads the rig's status now, falling back
-        /// to the last one heard while the rig is busy. Never pod_config.json. Any thread.
-        /// </summary>
-        public string? SealOperatorId(string? bodyOperatorId)
-        {
-            var name = collectorName;
-            if (enrolled && !localOnly && SafeStatus() is JObject status)
-            {
-                name = RigStatusJson.CollectorName(status);
-            }
-            return RigStartGate.SealOperatorId(enrolled, localOnly, name, bodyOperatorId);
-        }
-
-        /// <summary>
         /// The rig's episode directory for an OQC session (the session name is its episode_id):
         /// <c>&lt;persistentDataPath&gt;/rig_staging/&lt;session&gt;</c>, holding episode.mcap and
         /// seal.json once sealed. Any thread.
@@ -906,82 +879,35 @@ namespace RealityLog.Rig
         /// <summary>True once the rig is open (an enrolled headset opens it on its own).</summary>
         public bool IsOpen => opened;
 
-        /// <summary>
-        /// <c>sx_rig_sign_in</c> on the calling (worker) thread; throws
-        /// <see cref="SxRigException"/>. The cue plays when the approval lands.
-        /// </summary>
-        public string SignIn()
-        {
-            var answer = SxRig.SignIn();
-            try
-            {
-                // {"user_code", "verification_uri_complete", "expires_in"}: remember when the code
-                // lapses, for the phone companion's SignInRequest.
-                if (JToken.Parse(answer) is JObject shown && shown["user_code"] is JValue { Type: JTokenType.String } code
-                    && shown["expires_in"] is JValue { Type: JTokenType.Integer } seconds)
-                {
-                    lastSignInCode = new IssuedSignInCode((string)code!, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (long)seconds * 1000);
-                }
-            }
-            catch (JsonException)
-            {
-            }
-            return answer;
-        }
-
-        /// <summary>A collector sign-in code this headset was issued, and when it lapses (Unix ms).</summary>
-        public sealed class IssuedSignInCode
-        {
-            public string Code { get; }
-            public long ExpiresAtMs { get; }
-
-            public IssuedSignInCode(string code, long expiresAtMs)
-            {
-                Code = code;
-                ExpiresAtMs = expiresAtMs;
-            }
-        }
-
-        private volatile IssuedSignInCode? lastSignInCode;
-
-        /// <summary>When <paramref name="code"/> lapses (Unix ms), or 0 when this run did not issue it.</summary>
-        public long SignInCodeExpiresAtMs(string code) =>
-            lastSignInCode is { } issued && issued.Code == code ? issued.ExpiresAtMs : 0;
-
         /// <summary>pod_config.json's pod_name, "" when it has none (read with the identity).</summary>
         public string PodName => podName;
-
-        /// <summary><c>sx_rig_sign_out</c>; throws <see cref="SxRigException"/>.</summary>
-        public void SignOut()
-        {
-            SxRig.SignOut();
-            collectorSignedIn = false;
-            collectorName = null;
-        }
 
         /// <summary><c>sx_rig_command</c> on the calling (worker) thread.</summary>
         public string Command(string commandJson) => SxRig.Command(commandJson);
 
         /// <summary>
-        /// An explicit collector review from the Pod card. Its original command ID is kept
-        /// across retries; the native journal owns authentication, validation and deduplication.
-        /// No native or network work runs on the capture thread.
+        /// An explicit collector review from the Pod card, chosen while
+        /// <paramref name="collectorId"/> (floor.collector.id, the paired phone's person) was the
+        /// pod's collector. The command names no operator: the rig answers it as the pod's
+        /// collector, so it is sent only while that is still the same person; an unattributed pod
+        /// has nobody to answer it. Its original command ID is kept across retries; the native
+        /// journal owns authentication, validation and deduplication. No native or network work
+        /// runs on the capture thread.
         /// </summary>
-        public System.Threading.Tasks.Task<string> SubmitCollectorReviewAsync(string commandJson)
+        public System.Threading.Tasks.Task<string> SubmitCollectorReviewAsync(string commandJson, string collectorId)
         {
             var command = JObject.Parse(commandJson);
-            var expectedOperator = (string?)command["expected_operator"];
             if ((string?)command["command"] is not ("review_success" or "review_failure")
-                || string.IsNullOrWhiteSpace(expectedOperator))
-                throw new InvalidOperationException("An explicit episode review and its signed-in collector are required");
+                || string.IsNullOrWhiteSpace(collectorId))
+                throw new InvalidOperationException("An explicit episode review and the paired phone's collector are required");
             return System.Threading.Tasks.Task.Run(() =>
             {
                 lock (episodeLock)
                 {
-                    if (!opened || !enrolled || localOnly || !collectorSignedIn || collectorRestored)
-                        throw new InvalidOperationException("Sign in to the Factory before reviewing episodes");
-                    if ((string?)parsedStatus.Current?["floor"]?["operator"]?["subject"] != expectedOperator)
-                        throw new InvalidOperationException("The signed-in collector changed; select the review again");
+                    if (!opened || !enrolled || localOnly)
+                        throw new InvalidOperationException("Enroll this headset with the Factory before reviewing episodes");
+                    if (RigStatusJson.CollectorId(parsedStatus.Current) != collectorId)
+                        throw new InvalidOperationException("The pod's collector changed; select the review again");
                     if (rigWork != null || episodeActive || reservedSession != null)
                         throw new InvalidOperationException("Finish the current recording or control before reviewing");
                     rigWork = "review";
@@ -1843,26 +1769,14 @@ namespace RealityLog.Rig
                 }
                 if (readable is JObject status)
                 {
-                    var signedIn = CollectorSignedIn(status) == true;
-                    // Only a transition seen while running cues; a sign-in already held at
-                    // launch does not.
-                    if (signedIn && !collectorSignedIn && floorObserved)
+                    var collector = RigStatusJson.CollectorName(status);
+                    // A phone paired and its person's shift opened: cued only on a change seen
+                    // while running; a collector already there at launch is not.
+                    if (collector != null && collector != collectorName && floorObserved)
                     {
-                        signInCuePending = true;
+                        collectorCuePending = true;
                     }
-                    // A sign-in kept across the restart: logged, not cued (nobody signed in now).
-                    var restored = RigStatusJson.CollectorRestored(status);
-                    if (restored && !collectorRestored)
-                    {
-                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collector sign-in restored from before this launch");
-                    }
-                    else if (!restored && collectorRestored)
-                    {
-                        Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: restored collector sign-in {(signedIn ? "confirmed by the Factory" : "rejected; sign in again")}");
-                    }
-                    collectorRestored = restored;
-                    collectorSignedIn = signedIn;
-                    collectorName = RigStatusJson.CollectorName(status);
+                    collectorName = collector;
                     floorObserved = true;
                     QueueSealCues(status["seals"] as JObject);
                     if (gripperSwitch.SidesLine(status["gripper_switch"] as JObject) is string sidesLine)
@@ -2042,9 +1956,6 @@ namespace RealityLog.Rig
             OVRInput.SetControllerVibration(1f, amplitude, OVRInput.Controller.RTouch);
             hapticUntil = Time.unscaledTime + seconds;
         }
-
-        /// <summary>floor.operator.signed_in of a status, or null when the status has no floor.</summary>
-        private static bool? CollectorSignedIn(JObject? status) => RigStatusJson.CollectorSignedIn(status);
 
         /// <summary>sx_rig_status parsed, or null (busy, failed, unparsable). Any thread.</summary>
         private static JObject? SafeStatus()

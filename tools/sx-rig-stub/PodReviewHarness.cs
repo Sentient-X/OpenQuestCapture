@@ -24,7 +24,8 @@ static class PodReviewHarness
         ["expected"] = true, ["open"] = true, ["enrolled"] = true, ["localOnly"] = false,
         ["floor"] = new JObject
         {
-            ["operator"] = new JObject { ["signed_in"] = true, ["display_name"] = "Collector", ["subject"] = "collector-1" },
+            // The paired phone's person, whom the rig answers reviews as (floor.collector).
+            ["collector"] = new JObject { ["id"] = "collector-1", ["name"] = "Collector" },
             ["review_queue"] = new JArray(items),
         },
         ["factory"] = new JObject { ["collection"] = new JObject { ["id"] = "cs_current" } },
@@ -52,13 +53,14 @@ static class PodReviewHarness
         var command = JObject.Parse(item.Command(true, id, "collector-1"));
         Expect((string?)command["session_id"] == "cs_old" && (string?)command["episode_id"] == "ep_old"
             && (string?)command["command_id"] == id.ToString() && (string?)command["command"] == "review_success"
-            && command["answers"] is JArray { Count: 0 } && (string?)command["expected_operator"] == "collector-1"
-            && command.Count == 6, "explicit success preserves old collection, collector and journal ID; no invented answers");
+            && command["answers"] is JArray { Count: 0 } && command["expected_operator"] == null
+            && command.Count == 5, "explicit success preserves old collection and journal ID, names no operator (the rig answers as floor.collector); no invented answers");
         var failedCommand = JObject.Parse(screen.Reviews[1].Command(false, Guid.NewGuid(), "collector-1"));
         Expect((string?)failedCommand["command"] == "review_failure" && screen.Reviews[1].Integrity == "failed"
             && command["integrity"] == null, "human outcome does not overwrite capture integrity");
         Expect(Refuses(() => item.Command(true, Guid.Empty, "collector-1")), "empty idempotency key refused");
-        Expect(Refuses(() => item.Command(true, id, "")), "missing expected collector refused");
+        Expect(Refuses(() => item.Command(true, id, "")), "no paired phone's collector: refused");
+        Expect(screen.ReviewCollectorSubject == "collector-1", "the review is chosen as floor.collector.id");
 
         var required = Item();
         required["prompts"] = new JArray(new JObject { ["id"] = "safe", ["label"] = "Object placed safely?", ["required"] = true, ["kind"] = "boolean" });
@@ -77,8 +79,12 @@ static class PodReviewHarness
         var malformed = Item(); malformed["episode_id"] = null;
         Expect(!Screen(Status(malformed)).Reviews[0].CanSubmit, "missing episode identity refuses review");
 
-        var signedOut = Status(Item()); signedOut["floor"]!["operator"]!["signed_in"] = false;
-        Expect(Screen(signedOut).ReviewUnavailable.Contains("Sign in"), "signed-out collector cannot review");
+        var unattributed = Status(Item()); unattributed["floor"]!["collector"] = null;
+        Expect(Screen(unattributed).ReviewUnavailable.Contains("Pair your phone") && Screen(unattributed).ReviewCollectorSubject == "",
+            "an unattributed pod has nobody to answer its reviews");
+        var retired = Status(Item()); ((JObject)retired["floor"]!).Remove("collector");
+        retired["floor"]!["operator"] = new JObject { ["signed_in"] = true, ["subject"] = "collector-1" };
+        Expect(Screen(retired).ReviewCollectorSubject == "", "the retired floor.operator.subject is never read");
         var local = Status(Item()); local["localOnly"] = true;
         Expect(Screen(local).ReviewUnavailable.Contains("Local only"), "local-only mode cannot submit Factory reviews");
         var recording = Status(Item()); recording["episodeActive"] = true;

@@ -20,7 +20,7 @@ namespace RealityLog.UI
         public PodStatusLines Lines;
         public PodScreen Screen = new();
         public int? HeadsetPct, LeftPct, RightPct;
-        public bool Enrolled, LocalOnly, SignedIn, Recording;
+        public bool Enrolled, LocalOnly, Recording;
         /// <summary>The control running now, if any.</summary>
         public PodControl? Running;
         /// <summary>End collection waits for its second tap.</summary>
@@ -31,7 +31,7 @@ namespace RealityLog.UI
         /// <summary>False when this build has no PodSetupController: the setup actions are hidden.</summary>
         public bool SetupAvailable;
         public string? SetupMessage;
-        public bool SigningIn, Scanning, Enrolling;
+        public bool Scanning, Enrolling;
         public string FactoryUrl = "", AuthUrl = "";
         public bool JoinCodeEntered;
         public CompanionPhase PhonePhase = CompanionPhase.Unavailable;
@@ -45,7 +45,7 @@ namespace RealityLog.UI
     /// wrapping inside its own cell. Sections, top to bottom: the title and chip; the blocker
     /// banner (what is in the way, what clears it); Controls (Check, Start/Stop, End collection,
     /// then their answer); Battery (headset, left, right in one row); Devices; Collection;
-    /// Episodes (each across the pipeline's steps); Phone; Setup (Sign in, Scan QR, Local only,
+    /// Episodes (each across the pipeline's steps); Phone; Setup (Scan QR, Local only,
     /// Set up manually and the manual fields, collapsed until asked for). It sits in its own
     /// ScrollRect (RecordingListUI's Pod tab), so it never draws over the recordings list.
     /// The actions are PodSetupController's, RigCoordinator's, PodControls' and PhoneCompanion's.
@@ -86,7 +86,7 @@ namespace RealityLog.UI
         // The blocker banner.
         private Image blockerPanel = default!;
         private TextMeshProUGUI blockerHeadline = default!, blockerAction = default!, blockerFine = default!;
-        // The blocker's button (Check, Sign in) when its notice names one.
+        // The blocker's button (Check) when its notice names one.
         private GameObject blockerButton = default!;
         private TextMeshProUGUI blockerButtonText = default!;
         private string shownButton = "";
@@ -105,7 +105,7 @@ namespace RealityLog.UI
         private readonly FactRow[] devices = new FactRow[DeviceRows];
         private FactRow devicesNote = default!;
         // Collection.
-        private FactRow collector = default!, signInCode = default!, approveAt = default!;
+        private FactRow collector = default!;
         private FactRow task = default!, progress = default!, next = default!, link = default!;
         // Episodes.
         private GameObject episodesSection = default!;
@@ -134,8 +134,7 @@ namespace RealityLog.UI
         // Setup.
         private GameObject setupSection = default!;
         private FactRow setupLine = default!;
-        private GameObject signInPill = default!;
-        private TextMeshProUGUI signInText = default!, scanText = default!, localText = default!, manualText = default!;
+        private TextMeshProUGUI scanText = default!, localText = default!, manualText = default!;
         private Image scanImage = default!;
         private GameObject manual = default!;
         private TextMeshProUGUI factoryValue = default!, authValue = default!, joinValue = default!, enrollText = default!;
@@ -151,7 +150,7 @@ namespace RealityLog.UI
         private readonly StreamLiveness liveness = new();
         private JObject? shownStatus;
         private StartRefusal? shownRefusal;
-        private bool shownSucceeded, shownAsking;
+        private bool shownSucceeded;
         private PodStatusLines lines;
         private PodScreen screen = new();
         private int? headsetPct;
@@ -216,16 +215,14 @@ namespace RealityLog.UI
             var lastStart = PodStartLog.Shared.Last;
             var succeeded = PodStartLog.Shared.Succeeded;
             var setup = PodSetupController.Instance;
-            var asking = setup is { SigningIn: true };
             // The coordinator owns one read-only parsed snapshot; UI consumers never reparse it.
             if (force || !ReferenceEquals(status, shownStatus) || !ReferenceEquals(lastStart, shownRefusal)
-                || succeeded != shownSucceeded || asking != shownAsking)
+                || succeeded != shownSucceeded)
             {
                 shownStatus = status;
                 shownRefusal = lastStart;
                 shownSucceeded = succeeded;
-                shownAsking = asking;
-                lines = PodStatusBoard.Lines(status, lastStart, succeeded, asking);
+                lines = PodStatusBoard.Lines(status, lastStart, succeeded);
                 headsetPct = HeadsetStatusMap.Battery(status);
                 screen = PodScreenBoard.Build(status, lastStart, succeeded, liveness, DateTime.UtcNow);
             }
@@ -242,13 +239,11 @@ namespace RealityLog.UI
                 RightPct = controls?.Controllers.Right,
                 Enrolled = coordinator is { Enrolled: true },
                 LocalOnly = coordinator?.LocalOnly ?? false,
-                SignedIn = coordinator is { CollectorSignedInNow: true },
                 Recording = recorder != null ? recorder.State != RecordingState.Idle : screen.Recording,
                 Running = controls?.Running,
                 SetupAvailable = setup != null,
-                SigningIn = setup is { SigningIn: true },
                 Scanning = setup is { Scanning: true },
-                Enrolling = setup is { Busy: true, Scanning: false, SigningIn: false },
+                Enrolling = setup is { Busy: true, Scanning: false },
                 FactoryUrl = setup?.FactoryUrl ?? "",
                 AuthUrl = setup?.AuthUrl ?? "",
                 JoinCodeEntered = setup != null && setup.JoinCode.Length > 0,
@@ -326,7 +321,7 @@ namespace RealityLog.UI
             Show(blockerFine.gameObject, fine.Length > 0);
             shownButton = s.Blocker.Button ?? "";
             Show(blockerButton.transform.parent.gameObject, shownButton.Length > 0);
-            Set(blockerButtonText, shownButton == "sign_in" ? "Sign in" : "Check");
+            Set(blockerButtonText, "Check");
 
             // Before Start: one warning per row, as the device rows: who acts on the left, what
             // and the action beside it, wrapped in its cell, never clipped.
@@ -347,8 +342,7 @@ namespace RealityLog.UI
         /// <summary>The blocker's button: the control its notice names.</summary>
         private void PressBlockerButton()
         {
-            if (shownButton == "sign_in") PodSetupController.Instance?.SignIn();
-            else if (shownButton == "check") PodControls.Instance?.Run(PodControl.Check);
+            if (shownButton == "check") PodControls.Instance?.Run(PodControl.Check);
         }
 
         private void ShowControls(PodCardState state)
@@ -405,12 +399,8 @@ namespace RealityLog.UI
         private void ShowCollection(PodCardState state)
         {
             var s = state.Screen;
-            var pending = (state.Lines.SignInCode ?? "").Length > 0;
-            Set(collector.Value, pending ? "sign-in pending: approve the code below" : PodStatusBoard.Field(state.Lines.Collector ?? "").value);
-            Show(signInCode.Row, pending);
-            Set(signInCode.Value, state.Lines.SignInCode ?? "");
-            Show(approveAt.Row, pending && (state.Lines.SignInAddress ?? "").Length > 0);
-            Set(approveAt.Value, state.Lines.SignInAddress ?? "");
+            // The paired phone's person ("Recording for Asha"), or unattributed: never a sign-in.
+            Set(collector.Value, PodStatusBoard.Field(state.Lines.Collector ?? "").value);
 
             Set(task.Value, s.Task ?? "");
             Show(progress.Row, !string.IsNullOrEmpty(s.Progress));
@@ -469,7 +459,6 @@ namespace RealityLog.UI
         private string ReviewBlockedReason(PodCardState state, PodReviewItem? item)
         {
             if (state.Screen.ReviewUnavailable.Length > 0) return state.Screen.ReviewUnavailable;
-            if (!state.SignedIn) return "Sign in as the collector before reviewing.";
             if (state.LocalOnly || !state.Enrolled) return "Use Factory mode to review this collection.";
             if (state.Recording) return "Stop recording before reviewing an episode.";
             if (state.Running != null) return "Wait for the current control to finish before reviewing.";
@@ -480,7 +469,7 @@ namespace RealityLog.UI
             {
                 if (local.State is "pending" or "completed") return local.Message;
                 if (local.State == "uncertain" && local.CollectorSubject != state.Screen.ReviewCollectorSubject)
-                    return "Sign in as the collector who chose this review before retrying its saved result.";
+                    return "The pod's collector changed: only the paired phone's person who chose this review can retry its saved result.";
             }
             return item.SubmissionState switch
             {
@@ -571,8 +560,6 @@ namespace RealityLog.UI
             if (setupSection.transform.GetSiblingIndex() != index) setupSection.transform.SetSiblingIndex(index);
             Show(setupLine.Row, state.SetupMessage != null);
             Set(setupLine.Value, state.SetupMessage ?? "");
-            Show(signInPill, state.Enrolled && !state.LocalOnly && !state.SignedIn);
-            Set(signInText, state.SigningIn ? "Asking..." : "Sign in");
             Set(scanText, state.Scanning ? "Cancel scan" : "Scan QR");
             scanImage.color = state.Enrolled ? SecondaryColor : PrimaryColor;
             Set(localText, state.LocalOnly ? "Local only: On" : "Local only: Off");
@@ -694,7 +681,7 @@ namespace RealityLog.UI
             reviewBusy = true;
             try
             {
-                submitted.ApplyReply(await coordinator.SubmitCollectorReviewAsync(submitted.CommandJson));
+                submitted.ApplyReply(await coordinator.SubmitCollectorReviewAsync(submitted.CommandJson, submitted.CollectorSubject));
                 if (this != null) reviewResult = (item.SourceEpisodeId.Length > 0 ? item.SourceEpisodeId : item.EpisodeId) + ": " + submitted.Message;
             }
             catch (InvalidOperationException error)
@@ -800,11 +787,6 @@ namespace RealityLog.UI
             // The collection: who collects, the task, progress, what the Factory expects next, the link.
             var collection = Section(transform, "Collection");
             collector = Fact(collection, "Collector", withPill: false);
-            signInCode = Fact(collection, "Sign-in code", withPill: false);
-            signInCode.Value.fontSize = 32;
-            signInCode.Value.fontStyle = FontStyles.Bold;
-            signInCode.Value.color = Color.white;
-            approveAt = Fact(collection, "Approve at", withPill: false);
             task = Fact(collection, "Task", withPill: false);
             progress = Fact(collection, "Progress", withPill: false);
             next = Fact(collection, "Next", withPill: false);
@@ -852,7 +834,6 @@ namespace RealityLog.UI
             setupSection = setup.gameObject;
             setupLine = Fact(setup, "Status", withPill: false);
             var setupActions = Row("SetupActions", setup, PillHeight);
-            signInPill = Pill(setupActions, "SignIn", PrimaryColor, () => PodSetupController.Instance?.SignIn(), out signInText, out _);
             Pill(setupActions, "ScanQr", PrimaryColor, () =>
             {
                 if (PodSetupController.Instance is not { } controller) return;

@@ -12,22 +12,18 @@ static class RigStatusJsonHarness
 
     static int Main()
     {
-        Expect(RigStatusJson.CollectorSignedIn(JObject.Parse("{\"floor\":null}")) == null, "floor null -> no collector");
-        Expect(RigStatusJson.CollectorSignedIn(JObject.Parse("{}")) == null, "no floor -> no collector");
-        Expect(RigStatusJson.CollectorSignedIn(JObject.Parse("{\"floor\":{\"operator\":null}}")) == null, "operator null -> no collector");
-        Expect(RigStatusJson.CollectorSignedIn(JObject.Parse("{\"floor\":7}")) == null, "floor a number -> no collector");
-        Expect(RigStatusJson.CollectorSignedIn(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true}}}")) == true, "signed in");
-        Expect(RigStatusJson.CollectorSignedIn(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":false}}}")) == false, "signed out");
-        Expect(RigStatusJson.CollectorSignedIn(null) == null, "no status -> no collector");
-        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\" Asha \"}}}")) == "Asha", "signed in: the collector's display name");
-        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":false,\"display_name\":\"Asha\"}}}")) == null, "signed out: no name");
-        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"\"}}}")) == null, "an empty name is no name");
-        Expect(RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"restored\":true}}}")), "a kept sign-in not yet confirmed is restored");
-        Expect(!RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"restored\":false}}}")), "a confirmed sign-in is not restored");
-        Expect(!RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true}}}")), "an older library's status: not restored");
-        Expect(!RigStatusJson.CollectorRestored(JObject.Parse("{\"floor\":null}")), "no floor: not restored");
-        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true}}}")) == null, "no display_name: no name");
-        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":null}")) == null && RigStatusJson.CollectorName(null) == null, "local mode: no name");
+        // floor.collector: the person whose paired phone opened the shift, or null (unattributed).
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\" Asha \"}}}")) == "Asha", "attributed: the collector's name");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"\"}}}")) == "usr_1", "attributed with no name: the collector's id");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"collector\":{\"id\":\"\",\"name\":\"\"}}}")) == null, "an empty collector is unattributed");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"collector\":null}}")) == null, "collector null -> unattributed");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{}}")) == null, "no collector key -> unattributed");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"collector\":\"Asha\"}}")) == null, "collector not an object -> unattributed");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"collector\":{\"name\":7}}}")) == null, "a name that is not text is no name");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha\"}}}")) == null, "the retired floor.operator is never read");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":7}")) == null, "floor a number -> no collector");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{}")) == null, "no floor -> no collector");
+        Expect(RigStatusJson.CollectorName(JObject.Parse("{\"floor\":null}")) == null && RigStatusJson.CollectorName(null) == null, "local mode: no collector");
 
         Expect(RigStatusJson.SealState(JObject.Parse("{\"state\":\"sealed\"}")) == "sealed", "seal state");
         Expect(RigStatusJson.SealState(JValue.CreateNull()) == "", "seal verdict null -> empty");

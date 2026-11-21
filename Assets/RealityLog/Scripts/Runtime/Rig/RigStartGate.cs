@@ -15,8 +15,6 @@ namespace RealityLog.Rig
         public string? OpenErrorJson;
         public string[] AwaitingPermission;
         public bool ApkBuildIdKnown;
-        /// <summary>False only when a Factory floor says no collector is signed in.</summary>
-        public bool CollectorReady;
         /// <summary>
         /// The rig's <c>tracking.start_refusal</c> (<c>{"kind", "detail", "notice"}</c>) judged on
         /// the controllers block handed over right before the check; null when the tracking lets
@@ -64,10 +62,6 @@ namespace RealityLog.Rig
             {
                 return new RigRefusal("rig_identity_pending",
                     "the installed APK's build id is still being computed; retry in a few seconds");
-            }
-            if (!facts.CollectorReady)
-            {
-                return SignInToRecord();
             }
             // Before the check (seconds) and before OQC's session exists: a start the rig's
             // tracking law refuses leaves no stopped session behind (sx#4210).
@@ -117,41 +111,17 @@ namespace RealityLog.Rig
             return new RigRefusal(kind, detail.Length > 0 ? detail : kind.Replace('_', ' '), startRefusalJson);
         }
 
-        /// <summary>The seal's operator in Local only mode, or on a headset not enrolled: no collector signs in there.</summary>
-        public const string LocalOperatorId = "local-only";
-
-        /// <summary>An enrolled headset with no collector signed in: a start is refused.</summary>
-        public static RigRefusal SignInToRecord() => new RigRefusal("collector_signed_out",
-            "Sign in to record: no collector is signed in on this headset; POST /api/sign-in and approve the code");
-
         /// <summary>
-        /// The operator_id an episode's seal names, as sx-pod's does: on an enrolled headset
-        /// that is not Local only, the signed-in collector (<paramref name="collectorName"/>,
-        /// the Factory's display name), whatever a start body says, and null when nobody is
-        /// signed in (refuse with <see cref="SignInToRecord"/>). Otherwise no collector can sign
-        /// in: the start body's <c>operator_id</c> when it names one, else
-        /// <see cref="LocalOperatorId"/>. Never pod_config.json.
+        /// The sx_rig_start_armed episode body: quest_apk_build_id and quest_session_dir for the
+        /// seal. It names no operator: the rig seals the collector of the pod's Factory shift
+        /// (the paired phone's person), or none when the pod records unattributed.
         /// </summary>
-        public static string? SealOperatorId(bool enrolled, bool localOnly, string? collectorName, string? bodyOperatorId)
-        {
-            if (enrolled && !localOnly)
-            {
-                return collectorName?.Trim() is { Length: > 0 } name ? name : null;
-            }
-            return bodyOperatorId?.Trim() is { Length: > 0 } named ? named : LocalOperatorId;
-        }
-
-        /// <summary>
-        /// The sx_rig_start_armed episode body. The seal needs operator_id
-        /// (<see cref="SealOperatorId"/>), quest_apk_build_id and quest_session_dir.
-        /// </summary>
-        public static JObject EpisodeBody(string sessionName, string operatorId, string apkBuildId,
+        public static JObject EpisodeBody(string sessionName, string apkBuildId,
             string sessionDir, string appVersion, string? taskAssignmentId, string? mode)
         {
             var episode = new JObject
             {
                 ["episode_id"] = sessionName,
-                ["operator_id"] = operatorId,
                 ["quest_apk_build_id"] = apkBuildId,
                 ["quest_session_dir"] = sessionDir,
                 ["app_version"] = appVersion,
