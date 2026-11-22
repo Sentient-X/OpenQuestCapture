@@ -26,18 +26,24 @@ namespace RealityLog.Depth
         [SerializeField] private float raycastDistance = 10f;
         [SerializeField] private bool showDebugLines = true;
         [SerializeField] private bool isVisible = true;
-        [SerializeField] private CaptureTimer captureTimer;
+        [SerializeField] private CaptureTimer? captureTimer;
         [SerializeField] private EnvironmentRaycastManager environmentRaycastManager;
         [SerializeField] private Transform trackingSpace;
-        [SerializeField] private Camera camera;
+        [SerializeField] private Camera? camera;
         [SerializeField] private ParticleSystem pointCloudParticleSystem;
 
         private int hitCount = 0;
         private int totalRaycastCount = 0;
-        
+        // A missing CaptureTimer or camera is said once, not every frame: a per-frame flood
+        // (build 82, 3,456 NullReferenceExceptions in 45 s) rotates the rig's lines out of logcat.
+        private bool missingReported;
+
         private void Start()
         {
-            Debug.Log($"[{Constants.LOG_TAG}] DepthPointCloudRenderer - Started at {captureTimer.TargetCaptureFPS} FPS");
+            if (captureTimer == null || camera == null)
+                ReportMissing();
+            else
+                Debug.Log($"[{Constants.LOG_TAG}] DepthPointCloudRenderer - Started at {captureTimer.TargetCaptureFPS} FPS");
             
             if (pointCloudParticleSystem != null)
             {
@@ -65,14 +71,13 @@ namespace RealityLog.Depth
 
         private void Update()
         {
-            if (!showDebugLines || environmentRaycastManager == null || !captureTimer.IsCapturing || !captureTimer.ShouldCaptureThisFrame) return;
-
-            // Cast grid of rays from the camera
-            if (camera == null)
+            if (!showDebugLines || environmentRaycastManager == null) return;
+            if (captureTimer == null || camera == null)
             {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] DepthPointCloudRenderer - No camera found!");
+                ReportMissing();
                 return;
             }
+            if (!captureTimer.IsCapturing || !captureTimer.ShouldCaptureThisFrame) return;
 
             hitCount = 0;
             totalRaycastCount = 0;
@@ -107,7 +112,7 @@ namespace RealityLog.Depth
                         Color pointColor = GetColorFromSurfaceNormal(hit.point, camera.transform.position, hit.normal);
                         
                         // Emit particle
-                        if (isVisible)
+                        if (isVisible && pointCloudParticleSystem != null)
                         {
                             var emitParams = new ParticleSystem.EmitParams();
                             emitParams.position = hit.point;
@@ -120,6 +125,14 @@ namespace RealityLog.Depth
             }
         }
 
+
+        private void ReportMissing()
+        {
+            if (missingReported) return;
+            missingReported = true;
+            Debug.LogWarning($"[{Constants.LOG_TAG}] DepthPointCloudRenderer - disabled: "
+                + (captureTimer == null ? "no CaptureTimer" : "no camera") + " assigned");
+        }
 
         private Color GetColorFromSurfaceNormal(Vector3 hitPoint, Vector3 cameraPos, Vector3 surfaceNormal)
         {
