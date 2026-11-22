@@ -146,7 +146,7 @@ namespace RealityLog
             }
 
             // Find InfoCanvas animator so we can hide the standby label when recording
-            // starts from any source (cloud relay, HTTP, toggle, calibration)
+            // starts from any source (rig, HTTP, toggle, calibration)
             var infoCanvas = GameObject.Find("InfoCanvas");
             if (infoCanvas != null)
             {
@@ -812,7 +812,7 @@ namespace RealityLog
 
                     if (!isRecording)
                     {
-                        // Recording was stopped by another path (e.g., user pressed stop via cloud relay).
+                        // Recording was stopped by another path (e.g., the rig or the HTTP server stopped it).
                         return;
                     }
 

@@ -189,7 +189,7 @@ namespace RealityLog.UI
         }
 
         /// <summary>
-        /// Called by HttpServerController or CloudRelayService when the phone
+        /// Called by HttpServerController when the phone
         /// operator presses the Mark button. Records the marker, shows a visual
         /// flash, and triggers haptic feedback so the VR wearer knows a new
         /// episode has started.
