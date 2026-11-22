@@ -135,6 +135,30 @@ static class HeadTrackingMonitorHarness
         var status = HeadTrackingMonitor.StatusJson("");
         Expect(status.Contains("\"bodyRecordingGaps\": 1") && status.Contains("\"bodyLongestGapMs\": 150"),
             "/api/status carries the live recording's body gaps");
+        Expect(gaps.Latest == null && HeadTrackingMonitor.ControllersJson("").Contains("\"gap\": null"),
+            "rows without mono stamps place no gap for the rig");
+
+        // Rows stamped with mono_time_ns: the latest gap over the law is placed by both rows'
+        // stamps, so the rig can tell one inside its episode from one before its anchor.
+        var placed = new BodyGapCounter();
+        BodyGapCounter.Publish(placed);
+        long mono = 7_000_000_000;
+        at = 20.0;
+        for (var i = 0; i < 10; i++) { placed.Row(at, mono); at += .02; mono += 20_000_000; }
+        // The loop left `at` and `mono` one 20 ms step past the last row: this row is 175.242 ms after it.
+        placed.Row(at += .155242, mono += 155_242_000);
+        Expect(placed.Latest is { } first && Math.Abs(first.Ms - 175.242) < 1e-6
+            && first.StartMonoNs == 7_000_000_000 + 9 * 20_000_000 && first.EndMonoNs == first.StartMonoNs + 175_242_000,
+            $"a gap over the law is placed by the rows before and after it ({placed.Latest?.ToJson()})");
+        placed.Row(at += .02, mono += 20_000_000);
+        placed.Row(at += .11, mono += 110_000_000);
+        var latest = placed.Latest!;
+        Expect(Math.Abs(latest.Ms - 110) < 1e-6 && latest.EndMonoNs == mono,
+            $"the latest gap over the law replaces the earlier one ({latest.ToJson()})");
+        var controllers = HeadTrackingMonitor.ControllersJson("");
+        Expect(controllers.Contains("\"gap\": {\"ms\": 110.000, \"startMonoNs\": " + (mono - 110_000_000) + ", \"endMonoNs\": " + mono + "}"),
+            $"the controllers block carries body.gap for libsx_rig ({controllers})");
+        Expect(placed.Gaps == 2 && Math.Abs(placed.LongestGapMs - 175.242) < .01, "counts and the longest gap are unchanged by placing");
     }
 
     static OVRPlugin.BodyJointLocation Joint(float x) => new()

@@ -394,9 +394,10 @@ namespace RealityLog.OVR
             // and joint_valid_mask_0..2. Fixed length so the trailing columns never shift.
             // A fresh array per row: the writer may format it later on its own thread.
             var row = new double[ROW_LENGTH];
+            var monoNs = MonotonicClock.Nanos();
             row[0] = ConvertOvrSecToUnixTimeMs(timestamp);
             row[1] = timestamp;
-            row[2] = MonotonicClock.Nanos();
+            row[2] = monoNs;
             row[3] = bodyState.Confidence;
             row[4] = (double)bodyState.CalibrationStatus;
             row[5] = (double)bodyState.Fidelity;
@@ -443,7 +444,9 @@ namespace RealityLog.OVR
 
             writer.EnqueueRow(row);
             rows++;
-            gapCounter.Row(timestamp);
+            // The row's own stamps: the rig places a gap over the law against its episode
+            // anchor on mono_time_ns and stops a take the seal would refuse (sx tracking law).
+            gapCounter.Row(timestamp, monoNs);
         }
 
         private string[] BuildHeader()
