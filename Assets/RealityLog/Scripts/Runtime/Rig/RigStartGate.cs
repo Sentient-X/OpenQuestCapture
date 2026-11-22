@@ -21,6 +21,13 @@ namespace RealityLog.Rig
         /// a start go ahead or the rig does not judge it (PICO, an older library).
         /// </summary>
         public string? TrackingRefusalJson;
+        /// <summary>
+        /// The rig's <c>encoders.start_refusal</c> (<c>{"kind", "detail", "notice"}</c>): a gripper
+        /// sensor its readers saw fall silent in the last minute, or that says its own sensor is
+        /// unread (OQC #44, Pod 19); null when both encoders have streamed, or the rig does not
+        /// judge them (an older library).
+        /// </summary>
+        public string? EncoderRefusalJson;
     }
 
     /// <summary>
@@ -69,6 +76,13 @@ namespace RealityLog.Rig
             {
                 return tracking;
             }
+            // A gripper sensor that keeps falling silent: refused before the check too, since the
+            // check's two-second probe passes an encoder that streams at that instant (Pod 19,
+            // 2026-11-22: 16 of 18 starts passed it and stopped within 45 s).
+            if (Encoders(facts.EncoderRefusalJson) is { } encoders)
+            {
+                return encoders;
+            }
             string report;
             try
             {
@@ -99,14 +113,27 @@ namespace RealityLog.Rig
         /// <see cref="TrackingKinds"/> as a refusal coded by its kind, carrying the JSON (with the
         /// rig's notice, when it has one); null for anything else.
         /// </summary>
-        public static RigRefusal? Tracking(string? startRefusalJson)
+        public static RigRefusal? Tracking(string? startRefusalJson) =>
+            Typed(startRefusalJson, kind => Array.IndexOf(TrackingKinds, kind) >= 0);
+
+        /// <summary>The refusal kind of the rig's encoder liveness law (sx_pod_runtime::encoder_health), also its notice's code.</summary>
+        public const string EncoderSilentKind = "gripper_sensor_silent";
+
+        /// <summary>
+        /// A rig <c>encoders.start_refusal</c> of kind <see cref="EncoderSilentKind"/> as a refusal
+        /// coded by it, carrying the JSON with the rig's notice; null for anything else.
+        /// </summary>
+        public static RigRefusal? Encoders(string? startRefusalJson) =>
+            Typed(startRefusalJson, kind => kind == EncoderSilentKind);
+
+        private static RigRefusal? Typed(string? startRefusalJson, Func<string, bool> known)
         {
             if (string.IsNullOrEmpty(startRefusalJson)) return null;
             JObject? refusal;
             try { refusal = JToken.Parse(startRefusalJson!) as JObject; }
             catch (Newtonsoft.Json.JsonException) { return null; }
             var kind = refusal?["kind"] is JValue { Type: JTokenType.String } k ? (string?)k ?? "" : "";
-            if (Array.IndexOf(TrackingKinds, kind) < 0) return null;
+            if (!known(kind)) return null;
             var detail = refusal!["detail"] is JValue { Type: JTokenType.String } d ? (string?)d ?? "" : "";
             return new RigRefusal(kind, detail.Length > 0 ? detail : kind.Replace('_', ' '), startRefusalJson);
         }
@@ -148,10 +175,11 @@ namespace RealityLog.Rig
             {
                 return new RigRefusal("rig_check_failed", "the device check did not pass: " + problems, ex.ErrorJson);
             }
-            if (Array.IndexOf(TrackingKinds, kind) >= 0)
+            if (Array.IndexOf(TrackingKinds, kind) >= 0 || kind == EncoderSilentKind)
             {
-                // The library judged the controllers block handed over right before the start;
-                // the error's notice (sx_rig_last_error) is the operator's words for it.
+                // The library judged the controllers block handed over right before the start, or
+                // an encoder its readers saw fall silent; the error's notice (sx_rig_last_error)
+                // is the operator's words for it.
                 return new RigRefusal(kind, ex.Message, ex.ErrorJson);
             }
             if (kind == "factory_unanswered")

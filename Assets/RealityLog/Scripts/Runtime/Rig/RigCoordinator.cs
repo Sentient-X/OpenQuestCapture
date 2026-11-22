@@ -542,6 +542,7 @@ namespace RealityLog.Rig
             }
             // Read with the rig claimed and episodeLock released: it waits on the library.
             facts.TrackingRefusalJson = facts.Opened ? TrackingRefusalNow() : null;
+            facts.EncoderRefusalJson = facts.Opened ? EncoderRefusalNow() : null;
             RigRefusal? refusal = null;
             try
             {
@@ -1624,6 +1625,18 @@ namespace RealityLog.Rig
         private string? TrackingRefusalNow()
         {
             if (!ObserveTracking()) return null;
+            return StartRefusalNow("tracking");
+        }
+
+        /// <summary>
+        /// The rig's <c>encoders.start_refusal</c> now, as JSON (a gripper sensor its readers saw
+        /// fall silent in the last minute, OQC #44); null when both stream or the rig cannot say.
+        /// </summary>
+        private string? EncoderRefusalNow() => StartRefusalNow("encoders");
+
+        /// <summary>The <c>start_refusal</c> of the status block <paramref name="block"/>, as JSON, or null.</summary>
+        private string? StartRefusalNow(string block)
+        {
             // sx_rig_status answers {"state": "busy"} when another call holds the rig for 50 ms
             // (the device report, the status worker); that is no verdict, so ask again for up to
             // a second rather than let a start through unjudged.
@@ -1637,7 +1650,7 @@ namespace RealityLog.Rig
                         System.Threading.Thread.Sleep(40);
                         continue;
                     }
-                    return status["tracking"] is JObject tracking && tracking["start_refusal"] is JObject refusal
+                    return status[block] is JObject judged && judged["start_refusal"] is JObject refusal
                         ? refusal.ToString(Formatting.None) : null;
                 }
                 catch (Exception ex) when (ex is SxRigException || ex is JsonException)
@@ -1645,7 +1658,7 @@ namespace RealityLog.Rig
                     return null;
                 }
             }
-            Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: the rig stayed busy for 1 s; the start's tracking is judged by sx_rig_start_armed alone");
+            Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: the rig stayed busy for 1 s; the start's {block} is judged by sx_rig_start_armed alone");
             return null;
         }
 
