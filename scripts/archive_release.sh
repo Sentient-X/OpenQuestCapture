@@ -3,6 +3,7 @@
 # build record:
 #   ~/p3/quest-apk-releases/<versionName>-<versionCode>/OpenQuestCapture-<versionName>-<versionCode>.apk
 #   ~/p3/quest-apk-releases/<versionName>-<versionCode>/build.json
+#   ~/p3/quest-apk-releases/<versionName>-<versionCode>/unity-build.log   (--build only)
 # Unity APKs are not byte-reproducible, so the registry cites this exact file's sha256; the
 # record says what it was built from. A release directory is never overwritten.
 #   archive_release.sh <apk> --device <serial>     archive an APK built from this commit (tree clean
@@ -17,6 +18,10 @@
 # device_smoke.sh on the headset <serial> (it installs the APK there, never while recording) before
 # the archive. A failed gate archives nothing. NO_DEVICE_GATE=1 archives without the device gate,
 # and build.json then says "device_gate": null: such a build is not ready for anyone.
+# The Unity log itself is a gate too: --build refuses a log with "error CS", without
+# "^Build succeeded: ", or with any "is missing or no valid script" line (builds 81 and 82 lost
+# their CaptureTimer and LocaleFixer script references to a copied Library/ and only the player
+# log said so, 2026-11-22), and the archived release keeps that log as unity-build.log beside build.json.
 #   RELEASES      archive root (default ~/p3/quest-apk-releases)
 #   UNITY_EDITOR  the editor binary (default ~/p3/Unity/Hub/Editor/<ProjectVersion>/Editor/Unity)
 #   SX_QUEST_RIG  --build: an sx checkout's packages/sx-pod-runtime (its packages/sx-embodiments at its pin)
@@ -103,10 +108,19 @@ if [[ "$mode" == "--build" ]]; then
         echo "Unity exited 0 without a clean build; see $log" >&2
         exit 1
     fi
+    # A scene whose script reference no longer resolves (a Library/ copied from another checkout;
+    # builds 81 and 82) builds fine and starts with a null CaptureTimer. Unity says so once, as a
+    # warning, and only here.
+    if missing="$(grep -F "is missing or no valid script" "$log")"; then
+        echo "Build refused: a scene object lost its script (rebuild Library/, see $log):" >&2
+        echo "$missing" >&2
+        exit 1
+    fi
     apk="$out"
     rig_commit="$(git -C "$sx" rev-parse HEAD)"
 else
     apk="$mode"
+    log=""
     rig_commit=""
 fi
 
@@ -168,6 +182,10 @@ cat > "$target/build.json" <<JSON
   "archived_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
+if [[ -n "$log" ]]; then
+    cp "$log" "$target/unity-build.log"
+    chmod a-w "$target/unity-build.log"
+fi
 chmod a-w "$target/$name" "$target/build.json"
 echo "$target"
 cat "$target/build.json"
