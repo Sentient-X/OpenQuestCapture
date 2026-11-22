@@ -6,9 +6,9 @@ namespace RealityLog.Rig
 {
     /// <summary>
     /// The rig's sound cues. The operator wears the headset on the forehead and never sees the
-    /// display, so start, stop, a sealed episode, a refused one and a collector's sign-in are
-    /// told by sound only. Synthesized (no audio assets); each cue is distinct by contour:
-    /// start rises, stop falls, sealed is three quick high blips, refused a low buzz, sign-in a
+    /// display, so start, stop, a sealed episode, a refused one, an enrolment and a paired phone's
+    /// person becoming the collector are told by sound only. Synthesized (no audio assets); each cue is distinct by contour:
+    /// start rises, stop falls, sealed is three quick high blips, refused a low buzz, the chime a
     /// rising two-tone chime, a take near its length limit two level mid tones. Main thread only. Every cue logs one line,
     /// <c>[RealityLog] cue: &lt;name&gt; (&lt;reason&gt;)</c>, so a device log proves what played.
     /// </summary>
@@ -20,7 +20,7 @@ namespace RealityLog.Rig
             Stop,
             Sealed,
             Refused,
-            SignedIn,
+            Chime,
             /// <summary>A take a minute from its length limit: two short mid tones, level.</summary>
             Warning,
         }

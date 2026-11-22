@@ -182,7 +182,7 @@ public static class PodCardSnapshot
         yield return ("b-ready", Ready());
         yield return ("c-blocked", Blocked());
         yield return ("d-long", LongList());
-        yield return ("e-signed-out", SignedOut());
+        yield return ("e-unattributed", Unattributed());
         yield return ("f-seal-refused-frozen", SealRefusedFrozen());
         yield return ("g-no-episodes-held", NoEpisodesHeld());
         yield return ("h-storage-low", StorageLow());
@@ -195,7 +195,7 @@ public static class PodCardSnapshot
 
     private const string LivePod =
         "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
-        "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha Rao\"}}," +
+        "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"collector\":{\"id\":\"usr_asha\",\"name\":\"Asha Rao\"}}," +
         "\"roles\":[" +
         "{\"role\":\"left_hand_camera\",\"registered\":\"c1\",\"attached\":true,\"port\":\"1-1.3\",\"check\":\"ready\"}," +
         "{\"role\":\"right_hand_camera\",\"registered\":\"c2\",\"attached\":true,\"port\":\"1-1.4\",\"check\":\"ready\"}," +
@@ -210,7 +210,7 @@ public static class PodCardSnapshot
     private static PodCardState Live(string status, PodReadiness readiness, string chip)
     {
         var state = Enrolled(PodScreenBoard.Build("{" + status + "}", null, false, new StreamLiveness(), DateTime.UtcNow),
-            Lines(readiness, chip, "Asha Rao (signed in)"));
+            Lines(readiness, chip, PodStatusBoard.RecordingFor("Asha Rao")));
         state.RightPct = 12;
         return state;
     }
@@ -282,7 +282,7 @@ public static class PodCardSnapshot
             "\"startupErrors\":{},\"lastCheck\":null,\"native\":null,\"lastRefusal\":null}";
         return new PodCardState
         {
-            Lines = PodStatusBoard.Lines(status, null, false, false),
+            Lines = PodStatusBoard.Lines(status, null, false),
             Screen = PodScreenBoard.Build(status, null, false, new StreamLiveness(), DateTime.UtcNow),
             HeadsetPct = 81,
             LeftPct = null,
@@ -298,7 +298,7 @@ public static class PodCardSnapshot
 
     private static PodStatusLines Lines(PodReadiness readiness, string chip, string collector) =>
         new("Pod: pod-17", "Collector: " + collector, "Task: Fold towels", "Rig: open", "Last refusal: none", "",
-            "pod-17", readiness, chip, false, "", "");
+            "pod-17", readiness, chip, false);
 
     private static PodDeviceRow Device(string name, string value, string pill, PodTone tone, string hint = "") =>
         new(name, value, pill, tone, hint, "", "", "", PodDeviceState.Ready);
@@ -311,7 +311,6 @@ public static class PodCardSnapshot
         LeftPct = 80,
         RightPct = 24,
         Enrolled = true,
-        SignedIn = true,
         SetupAvailable = true,
         FactoryUrl = PodSetupJson.DefaultFactoryUrl,
         AuthUrl = PodSetupJson.DefaultAuthUrl,
@@ -340,7 +339,7 @@ public static class PodCardSnapshot
         screen.Episodes.Add(new PodEpisodeRow("ep-0003", 1, -1, "Sealing", PodTone.Warning, ""));
         screen.Episodes.Add(new PodEpisodeRow("ep-0002", 3, -1, "Awaiting review", PodTone.Neutral, ""));
         screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In Catalog", PodTone.Good, ""));
-        return Enrolled(screen, Lines(PodReadiness.Ready, "Ready", "Asha Rao (signed in)"));
+        return Enrolled(screen, Lines(PodReadiness.Ready, "Ready", PodStatusBoard.RecordingFor("Asha Rao")));
     }
 
     /// <summary>(c) Blocked with a long reason, a silent encoder with its fix, a missing camera and Check's answer.</summary>
@@ -369,22 +368,23 @@ public static class PodCardSnapshot
         screen.Episodes.Add(new PodEpisodeRow("ep-0002", 1, 1, "Seal refused", PodTone.Error,
             "right encoder: stream ended early (2.1 s of 30 s); replug it before the next start"));
         screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In Catalog", PodTone.Good, ""));
-        var state = Enrolled(screen, Lines(PodReadiness.Refused, "Refused", "Asha Rao (signed in)"));
+        var state = Enrolled(screen, Lines(PodReadiness.Refused, "Refused", PodStatusBoard.RecordingFor("Asha Rao")));
         state.PanelTone = PodTone.Error;
         state.PanelHeadline = "Check failed: right encoder sends nothing; left camera is not on USB";
         return state;
     }
 
-    /// <summary>(e) Enrolled, nobody signed in: Start is blocked with "Sign in to record"; the real board's words.</summary>
-    private static PodCardState SignedOut()
+    /// <summary>(e) Enrolled, no phone paired: Start is offered and the take records unattributed; the real board's words.</summary>
+    private static PodCardState Unattributed()
     {
         const string status =
             "{\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
-            "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"operator\":{\"signed_in\":false}}," +
+            "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"collector\":null}," +
             "\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}}}";
         var state = Enrolled(PodScreenBoard.Build(status, null, false, new StreamLiveness(), DateTime.UtcNow),
-            Lines(PodReadiness.NotReady, "Not ready", "nobody signed in"));
-        state.SignedIn = false;
+            Lines(PodReadiness.Ready, "Ready", PodStatusBoard.Unattributed));
+        state.Phone = CompanionCard.Describe(CompanionPhase.NotPaired, "", "", "pod-17", "");
+        state.PhonePhase = CompanionPhase.NotPaired;
         return state;
     }
 
@@ -415,6 +415,6 @@ public static class PodCardSnapshot
         screen.Episodes.Add(new PodEpisodeRow("ep-0003", 6, -1, "In Catalog", PodTone.Good, ""));
         screen.Episodes.Add(new PodEpisodeRow("ep-0002", 6, -1, "In Catalog", PodTone.Good, ""));
         screen.Episodes.Add(new PodEpisodeRow("ep-0001", 6, -1, "In Catalog", PodTone.Good, ""));
-        return Enrolled(screen, Lines(PodReadiness.Ready, "Ready", "Asha Rao (signed in)"));
+        return Enrolled(screen, Lines(PodReadiness.Ready, "Ready", PodStatusBoard.RecordingFor("Asha Rao")));
     }
 }

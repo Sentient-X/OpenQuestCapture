@@ -11,9 +11,9 @@ namespace RealityLog.Rig
     /// <summary>The Pod card's status chip: what its colour means.</summary>
     public enum PodReadiness
     {
-        /// <summary>Enrolled, a collector signed in, and the rig (when one is expected) checked ready.</summary>
+        /// <summary>Enrolled, the Factory answering, and the rig (when one is expected) checked ready.</summary>
         Ready,
-        /// <summary>Not set up, signed out, or the rig not checked ready yet.</summary>
+        /// <summary>Not set up, the Factory not answering yet, or the rig not checked ready yet.</summary>
         NotReady,
         /// <summary>The last start was refused, or the rig failed to open or load.</summary>
         Refused,
@@ -21,7 +21,7 @@ namespace RealityLog.Rig
         LocalOnly,
     }
 
-    /// <summary>The recordings menu's Pod card: its six lines, its chip and a pending sign-in code.</summary>
+    /// <summary>The recordings menu's Pod card: its six lines and its chip.</summary>
     public readonly struct PodStatusLines
     {
         public string Pod { get; }
@@ -37,13 +37,9 @@ namespace RealityLog.Rig
         public string ReadinessText { get; }
         /// <summary>True when there is a refusal to show (LastRefusal is not "none").</summary>
         public bool HasRefusal { get; }
-        /// <summary>The collector's sign-in code, only while the sign-in is pending; else "".</summary>
-        public string SignInCode { get; }
-        /// <summary>Where to approve <see cref="SignInCode"/>; "" when unknown or not pending.</summary>
-        public string SignInAddress { get; }
 
         public PodStatusLines(string pod, string collector, string task, string rig, string lastRefusal, string lastEpisode,
-            string podName, PodReadiness readiness, string readinessText, bool hasRefusal, string signInCode, string signInAddress)
+            string podName, PodReadiness readiness, string readinessText, bool hasRefusal)
         {
             Pod = pod;
             Collector = collector;
@@ -55,8 +51,6 @@ namespace RealityLog.Rig
             Readiness = readiness;
             ReadinessText = readinessText;
             HasRefusal = hasRefusal;
-            SignInCode = signInCode;
-            SignInAddress = signInAddress;
         }
     }
 
@@ -142,8 +136,7 @@ namespace RealityLog.Rig
         /// <summary>How long a step's message stays on the Pod setup line before the current state shows.</summary>
         public const double SetupMessageSeconds = 60;
 
-        public static PodStatusLines Lines(string? rigStatusJson, StartRefusal? lastStart, bool lastStartSucceeded,
-            bool askingForCode)
+        public static PodStatusLines Lines(string? rigStatusJson, StartRefusal? lastStart, bool lastStartSucceeded)
         {
             JObject? status = null;
             try
@@ -153,35 +146,34 @@ namespace RealityLog.Rig
             catch (JsonException)
             {
             }
-            return Lines(status, lastStart, lastStartSucceeded, askingForCode);
+            return Lines(status, lastStart, lastStartSucceeded);
         }
 
         /// <summary>The status already parsed on the coordinator's worker; readers never mutate it.</summary>
-        public static PodStatusLines Lines(JObject? status, StartRefusal? lastStart, bool lastStartSucceeded,
-            bool askingForCode)
+        public static PodStatusLines Lines(JObject? status, StartRefusal? lastStart, bool lastStartSucceeded)
         {
             var refusal = RefusalLine(status, lastStart, lastStartSucceeded);
             var hasRefusal = refusal != NoRefusal;
             var (readiness, readinessText) = Readiness(status, hasRefusal);
-            var (code, address) = PendingSignIn(status, askingForCode);
             var enrolled = Bool(status, "enrolled") == true;
             return new PodStatusLines(
                 PodLine(status),
-                CollectorLine(status, askingForCode),
+                CollectorLine(status),
                 TaskLine(status),
                 RigLine(status),
                 refusal,
                 EpisodeLine(status),
                 enrolled ? Str(status?["podId"]) : "",
-                readiness, readinessText, hasRefusal, code, address);
+                readiness, readinessText, hasRefusal);
         }
 
         private const string NoRefusal = "Last refusal: none";
 
         /// <summary>
         /// The chip: Local only first; then not set up; a rig that failed to load or open is an
-        /// error; a signed-in collector with the rig checked ready (or no rig expected) is ready;
-        /// else a standing refusal shows as refused, and anything else is not ready.
+        /// error; a Factory floor with the rig checked ready (or no rig expected) is ready, with
+        /// a collector or without one (an unpaired pod records unattributed); else a standing
+        /// refusal shows as refused, and anything else is not ready.
         /// </summary>
         public static (PodReadiness readiness, string text) Readiness(JObject? status, bool hasRefusal)
         {
@@ -192,23 +184,19 @@ namespace RealityLog.Rig
             {
                 return (PodReadiness.Refused, "Rig error");
             }
-            var signedIn = status!["floor"] is JObject floor && floor["operator"] is JObject collector
-                && collector["signed_in"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
+            var floorAnswered = status!["floor"] is JObject;
             var rigReady = !rigExpected
                 || (Bool(status, "open") == true && status["lastCheck"] is JObject check && RigStatusJson.Check(check.ToString(Formatting.None)).ready);
-            if (signedIn && rigReady) return (PodReadiness.Ready, "Ready");
+            if (floorAnswered && rigReady) return (PodReadiness.Ready, "Ready");
             return hasRefusal ? (PodReadiness.Refused, "Refused") : (PodReadiness.NotReady, "Not ready");
         }
 
-        /// <summary>The collector's sign-in code and address, only when the Collector line shows them; else ("", "").</summary>
-        public static (string code, string address) PendingSignIn(JObject? status, bool askingForCode)
-        {
-            if (askingForCode || Bool(status, "enrolled") != true || (Bool(status, "localOnly") ?? true)) return ("", "");
-            if (status?["floor"] is not JObject floor || floor["operator"] is not JObject collector) return ("", "");
-            if (collector["signed_in"] is JValue { Type: JTokenType.Boolean } signedIn && (bool)signedIn) return ("", "");
-            var code = Str(collector["user_code"]);
-            return code.Length == 0 ? ("", "") : (code, Str(collector["verification_uri_complete"]));
-        }
+        /// <summary>Who the pod records for, as the Pod card and the status screen say it.</summary>
+        public static string RecordingFor(string? collector) =>
+            collector is { Length: > 0 } name ? "Recording for " + name : Unattributed;
+
+        /// <summary>A pod with no phone paired (and no collector put on it) still records, unattributed.</summary>
+        public const string Unattributed = "No phone paired: recording unattributed";
 
         /// <summary>
         /// A line split for the card's label and value columns: "Rig: ready" -> ("Rig", "ready");
@@ -244,33 +232,20 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// floor.operator: signed in (with the collector's name), a pending sign-in (its code
-        /// and address, shown only while the floor says pending), or signed out (with the
-        /// floor's message, e.g. the code expired).
+        /// floor.collector: the person whose paired phone opened the pod's shift ("Recording
+        /// for Asha"), or nobody, in which case the pod records unattributed. The headset never
+        /// signs anyone in.
         /// </summary>
-        public static string CollectorLine(JObject? status, bool askingForCode)
+        public static string CollectorLine(JObject? status)
         {
             if (Bool(status, "enrolled") != true) return "Collector: enroll this headset first";
-            if (Bool(status, "localOnly") ?? true) return "Collector: not needed (Local only)";
-            if (askingForCode) return "Collector: asking the Factory for a sign-in code...";
-            if (status?["floor"] is not JObject floor || floor["operator"] is not JObject collector)
+            if (Bool(status, "localOnly") ?? true) return "Collector: none (Local only)";
+            if (status?["floor"] is not JObject)
             {
                 // The floor's error stays in the status for the logs, never on the card.
                 return "Collector: waiting for the Factory";
             }
-            if (collector["signed_in"] is JValue { Type: JTokenType.Boolean } signedIn && (bool)signedIn)
-            {
-                var name = Str(collector["display_name"]);
-                return name.Length > 0 ? "Collector: signed in as " + name : "Collector: signed in";
-            }
-            var code = Str(collector["user_code"]);
-            if (code.Length > 0)
-            {
-                var address = Str(collector["verification_uri_complete"]);
-                return "Collector: sign-in pending, approve code " + code + (address.Length > 0 ? " at " + address : "");
-            }
-            var message = Str(floor["message"]);
-            return "Collector: signed out" + (message.Length > 0 ? " (" + Clip(message, 60) + ")" : "") + ", tap Sign in collector";
+            return "Collector: " + RecordingFor(RigStatusJson.CollectorName(status));
         }
 
         /// <summary>

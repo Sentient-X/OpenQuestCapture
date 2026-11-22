@@ -4,6 +4,7 @@ using System;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace RealityLog.Rig
@@ -87,13 +88,16 @@ namespace RealityLog.Rig
         public static int? First(int? preferred, int? fallback) => preferred ?? fallback;
     }
 
-    /// <summary>The operator's controls, on the Pod card and from the paired phone (companion.proto CompanionCommand).</summary>
+    /// <summary>
+    /// The operator's controls, on the Pod card and from the paired phone (companion.proto
+    /// CompanionCommand). Ending a collection is not one: the Factory ends it between episodes
+    /// when a change needs it.
+    /// </summary>
     public enum PodControl
     {
         Check,
         Start,
         Stop,
-        EndCollection,
     }
 
     /// <summary>How one control ended, in the card's words; the phone gets the same.</summary>
@@ -119,16 +123,14 @@ namespace RealityLog.Rig
         {
             PodControl.Check => "CHECK",
             PodControl.Start => "START",
-            PodControl.Stop => "STOP",
-            _ => "END_COLLECTION",
+            _ => "STOP",
         };
 
         public static string Label(PodControl control) => control switch
         {
             PodControl.Check => "Check",
             PodControl.Start => "Start",
-            PodControl.Stop => "Stop",
-            _ => "End collection",
+            _ => "Stop",
         };
 
         /// <summary>The pill's word while the control runs.</summary>
@@ -136,13 +138,8 @@ namespace RealityLog.Rig
         {
             PodControl.Check => "Checking...",
             PodControl.Start => "Starting...",
-            PodControl.Stop => "Stopping...",
-            _ => "Ending...",
+            _ => "Stopping...",
         };
-
-        /// <summary>"End collection now? 3 of 10 recorded": what both screens ask before ending.</summary>
-        public static string EndQuestion(long credited, long requested) =>
-            requested > 0 ? "End collection now? " + credited + " of " + requested + " recorded" : "End collection now?";
 
         /// <summary>The result line under the controls: "Check: Ready to record".</summary>
         public static string Line(PodControlResult result) =>
@@ -242,12 +239,11 @@ namespace RealityLog.Rig
             _ => episode.FailedAt >= 0 ? StageFailed : Math.Max(0, Math.Min(episode.Reached, 6)),
         };
 
-        /// <summary>The signed-in collector's name; "" when nobody is signed in.</summary>
-        public static string Collector(JObject? status) =>
-            status?["floor"] is JObject floor && floor["operator"] is JObject collector
-            && collector["signed_in"] is JValue { Type: JTokenType.Boolean } signedIn && (bool)signedIn
-                ? Str(collector["display_name"])
-                : "";
+        /// <summary>
+        /// HeadsetStatus.collector: floor.collector's name (the Factory shift's collector, the
+        /// paired phone's person); "" while the pod records unattributed.
+        /// </summary>
+        public static string Collector(JObject? status) => RigStatusJson.CollectorName(status) ?? "";
 
         /// <summary>deviceReport.battery_percent (0..100); null when the headset has not read it.</summary>
         public static int? Battery(JObject? status) =>
@@ -312,103 +308,6 @@ namespace RealityLog.Rig
             foreach (var arg in notice.Args.OrderBy(a => a.Key, StringComparer.Ordinal)) text.Append('|').Append(arg.Key).Append('=').Append(arg.Value);
             text.Append('\n');
         }
-    }
-
-    /// <summary>What the sign-in hand-off sends the phone next.</summary>
-    public readonly struct CompanionSignInSend
-    {
-        public static readonly CompanionSignInSend None = default;
-
-        /// <summary>Request: the code to approve; Result: how it ended; else nothing.</summary>
-        public CompanionSignInSendKind Kind { get; }
-        public string UserCode { get; }
-        public string VerificationUriComplete { get; }
-        public long ExpiresAtMs { get; }
-        /// <summary>The collector signed in as (a successful Result); else "".</summary>
-        public string Collector { get; }
-        /// <summary>Why the sign-in ended without a collector (a failed Result); else "".</summary>
-        public string Error { get; }
-
-        public CompanionSignInSend(CompanionSignInSendKind kind, string userCode, string uri, long expiresAtMs, string collector, string error)
-        {
-            Kind = kind;
-            UserCode = userCode;
-            VerificationUriComplete = uri;
-            ExpiresAtMs = expiresAtMs;
-            Collector = collector;
-            Error = error;
-        }
-    }
-
-    public enum CompanionSignInSendKind
-    {
-        None,
-        Request,
-        Result,
-    }
-
-    /// <summary>
-    /// The sign-in hand-off from the rig's floor status: a pending code goes to the paired phone
-    /// once per code (and again on a new session), and when that sign-in ends the phone gets
-    /// its result: the collector, or why not. Whoever started the sign-in (the headset's button,
-    /// the phone's ask, the HTTP route), the phone sees it. Pure: tested on the host.
-    /// </summary>
-    public sealed class CompanionSignInWatch
-    {
-        private string? sentCode;
-        private bool awaitingResult;
-        private string? failure;
-
-        /// <summary>A new session with the phone: a code still pending is sent again.</summary>
-        public void LinkRestarted() => sentCode = null;
-
-        /// <summary>The headset's sign-in call itself failed (no code was issued): the phone hears why.</summary>
-        public void SignInFailed(string error)
-        {
-            failure = error;
-        }
-
-        /// <summary>
-        /// What to send now, given the rig status, whether the phone link is ready, and the
-        /// expiry the headset's sign-in call gave for a code (0 when unknown).
-        /// </summary>
-        public CompanionSignInSend Observe(JObject? status, bool linkReady, Func<string, long> expiresAtMs)
-        {
-            if (!linkReady) return CompanionSignInSend.None;
-            if (failure != null)
-            {
-                var error = failure;
-                failure = null;
-                awaitingResult = false;
-                sentCode = null;
-                return new CompanionSignInSend(CompanionSignInSendKind.Result, "", "", 0, "", error);
-            }
-            if (status?["floor"] is not JObject floor || floor["operator"] is not JObject collector) return CompanionSignInSend.None;
-            var signedIn = collector["signed_in"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
-            var code = Str(collector["user_code"]);
-            if (!signedIn && code.Length > 0)
-            {
-                if (code == sentCode) return CompanionSignInSend.None;
-                sentCode = code;
-                awaitingResult = true;
-                return new CompanionSignInSend(CompanionSignInSendKind.Request, code, Str(collector["verification_uri_complete"]),
-                    expiresAtMs(code), "", "");
-            }
-            if (!awaitingResult) return CompanionSignInSend.None;
-            awaitingResult = false;
-            sentCode = null;
-            if (signedIn)
-            {
-                var name = Str(collector["display_name"]);
-                return new CompanionSignInSend(CompanionSignInSendKind.Result, "", "", 0, name.Length > 0 ? name : "a collector", "");
-            }
-            var message = Str(floor["message"]);
-            return new CompanionSignInSend(CompanionSignInSendKind.Result, "", "", 0, "",
-                message.Length > 0 ? message : "The sign-in code expired or was not approved");
-        }
-
-        private static string Str(JToken? token) =>
-            token is JValue { Type: JTokenType.String } value ? (string?)value ?? "" : "";
     }
 
     /// <summary>Where the headset's link with its phone stands, as the Pod card shows it.</summary>
@@ -664,5 +563,67 @@ namespace RealityLog.Rig
 
         private static string Clip(string text, int max) =>
             text.Length <= max ? text : text.Substring(0, max - 3) + "...";
+    }
+
+    /// <summary>
+    /// What the rig is told of the paired phone (<c>sx_rig_phone_link</c>), and when: once at
+    /// start-up with the restored pairing, then on every change of the pairing (paired, forgotten,
+    /// another phone) or of the link (connected, dropped). The heartbeat carries it as
+    /// <c>paired_phone</c>, and the Factory credits the phone-opened shift's person only while it
+    /// names that person connected, so a dead or absent phone stops crediting within a beat. A
+    /// call the rig refused is tried again a second later, never every frame; one is in flight at
+    /// a time (the call waits on the rig's lock, so it runs off the main thread). Pure: tested on
+    /// the host. <see cref="Due"/> on the main thread, <see cref="Done"/> from any.
+    /// </summary>
+    public sealed class PhoneLinkReport
+    {
+        public const double RetrySeconds = 1.0;
+
+        private volatile string? accepted;
+        private volatile string? inFlight;
+        private volatile bool failed;
+        private volatile bool refusing;
+        private double retryAt = double.NegativeInfinity;
+
+        /// <summary>
+        /// The rig's word: <c>{}</c> unpaired, else <c>{"collector_id": id, "connected": bool}</c>;
+        /// a phone paired before it named its person gives <c>""</c>, which the Factory reads as
+        /// unattributed.
+        /// </summary>
+        public static string Json(bool paired, string collectorId, bool connected) =>
+            paired
+                ? "{\"collector_id\":" + JsonConvert.ToString(collectorId) + ",\"connected\":" + (connected ? "true" : "false") + "}"
+                : "{}";
+
+        /// <summary>The word to send now, marked in flight, or null: the rig holds it, one is in flight, or a refusal waits out its second.</summary>
+        public string? Due(bool paired, string collectorId, bool connected, double now)
+        {
+            if (inFlight != null) return null;
+            if (failed)
+            {
+                failed = false;
+                retryAt = now + RetrySeconds;
+            }
+            var json = Json(paired, collectorId, connected);
+            if (json == accepted || now < retryAt) return null;
+            inFlight = json;
+            return json;
+        }
+
+        /// <summary>
+        /// The call for <see cref="Due"/>'s word ended: taken, or refused (tried again after
+        /// <see cref="RetrySeconds"/>). True for the first refusal after a call the rig took (or
+        /// none yet), so a lasting refusal is logged once, not every second.
+        /// </summary>
+        public bool Done(bool ok)
+        {
+            if (inFlight is not string json) return false;
+            var first = !ok && !refusing;
+            refusing = !ok;
+            if (ok) accepted = json;
+            else failed = true;
+            inFlight = null;
+            return first;
+        }
     }
 }

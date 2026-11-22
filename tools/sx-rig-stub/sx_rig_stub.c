@@ -12,6 +12,9 @@ static int g_open = 0;
  * buffer, which exercises its SX_RIG_E_BUFFER retry. */
 static int g_long_status = 0;
 static char g_long[6000];
+/* Set by a config containing "stub_collector": the floor names the collector the paired
+ * phone opened the Factory shift for; otherwise floor.collector is null (unattributed). */
+static int g_collector = 0;
 
 static int32_t fail(int32_t code, const char *name, const char *detail) {
     snprintf(g_last_error, sizeof g_last_error, "{\"code\":\"%s\",\"detail\":\"%s\"}", name, detail);
@@ -30,6 +33,7 @@ int32_t sx_rig_open(const char *config_json) {
     if (config_json == NULL || config_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "config is not a JSON object");
     g_open = 1;
     g_long_status = strstr(config_json, "\"stub_long_status\"") != NULL;
+    g_collector = strstr(config_json, "\"stub_collector\"") != NULL;
     return SX_RIG_OK;
 }
 
@@ -52,17 +56,6 @@ int32_t sx_rig_api_token(char *out_json, size_t cap, size_t *needed) {
     return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: not enrolled");
 }
 
-int32_t sx_rig_sign_in(char *out_json, size_t cap, size_t *needed) {
-    (void)out_json; (void)cap; (void)needed;
-    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
-    return fail(SX_RIG_E_STATE, "state", "stub libsx_rig: not enrolled");
-}
-
-int32_t sx_rig_sign_out(void) {
-    if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
-    return SX_RIG_OK;
-}
-
 int32_t sx_rig_command(const char *command_json, char *out_json, size_t cap, size_t *needed) {
     if (command_json == NULL || command_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "command is not a JSON object");
     if (strstr(command_json, "\"finalize\"") != NULL) {
@@ -74,6 +67,15 @@ int32_t sx_rig_command(const char *command_json, char *out_json, size_t cap, siz
 int32_t sx_rig_report_device(const char *device_json) {
     if (device_json == NULL || device_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "device report is not a JSON object");
     if (!g_open) return fail(SX_RIG_E_STATE, "state", "rig is not open");
+    return SX_RIG_OK;
+}
+
+/* Taken before sx_rig_open too, as the rig keeps it outside the open rig. A collector_id
+ * without connected refuses, as the rig's does. */
+int32_t sx_rig_phone_link(const char *phone_json) {
+    if (phone_json == NULL || phone_json[0] != '{') return fail(SX_RIG_E_ARGUMENT, "argument", "phone_json is a JSON object");
+    if (strstr(phone_json, "\"collector_id\"") != NULL && strstr(phone_json, "\"connected\"") == NULL)
+        return fail(SX_RIG_E_ARGUMENT, "argument", "phone_json: a paired phone says whether it is connected");
     return SX_RIG_OK;
 }
 
@@ -125,9 +127,12 @@ int32_t sx_rig_status(char *out_json, size_t cap, size_t *needed) {
         memcpy(g_long + sizeof g_long - 3, "\"}", 3);
         return emit(g_long, out_json, cap, needed);
     }
-    return emit(g_open
-        ? "{\"stub\":true,\"state\":\"no_rig\",\"detail\":\"stub libsx_rig: this build has no rig implementation\"}"
-        : "{\"stub\":true,\"state\":\"closed\"}", out_json, cap, needed);
+    if (!g_open) return emit("{\"stub\":true,\"state\":\"closed\"}", out_json, cap, needed);
+    return emit(g_collector
+        ? "{\"stub\":true,\"state\":\"no_rig\",\"detail\":\"stub libsx_rig: this build has no rig implementation\","
+          "\"floor\":{\"collector\":{\"id\":\"usr_stub\",\"name\":\"Stub Collector\"},\"collection\":null}}"
+        : "{\"stub\":true,\"state\":\"no_rig\",\"detail\":\"stub libsx_rig: this build has no rig implementation\","
+          "\"floor\":{\"collector\":null,\"collection\":null}}", out_json, cap, needed);
 }
 
 int32_t sx_rig_last_error(char *out_json, size_t cap, size_t *needed) {

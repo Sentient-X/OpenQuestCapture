@@ -1,7 +1,6 @@
 # nullable enable
 
 using System;
-using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -18,9 +17,10 @@ namespace RealityLog.Rig
     /// on the Pod card reads the phone's sxc1: QR through the passthrough camera (the session the
     /// recorder keeps open; never while recording), then the companion library (CompanionLink) pairs over
     /// Bluetooth LE with that phone, whose operator confirms on the phone. Once paired, it
-    /// reconnects on every launch; the phone's SignInAsk and SignOutAsk run the Pod card's own
-    /// sign-in and sign-out; a pending sign-in code goes to the phone, and so does its result;
-    /// and the status screen (HeadsetStatusMap) is pushed on every change and at least every 5 s.
+    /// reconnects on every launch, and the status screen (HeadsetStatusMap) is pushed on every
+    /// change and at least every 5 s. The headset signs nobody in: on Accept the phone opens the
+    /// pod's Factory shift with its own person's key, so that person is the collector the rig
+    /// seals and the status names; with no phone paired the pod records unattributed.
     /// </summary>
     public sealed class PhoneCompanion : MonoBehaviour
     {
@@ -46,13 +46,13 @@ namespace RealityLog.Rig
 
         private CompanionLink? link;
         private readonly CompanionLinkTracker tracker = new();
+        private readonly PhoneLinkReport phoneLink = new();
         // A phase this side holds over the link's (scanning, a refusal, a denied permission).
         private CompanionPhase? local;
         private bool scanning;
         private float scanStarted;
         private VideoRecorderSurfaceProvider? scanCamera;
         private bool wasConnected;
-        private readonly CompanionSignInWatch signIn = new();
         private readonly StreamLiveness liveness = new();
         private string lastStatusPrint = "";
         private float lastStatusSent = float.NegativeInfinity;
@@ -74,7 +74,6 @@ namespace RealityLog.Rig
         {
             link = CompanionLink.Open();
             if (link == null) return;
-            if (PodSetupController.Instance is { } setup) setup.SignInFailed += OnSignInFailed;
             if (PodControls.Instance is { } controls) controls.Finished += OnControlFinished;
             tracker.Reset(link.Paired);
             // Reconnect to the paired phone on launch, once Bluetooth is allowed.
@@ -84,7 +83,6 @@ namespace RealityLog.Rig
         private void OnDestroy()
         {
             StopScan();
-            if (PodSetupController.Instance is { } setup) setup.SignInFailed -= OnSignInFailed;
             if (PodControls.Instance is { } controls) controls.Finished -= OnControlFinished;
             link?.Dispose();
             link = null;
@@ -176,6 +174,7 @@ namespace RealityLog.Rig
             }
             PollScan();
             ReadLink();
+            ReportPhoneLink();
             // The session's work follows the link itself, whatever this side shows over it.
             if (tracker.Phase != CompanionPhase.Connected)
             {
@@ -184,12 +183,10 @@ namespace RealityLog.Rig
             }
             if (!wasConnected)
             {
-                // A new session: the phone hears a pending code again and gets the status at once.
+                // A new session: the phone gets the status at once.
                 wasConnected = true;
-                signIn.LinkRestarted();
                 lastStatusPrint = "";
             }
-            HandOffSignIn();
             PushStatus();
         }
 
@@ -228,7 +225,7 @@ namespace RealityLog.Rig
         private void ReadLink()
         {
             var before = tracker.Phase;
-            Safe(() => link!.Drain(tracker, SignInAsked, SignOutAsked, ControlAsked));
+            Safe(() => link!.Drain(tracker, ControlAsked));
             PhoneName = link!.PhoneName;
             OperatorName = link.OperatorName;
             // The link's own progress replaces a refusal this side held.
@@ -237,55 +234,31 @@ namespace RealityLog.Rig
             Error = local != null ? Error : tracker.Error;
         }
 
-        /// <summary>The phone's SignInAsk: the Pod card's Sign in, or the collector already signed in.</summary>
-        private void SignInAsked()
+        /// <summary>
+        /// The pairing and the link to the rig (sx_rig_phone_link), first with the pairing restored at
+        /// launch, then on each change: its heartbeat's paired_phone is what lets the Factory credit
+        /// the phone-opened shift's person. Off the main thread, since the call waits on the rig's
+        /// lock; the id is never logged.
+        /// </summary>
+        private void ReportPhoneLink()
         {
-            var rig = RigCoordinator.Instance;
-            if (rig is { CollectorSignedInNow: true })
-            {
-                var name = HeadsetStatusMap.Collector(Status());
-                Safe(() => link!.SendSignInResult(name.Length > 0 ? name : "a collector", ""), false);
-                return;
-            }
-            if (PodSetupController.Instance is not { } setup)
-            {
-                Safe(() => link!.SendSignInResult("", "The headset's pod setup is not running"), false);
-                return;
-            }
-            if (setup.SignIn() is string refused) signIn.SignInFailed(refused);
-        }
-
-        /// <summary>The phone's SignOutAsk: the HTTP route's sign-out rules (not while recording).</summary>
-        private void SignOutAsked()
-        {
-            var rig = RigCoordinator.Instance;
-            if (rig is not { Enrolled: true, IsOpen: true } || rig.LocalOnly)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: sign-out asked, but this headset has no collector to sign out");
-                return;
-            }
-            if (FindFirstObjectByType<RecordingManager>() is { State: not RecordingState.Idle })
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: sign-out asked while recording; refused");
-                rig.QueueCue(RigCues.Cue.Refused, "phone sign-out refused while recording");
-                return;
-            }
-            Task.Run(() =>
+            var json = phoneLink.Due(link!.Paired, link.CollectorId, tracker.Phase == CompanionPhase.Connected, Time.unscaledTimeAsDouble);
+            if (json == null) return;
+            System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
-                    rig.SignOut();
+                    SxRig.PhoneLink(json);
+                    phoneLink.Done(true);
                 }
-                catch (SxRigException ex)
+                catch (Exception ex)
                 {
-                    Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: sign-out failed: {ex.Message}");
+                    if (phoneLink.Done(false)) Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: the rig did not take the phone link (tried again each second): {ex.Message}");
                 }
             });
         }
 
-        private void OnSignInFailed(string error) => signIn.SignInFailed(error);
-
-        /// <summary>The phone's Check, Start, Stop or (confirmed there) End collection: the Pod card's own control.</summary>
+        /// <summary>The phone's Check, Start or Stop: the Pod card's own control.</summary>
         private void ControlAsked(PodControl control)
         {
             Debug.Log($"[{Constants.LOG_TAG}] PhoneCompanion: the phone asked {control}");
@@ -304,21 +277,6 @@ namespace RealityLog.Rig
             Safe(() => link.SendCommandResult(result), false);
             lastStatusPrint = ""; // a check or a start changes the screen: push it now
             lastStatusCheck = float.NegativeInfinity;
-        }
-
-        private void HandOffSignIn()
-        {
-            var rig = RigCoordinator.Instance;
-            var send = signIn.Observe(Status(), true, code => rig?.SignInCodeExpiresAtMs(code) ?? 0);
-            switch (send.Kind)
-            {
-                case CompanionSignInSendKind.Request:
-                    Safe(() => link!.SendSignInRequest(send.UserCode, send.VerificationUriComplete, send.ExpiresAtMs), false);
-                    break;
-                case CompanionSignInSendKind.Result:
-                    Safe(() => link!.SendSignInResult(send.Collector, send.Error), false);
-                    break;
-            }
         }
 
         /// <summary>The status screen to the phone: on every change, and at least every 5 s.</summary>

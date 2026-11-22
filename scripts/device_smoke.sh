@@ -83,6 +83,12 @@ fi
 a shell "rm -f $files/camera_self_test/report.json; echo '{\"seconds\":$seconds}' > $files/camera_self_test.request"
 a shell am force-stop "$pkg"
 a logcat -c
+# Stream the log from launch: a Quest's main ring buffer is 256 KiB and the system's controller IPC
+# lines fill it in about 30 s, so a dump at the end had already lost the app's startup lines
+# (RigCoordinator: rig opened, 7 s before the read, on pod4 build 83, 2026-11-22).
+a logcat -v time > "$out/logcat.txt" 2>/dev/null &
+stream=$!
+trap 'kill "$stream" 2>/dev/null || true' EXIT
 a shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 deadline=$((SECONDS + seconds + 90))
 verdict=""
@@ -92,7 +98,7 @@ while [[ $SECONDS -lt $deadline ]]; do
     sleep 3
 done
 sleep 2   # the cue line follows the verdict
-a logcat -d -v time > "$out/logcat.txt"
+kill "$stream" 2>/dev/null || true; wait "$stream" 2>/dev/null || true
 a logcat -d -b crash > "$out/crash.txt"
 a exec-out cat "$files/camera_self_test/report.json" > "$out/self_test_report.json" 2>/dev/null || true
 a exec-out screencap -p > "$out/screen.png" || true

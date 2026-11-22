@@ -360,7 +360,7 @@ namespace RealityLog.Network
         /// <summary>
         /// Starts or stops a recording exactly as POST /api/start-recording (rig check, OQC
         /// session first, sx_rig_start_armed) or /api/stop-recording does, with an empty body:
-        /// the seal names the signed-in collector (Local only: local-only). Runs on a worker thread, since a start
+        /// the rig seals the pod's collector (the paired phone's person), or none. Runs on a worker thread, since a start
         /// waits on the main thread and on the rig. The operator may not see the display:
         /// every outcome is a sound (start rises, stop falls, refused buzzes).
         /// The left menu button toggles (<paramref name="start"/> null); the Pod card and the
@@ -470,8 +470,6 @@ namespace RealityLog.Network
             server.Get("/api/diagnostics", HandleDiagnostics);
             server.Post("/api/timesync/ping", HandleTimesyncPing);
             server.Post("/api/enroll", HandleEnroll);
-            server.Post("/api/sign-in", HandleSignIn);
-            server.Post("/api/sign-out", HandleSignOut);
             server.Post("/api/command", HandleCommand);
             server.Post("/api/settings", HandleSettings);
         }
@@ -567,7 +565,6 @@ namespace RealityLog.Network
             // session again and answers the typed refusal.
             var rig = RigCoordinator.Instance;
             string? reservedSession = null;
-            string operatorForRig = "";
             string? taskForRig = null;
             string? modeForRig = null;
             if (rig is not null && rig.IsExpected)
@@ -576,14 +573,11 @@ namespace RealityLog.Network
                 {
                     return AlreadyRecordingResponse();
                 }
-                // The rig's seal names the operator: the signed-in collector, as sx-pod's does.
-                if (!StartBodyOperatorId(request.Body, out var bodyOperatorId, out var bodyError))
+                // The body names no operator: the rig seals the collector of the pod's Factory
+                // shift (the paired phone's person), or none when it records unattributed.
+                if (!StartBodyIsObject(request.Body, out var bodyError))
                 {
                     return bodyError!;
-                }
-                if (rig.SealOperatorId(bodyOperatorId) is not string operatorId)
-                {
-                    return RigRefusalResponse(rig, RigStartGate.SignInToRecord());
                 }
                 if (!StartBodyCollection(request.Body, out var taskAssignmentId, out var mode, out var collectionError))
                 {
@@ -596,7 +590,6 @@ namespace RealityLog.Network
                     return RigRefusalResponse(rig, checkRefusal);
                 }
                 reservedSession = session;
-                operatorForRig = operatorId;
                 taskForRig = taskAssignmentId;
                 modeForRig = mode;
             }
@@ -715,7 +708,7 @@ namespace RealityLog.Network
             string rigStartJson = "null";
             if (reservedSession != null && rig is not null)
             {
-                var (started, armRefusal) = rig.StartArmed(reservedSession, operatorForRig, taskForRig, modeForRig);
+                var (started, armRefusal) = rig.StartArmed(reservedSession, taskForRig, modeForRig);
                 if (armRefusal != null)
                 {
                     // No episode without the rig: stop OQC's session again (its files stay, with
@@ -1570,15 +1563,13 @@ namespace RealityLog.Network
             "The capture app is paused by the OS (system dialog, Guardian or headset removed); clear it and retry");
 
         /// <summary>
-        /// A start body's operator_id (a non-empty string, or null when it names none), false
-        /// with the typed 400 invalid_body for a body that is not a JSON object. Only Local only
-        /// uses it: on an enrolled headset the seal names the signed-in collector
-        /// (<see cref="RigCoordinator.SealOperatorId"/>).
+        /// False with the typed 400 invalid_body for a start body that is not a JSON object;
+        /// an empty body is fine. An <c>operator_id</c> in it is ignored: the headset never
+        /// names who recorded (the rig seals the Factory shift's collector).
         /// </summary>
-        private static bool StartBodyOperatorId(string body, out string? operatorId, out HttpResponse? error)
+        private static bool StartBodyIsObject(string body, out HttpResponse? error)
         {
             error = null;
-            operatorId = null;
             JObject? fields = null;
             if (!string.IsNullOrWhiteSpace(body))
             {
@@ -1594,11 +1585,6 @@ namespace RealityLog.Network
                     error = TypedError(400, "invalid_body", "the start-recording body is not a JSON object");
                     return false;
                 }
-            }
-            if (fields?["operator_id"] is JValue { Type: JTokenType.String } value
-                && ((string?)value)?.Trim() is { Length: > 0 } named)
-            {
-                operatorId = named;
             }
             return true;
         }
@@ -1640,56 +1626,12 @@ namespace RealityLog.Network
             return true;
         }
 
-        // ── POST /api/sign-in, /api/sign-out, /api/command ──
+        // ── POST /api/command ──
 
         private static readonly HashSet<string> CollectorCommands = new()
         {
             "review_success", "review_failure", "end_collection", "finalize", "close_failed_collection",
         };
-
-        /// <summary>
-        /// Starts the collector's sign-in on an enrolled headset and answers
-        /// <c>{"status":"pending","user_code","verification_uri_complete","expires_in"}</c>. The
-        /// operator cannot see the headset, so the caller shows the code; the headset chimes when
-        /// the approval lands and /api/status rig.floor.operator.signed_in turns true.
-        /// </summary>
-        private HttpResponse HandleSignIn(HttpRequest request)
-        {
-            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
-            try
-            {
-                var shown = JObject.Parse(rig!.SignIn());
-                shown["status"] = "pending";
-                return HttpResponse.Ok(shown.ToString(Formatting.None));
-            }
-            catch (SxRigException ex)
-            {
-                return RigCallError("sign_in_failed", ex);
-            }
-            catch (JsonException ex)
-            {
-                return TypedError(500, "sign_in_failed", ex.Message);
-            }
-        }
-
-        private HttpResponse HandleSignOut(HttpRequest request)
-        {
-            if (RigForFloor(out var rig) is HttpResponse refused) return refused;
-            var manager = recordingManager;
-            if (manager is not null && manager.State != RecordingState.Idle)
-            {
-                return TypedError(409, "recording", "stop the recording before signing out");
-            }
-            try
-            {
-                rig!.SignOut();
-                return HttpResponse.Ok("{\"status\":\"signed_out\"}");
-            }
-            catch (SxRigException ex)
-            {
-                return RigCallError("sign_out_failed", ex);
-            }
-        }
 
         /// <summary>
         /// A collector command on the open collection, passed to sx_rig_command as given after
@@ -1893,7 +1835,7 @@ namespace RealityLog.Network
         /// <summary>
         /// A rig refusal as its typed response, with a refused cue for the operator: 507 for
         /// rig_storage_low (as the app's own storage refusal; the rig's numbers are under
-        /// rig.refusal), 409 for collector_signed_out, 503 otherwise.
+        /// rig.refusal), 409 for a state the operator must change, 503 otherwise.
         /// </summary>
         private static HttpResponse RigRefusalResponse(RigCoordinator rig, RigRefusal refusal, string? session = null)
         {
@@ -1901,7 +1843,6 @@ namespace RealityLog.Network
             var status = refusal.Code switch
             {
                 "rig_storage_low" => 507,
-                "collector_signed_out" => 409,
                 // The rig's devices are not as the check requires (rig = its report); fix them
                 // and retry. 409 like the other refusals of a state the operator must change.
                 "rig_check_failed" => 409,

@@ -11,7 +11,7 @@ namespace RealityLog.Rig
     /// <summary>
     /// One notice: a code of the rig's notice table (sx_operator_notices.json), who acts, and the
     /// arguments its words take. libsx_rig names most (attempts, start refusals, check reports,
-    /// sx_rig_last_error); the app names the ones only it can see (sign-in, USB access, the
+    /// sx_rig_last_error); the app names the ones only it can see (USB access, the
     /// controllers, the display rate).
     /// </summary>
     public sealed class OperatorNotice
@@ -73,7 +73,7 @@ namespace RealityLog.Rig
         public string Headline { get; }
         public string StillFine { get; }
         public string Action { get; }
-        /// <summary>"check", "sign_in" or "".</summary>
+        /// <summary>"check" or "".</summary>
         public string Button { get; }
         public IReadOnlyDictionary<string, string> Args { get; }
 
@@ -204,7 +204,6 @@ namespace RealityLog.Rig
         /// <summary>The app's refusal codes (RigRefusal, the HTTP routes' errors) as notices.</summary>
         public static OperatorNotice ForCode(string code) => code switch
         {
-            "collector_signed_out" => OperatorNotice.Of("signed_out"),
             "rig_usb_permission" => OperatorNotice.Of("usb_permission"),
             "rig_library_missing" => OperatorNotice.Of("library_missing"),
             "rig_open_failed" => OperatorNotice.Of("rig_open_failed"),

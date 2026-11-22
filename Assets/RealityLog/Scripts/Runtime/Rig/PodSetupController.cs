@@ -34,37 +34,28 @@ namespace RealityLog.Rig
         public string JoinCode { get; private set; } = "";
         /// <summary>
         /// What the panel says: a step's message while it runs and for a minute after, then
-        /// the current state (enrolled or not). A collector's sign-in code is never kept here:
-        /// the Pod card shows it from the rig's floor only while it is pending.
+        /// the current state (enrolled or not). Nobody signs in on the headset: the paired
+        /// phone's person is the collector.
         /// </summary>
         public string Status
         {
-            get => PodStatusBoard.SetupStatus(
-                endsOnSignIn && RigCoordinator.Instance is { CollectorSignedInNow: true } ? null : status,
-                Time.unscaledTime - statusSetAt, Busy,
+            get => PodStatusBoard.SetupStatus(status, Time.unscaledTime - statusSetAt, Busy,
                 RigCoordinator.Instance is { Enrolled: true }, RigCoordinator.Instance?.LocalOnly ?? true);
             private set
             {
                 status = value;
                 statusSetAt = Time.unscaledTime;
-                endsOnSignIn = false;
             }
         }
         /// <summary>A step's message while it runs and for a minute after; null once only the steady state is left.</summary>
-        public string? StepMessage => PodStatusBoard.SetupMessage(
-            endsOnSignIn && RigCoordinator.Instance is { CollectorSignedInNow: true } ? null : status,
-            Time.unscaledTime - statusSetAt, Busy);
+        public string? StepMessage => PodStatusBoard.SetupMessage(status, Time.unscaledTime - statusSetAt, Busy);
         private string? status;
         private float statusSetAt;
-        private bool endsOnSignIn; // the message is about a pending sign-in: gone once signed in
-        public bool Busy => scanning || enrolling || signingIn;
-        /// <summary>True while a collector sign-in code is being asked for.</summary>
-        public bool SigningIn => signingIn;
+        public bool Busy => scanning || enrolling;
         public bool Scanning => scanning;
 
         private bool scanning;
         private bool enrolling;
-        private bool signingIn;
         private float scanStarted;
         private VideoRecorderSurfaceProvider? scanCamera;
         private TouchScreenKeyboard? keyboard;
@@ -132,63 +123,6 @@ namespace RealityLog.Rig
             if (PodSetupJson.CheckJoinCode(text) is string error) Fail(error);
             else { JoinCode = text.Trim(); Status = "Join code entered."; }
         });
-
-        /// <summary>
-        /// Signs a collector in on this enrolled headset, as a laptop pod's kiosk does: the rig
-        /// asks the Factory for a code, the panel shows it with the address to approve it at,
-        /// and the headset chimes when the approval lands (a start needs a signed-in collector).
-        /// Returns why it did not start, or null when it started (or one is already being asked
-        /// for); a sign-in call that fails later raises <see cref="SignInFailed"/>.
-        /// </summary>
-        public string? SignIn()
-        {
-            if (signingIn) return null;
-            if (Busy) return Fail("Wait for the pod setup step to finish, then sign in.");
-            var rig = RigCoordinator.Instance;
-            if (rig is not { Enrolled: true }) return Fail("Enroll this headset as a pod before signing in.");
-            if (rig.LocalOnly) return Fail("Turn Local only off to sign in: a local headset needs no collector.");
-            if (FindFirstObjectByType<RecordingManager>() is { IsRecording: true })
-            {
-                return Fail("Stop the recording before signing in.");
-            }
-            signingIn = true;
-            Status = "Asking the Factory for a sign-in code...";
-            Task.Run(() =>
-            {
-                try
-                {
-                    // The code and its address come back in the rig's floor status, which the
-                    // Pod card shows only while the sign-in is pending.
-                    Newtonsoft.Json.Linq.JObject.Parse(rig.SignIn());
-                    mainThread.Enqueue(() =>
-                    {
-                        signingIn = false;
-                        Status = "Sign-in code ready: approve it at the address shown. The headset chimes once you are signed in.";
-                        endsOnSignIn = true;
-                    });
-                }
-                catch (SxRigException ex)
-                {
-                    mainThread.Enqueue(() =>
-                    {
-                        signingIn = false;
-                        SignInFailed?.Invoke(Fail("Sign-in failed: " + RigStatusJson.ErrorDetail(ex.ErrorJson, ex.Message)));
-                    });
-                }
-                catch (Newtonsoft.Json.JsonException ex)
-                {
-                    mainThread.Enqueue(() =>
-                    {
-                        signingIn = false;
-                        SignInFailed?.Invoke(Fail("Sign-in failed: " + ex.Message));
-                    });
-                }
-            });
-            return null;
-        }
-
-        /// <summary>A started sign-in's call failed (main thread): its words, as the panel shows them.</summary>
-        public event Action<string>? SignInFailed;
 
         /// <summary>Enrolls with the URLs and join code entered (or scanned).</summary>
         public void Enroll()
@@ -265,7 +199,7 @@ namespace RealityLog.Rig
                     yield return new WaitForSecondsRealtime(StepCueSpacingSeconds);
                 }
             }
-            if (enrolled) rig.Cue(RigCues.Cue.SignedIn, "pod enrolled");
+            if (enrolled) rig.Cue(RigCues.Cue.Chime, "pod enrolled");
         }
 
         private void Update()

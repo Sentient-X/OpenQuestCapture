@@ -1,5 +1,5 @@
 // Host check of the phone companion's pure parts: HeadsetStatus from the Pod card's status
-// screen (HeadsetStatusMap), the sign-in hand-off (CompanionSignInWatch), the QR offer check and
+// screen (HeadsetStatusMap) with the collector the phone shows (or none), the QR offer check and
 // the Pod card's Phone section in each pairing state (CompanionCard). Run by test_binding.sh.
 using System;
 using System.Collections.Generic;
@@ -14,7 +14,7 @@ static class CompanionHarness
     static readonly DateTime T0 = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
 
     const string Pod = "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\"";
-    const string SignedIn = "\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha\"}}";
+    const string Attributed = "\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"}}";
     const string Heard = "\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}";
     const string Task = "\"task\":{\"name\":\"fold towel\",\"status\":\"active\",\"target\":2,\"done\":1}";
 
@@ -76,11 +76,11 @@ static class CompanionHarness
         // The operator's words: the shipped table (test_binding.sh names it).
         RealityLog.Rig.OperatorNotices.Load(System.IO.File.ReadAllText(Environment.GetEnvironmentVariable("SX_OPERATOR_NOTICES")!));
         StatusMapping();
-        SignInHandOff();
         Offers();
         Card();
         Tracker();
         Controls();
+        PhoneLink();
         Console.WriteLine(failures == 0 ? "companion harness: all passed" : "companion harness: " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }
@@ -92,7 +92,7 @@ static class CompanionHarness
         var attempts = "[{\"id\":\"ep-2\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right camera: device was detached\","
             + "\"notice\":{\"code\":\"device_disconnected\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"wrist_camera\"}}},"
             + "{\"id\":\"ep-1\",\"stage\":\"reviewed\",\"outcome\":\"complete\"}]";
-        var status = Map(Pod + "," + SignedIn + ",\"deviceReport\":{\"battery_percent\":64,\"charging\":false},\"roles\":" + roles
+        var status = Map(Pod + "," + Attributed + ",\"deviceReport\":{\"battery_percent\":64,\"charging\":false},\"roles\":" + roles
             + ",\"attempts\":" + attempts + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"progress\":{\"target\":2,\"credited\":1,\"awaiting_review\":1}}");
         Expect(status.Head == (false, 64, "pod_q1", "Bench pod 1", "Asha"), "header: not recording, battery 64, pod, collector " + status.Head);
@@ -102,7 +102,7 @@ static class CompanionHarness
         Expect(status.Blocked == false, "a missing device leaves Start offered: the start checks first");
         var allReady = "[" + Role("left_hand_camera", true, "1-1.1", "ready") + "," + Role("right_hand_camera", true, "1-1.2", "ready") + ","
             + Role("left_hand_encoder", true, "1-1.3", "ready") + "," + Role("right_hand_encoder", true, "1-1.4", "ready") + "]";
-        var full = Map(Pod + "," + SignedIn + ",\"roles\":" + allReady + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+        var full = Map(Pod + "," + Attributed + ",\"roles\":" + allReady + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[]}}");
         Expect(full.Blocked == true && full.Block is { } nb && nb.headline == "No episodes left in this task"
             && full.BlockNotice?.Code == "no_episodes" && full.BlockWords?.Who == "floor_manager", "no episodes: start_blocked with its reason " + full.Block);
@@ -117,86 +117,53 @@ static class CompanionHarness
             && status.EpisodeNotices.Count == 1 && status.EpisodeNotices[0].Code == "device_disconnected", "failed episode: words and fix apart, by code: " + status.Episodes[0]);
         Expect(status.Episodes[1] == ("ep-1", 4, "Reviewed", ""), "reviewed episode -> REVIEWED (4): " + status.Episodes[1]);
 
-        // Ready: no blocker (nothing stops recording); battery unknown stays absent; nobody signed in.
+        // Ready: no blocker (nothing stops recording); battery unknown stays absent; unattributed.
         var readyRoles = "[" + Role("left_hand_camera", true, "1-1.1", "ready") + "," + Role("right_hand_camera", true, "1-1.2", "ready") + ","
             + Role("left_hand_encoder", true, "1-1.3", "ready") + "," + Role("right_hand_encoder", true, "1-1.4", "ready") + "]";
-        var ready = Map(Pod + "," + SignedIn + ",\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}");
+        var ready = Map(Pod + "," + Attributed + ",\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}");
         Expect(ready.Block == null, "ready: no blocker");
         Expect(ready.Head.battery == null, "no device report: battery absent");
-        var signedOut = Map(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"roles\":" + readyRoles + ",\"factory\":{" + Heard + "}");
-        Expect(signedOut.Head.collector == "" && signedOut.Block is { headline: "Nobody is signed in" } && signedOut.BlockNotice?.Code == "signed_out", "signed out: no collector, the blocker says so");
+        var unattributed = Map(Pod + ",\"floor\":{\"collector\":null},\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}");
+        Expect(unattributed.Head.collector == "" && unattributed.Block == null && unattributed.Blocked == false, "unattributed: collector \"\" and nothing stops a start");
+        var retired = Map(Pod + ",\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha\"}},\"roles\":" + readyRoles + ",\"factory\":{" + Heard + "}");
+        Expect(retired.Head.collector == "", "the retired floor.operator never reaches the phone as a collector");
 
         // Recording: LIVE while counters rise; the header says recording.
         var live = new StreamLiveness();
         string Streaming(long n) => "[" + Role("left_hand_camera", true, "1-1.1", "ready", "{\"source_frames\":" + n + ",\"source_fps\":30}") + "]";
-        Map(Pod + "," + SignedIn + ",\"episodeActive\":true,\"roles\":" + Streaming(10), live, T0);
-        var recording = Map(Pod + "," + SignedIn + ",\"episodeActive\":true,\"roles\":" + Streaming(40), live, T0.AddSeconds(1));
+        Map(Pod + "," + Attributed + ",\"episodeActive\":true,\"roles\":" + Streaming(10), live, T0);
+        var recording = Map(Pod + "," + Attributed + ",\"episodeActive\":true,\"roles\":" + Streaming(40), live, T0.AddSeconds(1));
         Expect(recording.Head.recording && recording.Block is { headline: "The right wrist camera is not plugged in" }, "recording: header true; a missing role still blocks");
         Expect(recording.Devices[0].state == PodDeviceState.Live, "rising frames -> LIVE: " + recording.Devices[0].state);
-        var midEpisode = Map(Pod + "," + SignedIn + ",\"episodeActive\":true,\"attempts\":[{\"id\":\"ep-3\",\"stage\":\"recording\"},{\"id\":\"ep-2\",\"stage\":\"sealed\"}]");
+        var midEpisode = Map(Pod + "," + Attributed + ",\"episodeActive\":true,\"attempts\":[{\"id\":\"ep-3\",\"stage\":\"recording\"},{\"id\":\"ep-2\",\"stage\":\"sealed\"}]");
         Expect(midEpisode.Episodes.Count == 1 && midEpisode.Episodes[0] == ("ep-2", 2, "Sealed", ""), "the episode still recording has no stage and is left to `recording`");
         Expect(HeadsetStatusMap.StateName(PodDeviceState.Missing) == "MISSING" && HeadsetStatusMap.StageNames[6] == "IN_CATALOG"
             && HeadsetStatusMap.StageNames[HeadsetStatusMap.StageFailed] == "FAILED", "proto names: MISSING, IN_CATALOG, FAILED");
 
         // Warnings before Start and Local only reach the phone by code.
-        var warned = Map(Pod + "," + SignedIn + ",\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
+        var warned = Map(Pod + "," + Attributed + ",\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"warnings\":[{\"code\":\"slots_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"3\"}}]},\"headset\":{\"displayHz\":90.0,\"controllers\":[{\"side\":\"left\",\"connected\":true,\"tracked\":false,\"percent\":70}]}");
         Expect(warned.Block == null && warned.Warnings.Count == 2 && warned.Warnings[0].notice.Code == "controller_not_tracked"
             && warned.Warnings[1].words.Headline == "3 episodes are held by attempts awaiting review" && warned.Local == false, "warnings to the phone: " + warned.Warnings.Count);
         var local = Map("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"roles\":" + readyRoles);
         Expect(local.Local == true, "Local only reaches the phone");
-        var sealing = Map(Pod + "," + SignedIn + ",\"attempts\":[{\"id\":\"ep-4\",\"stage\":\"sealing\",\"seal\":\"pending\",\"sealing_seconds\":130}]");
+        var sealing = Map(Pod + "," + Attributed + ",\"attempts\":[{\"id\":\"ep-4\",\"stage\":\"sealing\",\"seal\":\"pending\",\"sealing_seconds\":130}]");
         Expect(sealing.Episodes[0].stage == HeadsetStatusMap.StageSealing && sealing.Sealing == 130 && sealing.Episodes[0].reason == "Sealing: Sealing for 2 min",
             "sealing reaches the phone with its time: " + sealing.Episodes[0]);
 
         // Not enrolled, no rig: kinds before roles; no pod id.
         var bare = Map("\"expected\":false,\"enrolled\":false,\"localOnly\":true");
         Expect(bare.Head.podId == "" && bare.Devices.Count == 0 && bare.Block != null, "bare headset: no pod id, no devices, a blocker");
-        var unplaced = Map(Pod + "," + SignedIn + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"}]");
+        var unplaced = Map(Pod + "," + Attributed + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"}]");
         Expect(unplaced.Devices.Count == 4 && unplaced.Devices[0] == ("camera", "", "1-1.1", PodDeviceState.Starting, "port 1-1.1", "")
             && unplaced.Devices[1].state == PodDeviceState.Missing, "unplaced: kinds, attached starting, absent missing: " + unplaced.Devices[0]);
 
         // The fingerprint ignores the link's age ticking, and sees a real change.
-        var a = Fingerprint(Pod + "," + SignedIn + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3}}", T0);
-        var b2 = Fingerprint(Pod + "," + SignedIn + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":9}}", T0);
-        var c = Fingerprint(Pod + ",\"floor\":{\"operator\":{\"signed_in\":false}},\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":9}}", T0);
+        var a = Fingerprint(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3}}", T0);
+        var b2 = Fingerprint(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":9}}", T0);
+        var c = Fingerprint(Pod + ",\"floor\":{\"collector\":null},\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":9}}", T0);
         Expect(a == b2, "fingerprint: the link's age alone is no change");
-        Expect(a != c, "fingerprint: a sign-out is a change");
-    }
-
-    static void SignInHandOff()
-    {
-        JObject Floor(string op, string message = "") => JObject.Parse("{\"floor\":{\"operator\":" + op + ",\"message\":\"" + message + "\"}}");
-        long Expiry(string code) => code == "WXYZ-1234" ? 1_760_000_000_000 : 0;
-        var pending = Floor("{\"signed_in\":false,\"user_code\":\"WXYZ-1234\",\"verification_uri_complete\":\"https://auth/device?code=WXYZ-1234\"}");
-
-        var watch = new CompanionSignInWatch();
-        Expect(watch.Observe(pending, false, Expiry).Kind == CompanionSignInSendKind.None, "no link: nothing sent");
-        var request = watch.Observe(pending, true, Expiry);
-        Expect(request.Kind == CompanionSignInSendKind.Request && request.UserCode == "WXYZ-1234"
-            && request.VerificationUriComplete == "https://auth/device?code=WXYZ-1234" && request.ExpiresAtMs == 1_760_000_000_000,
-            "pending code -> SignInRequest with its address and expiry");
-        Expect(watch.Observe(pending, true, Expiry).Kind == CompanionSignInSendKind.None, "the same code is sent once");
-        watch.LinkRestarted();
-        Expect(watch.Observe(pending, true, Expiry).Kind == CompanionSignInSendKind.Request, "a new session sends the pending code again");
-        var result = watch.Observe(Floor("{\"signed_in\":true,\"display_name\":\"Asha\"}"), true, Expiry);
-        Expect(result.Kind == CompanionSignInSendKind.Result && result.Collector == "Asha" && result.Error == "", "approved -> SignInResult with the collector");
-        Expect(watch.Observe(Floor("{\"signed_in\":true,\"display_name\":\"Asha\"}"), true, Expiry).Kind == CompanionSignInSendKind.None, "the result is sent once");
-
-        var expired = new CompanionSignInWatch();
-        expired.Observe(pending, true, Expiry);
-        Expect(expired.Observe(JObject.Parse("{}"), true, Expiry).Kind == CompanionSignInSendKind.None, "no floor yet: keep waiting");
-        var lapse = expired.Observe(Floor("{\"signed_in\":false}", "the code expired"), true, Expiry);
-        Expect(lapse.Kind == CompanionSignInSendKind.Result && lapse.Error == "the code expired", "expired -> SignInResult with the floor's words");
-
-        var quiet = new CompanionSignInWatch();
-        Expect(quiet.Observe(Floor("{\"signed_in\":true,\"display_name\":\"Asha\"}"), true, Expiry).Kind == CompanionSignInSendKind.None,
-            "already signed in, no request sent: no result");
-        quiet.SignInFailed("Sign-in failed: auth unreachable");
-        var failed = quiet.Observe(Floor("{\"signed_in\":false}"), true, Expiry);
-        Expect(failed.Kind == CompanionSignInSendKind.Result && failed.Error == "Sign-in failed: auth unreachable", "a failed sign-in call -> SignInResult error");
-        var other = new CompanionSignInWatch();
-        Expect(other.Observe(Floor("{\"signed_in\":false,\"user_code\":\"AB-CD\"}"), true, Expiry).ExpiresAtMs == 0, "unknown expiry stays 0");
+        Expect(a != c, "fingerprint: the collector going (the phone unpaired) is a change");
     }
 
     static void Offers()
@@ -296,16 +263,16 @@ static class CompanionHarness
         // Controller charge: OVRInput's 0 and a disconnected controller are unknown; the phone gets both sides.
         Expect(ControllerCharge.Reading(true, 64) == 64 && ControllerCharge.Reading(true, 0) == null
             && ControllerCharge.Reading(false, 80) == null && ControllerCharge.Reading(true, 140) == 100, "controller readings: 64, 0 unknown, off unknown, clamped");
-        var mapped = Map(Pod + "," + SignedIn, pads: new ControllerCharge(72, null));
+        var mapped = Map(Pod + "," + Attributed, pads: new ControllerCharge(72, null));
         Expect(mapped.Pads == (72, null), "controllers mapped: " + mapped.Pads);
         Expect(Map(Pod).Pads == (null, null), "unread controllers stay absent");
         Expect(Fingerprint(Pod, T0, new ControllerCharge(72, 40)) != Fingerprint(Pod, T0, new ControllerCharge(71, 40)), "a controller's charge changing is a change");
 
-        // Words: wire names are companion.proto's, the question carries the numbers, a result line names its control.
-        Expect(PodControlWords.WireName(PodControl.Check) == "CHECK" && PodControlWords.WireName(PodControl.EndCollection) == "END_COLLECTION"
+        // Words: wire names are companion.proto's, a result line names its control. The operator has no
+        // End collection: the Factory ends a collection between episodes, and sign-out ends it.
+        Expect(PodControlWords.WireName(PodControl.Check) == "CHECK"
             && PodControlWords.WireName(PodControl.Start) == "START" && PodControlWords.WireName(PodControl.Stop) == "STOP", "wire names");
-        Expect(PodControlWords.EndQuestion(3, 10) == "End collection now? 3 of 10 recorded", "end question with numbers");
-        Expect(PodControlWords.EndQuestion(0, 0) == "End collection now?", "end question without a target");
+        Expect(string.Join(",", Enum.GetNames(typeof(PodControl))) == "Check,Start,Stop", "the controls are Check, Start and Stop only");
         Expect(PodControlWords.Line(new PodControlResult(PodControl.Check, true, "Ready to record")) == "Check: Ready to record", "result line");
         Expect(PodControlWords.Line(new PodControlResult(PodControl.Stop, false, "")) == "Stop: refused", "an empty refusal still says refused");
         Expect(PodControlWords.HttpWords(200, "{}", true) == "Recording", "a start that worked");
@@ -325,5 +292,40 @@ static class CompanionHarness
         Expect(ControllerCharge.FromLevel(true, 0.6f) == 60 && ControllerCharge.FromLevel(true, 0f) == null
             && ControllerCharge.FromLevel(false, 0.6f) == null && ControllerCharge.FromLevel(true, 1.5f) == null, "XR batteryLevel 0..1 -> percent, 0 unknown");
         Expect(ControllerCharge.First(null, 40) == 40 && ControllerCharge.First(60, 40) == 60 && ControllerCharge.First(null, null) == null, "the first source that read it");
+    }
+
+    /// <summary>The paired phone to the rig (sx_rig_phone_link): at launch, on each change, retried a second after a refusal.</summary>
+    static void PhoneLink()
+    {
+        Expect(PhoneLinkReport.Json(false, "usr_1", true) == "{}", "unpaired -> {}");
+        Expect(PhoneLinkReport.Json(true, "usr_1", true) == "{\"collector_id\":\"usr_1\",\"connected\":true}", "paired and connected");
+        Expect(PhoneLinkReport.Json(true, "", true) == "{\"collector_id\":\"\",\"connected\":true}", "an older phone: connected, no collector id");
+        Expect(PhoneLinkReport.Json(true, "a\"b", false) == "{\"collector_id\":\"a\\\"b\",\"connected\":false}", "the id is escaped");
+
+        var r = new PhoneLinkReport();
+        // Launch with the restored pairing: told at once, though the link is not up yet.
+        var first = r.Due(true, "usr_1", false, 0);
+        Expect(first == "{\"collector_id\":\"usr_1\",\"connected\":false}", "launch: the restored pairing is told: " + first);
+        Expect(r.Due(true, "usr_1", true, 0.01) == null, "one call in flight at a time");
+        Expect(!r.Done(true), "taken");
+        Expect(r.Due(true, "usr_1", false, 0.02) == null, "the same word is not told again");
+        Expect(r.Due(true, "usr_1", true, 0.03) == "{\"collector_id\":\"usr_1\",\"connected\":true}", "the link up is told at once");
+        r.Done(true);
+        // The rig refuses: logged once, tried again a second later, not every frame.
+        Expect(r.Due(true, "usr_1", false, 5) != null, "the link dropped is told at once");
+        Expect(r.Done(false), "the first refusal is logged");
+        // The next frame sees the refusal and waits a second from it.
+        Expect(r.Due(true, "usr_1", false, 5.02) == null, "a refusal waits out its second");
+        Expect(r.Due(true, "usr_1", false, 5.9) == null, "still waiting");
+        Expect(r.Due(true, "usr_1", false, 6.1) != null, "then it is tried again");
+        Expect(!r.Done(false), "a lasting refusal is not logged again");
+        Expect(r.Due(true, "usr_1", false, 6.12) == null && r.Due(true, "usr_1", false, 7.2) != null, "and again a second later");
+        r.Done(true);
+        // Forgotten, or another phone paired.
+        Expect(r.Due(false, "", false, 8) == "{}", "forgotten -> {}");
+        r.Done(true);
+        Expect(r.Due(true, "usr_2", false, 9) == "{\"collector_id\":\"usr_2\",\"connected\":false}", "another phone's person");
+        r.Done(true);
+        Expect(r.Due(true, "usr_2", false, 10) == null, "settled");
     }
 }

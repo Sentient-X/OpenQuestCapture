@@ -20,7 +20,7 @@ static class OperatorNoticesHarness
         "{\"role\":\"" + role + "\",\"registered\":\"id-" + role + "\",\"device\":\"/dev/" + role + "\",\"attached\":true,\"port\":\"" + port + "\",\"check\":\"ready\"}";
     static readonly string Pod = "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\","
         + "\"roles\":[" + Role("left_hand_camera", "1-1.1") + "," + Role("right_hand_camera", "1-1.2") + "," + Role("left_hand_encoder", "1-1.3") + "," + Role("right_hand_encoder", "1-1.4") + "]";
-    const string SignedIn = "\"floor\":{\"operator\":{\"signed_in\":true,\"display_name\":\"Asha\"}}";
+    const string Attributed = "\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"}}";
     const string Factory = "\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null},\"ready\":true,\"blocking\":[],\"task\":{\"name\":\"fold towel\",\"target\":10,\"done\":6}}";
 
     static PodScreen Screen(string body) =>
@@ -56,7 +56,7 @@ static class OperatorNoticesHarness
 
         // The top production failures, as libsx_rig's attempts carry them: the blocker shows each until the next start.
         string Attempt(string stage, string seal, string outcome, string notice) =>
-            Pod + "," + SignedIn + "," + Factory + ",\"attempts\":[{\"id\":\"20261029_1200\",\"stage\":\"" + stage + "\",\"seal\":\"" + seal
+            Pod + "," + Attributed + "," + Factory + ",\"attempts\":[{\"id\":\"20261029_1200\",\"stage\":\"" + stage + "\",\"seal\":\"" + seal
             + "\",\"outcome\":\"" + outcome + "\",\"detail\":\"raw detail stays in the log\",\"notice\":" + notice + "}]";
         var cases = new (string notice, string stage, string seal, string outcome, string headline, string who)[]
         {
@@ -81,10 +81,10 @@ static class OperatorNoticesHarness
         var link = Screen(Attempt("failed", "", "failed", "{\"code\":\"gripper_link_lost\",\"args\":{\"side\":\"left\"}}"));
         Expect(link.Blocker.Button == "check", "a reseated cable is checked with the Check button");
         // A failure with no notice (an older library) is the unknown code, never its words.
-        var bare = Screen(Pod + "," + SignedIn + "," + Factory + ",\"attempts\":[{\"id\":\"a\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"left encoder: read: Broken pipe (os error 32)\"}]");
+        var bare = Screen(Pod + "," + Attributed + "," + Factory + ",\"attempts\":[{\"id\":\"a\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"left encoder: read: Broken pipe (os error 32)\"}]");
         Expect(bare.Blocker.Headline == "Recording failed" && !bare.Blocker.Action.Contains("os error"), "no notice: Recording failed, " + bare.Blocker.Action);
         // The next start makes a newer attempt: the failure gives way.
-        var next = Screen(Pod + "," + SignedIn + "," + Factory + ",\"attempts\":[{\"id\":\"b\",\"stage\":\"sealing\",\"seal\":\"pending\",\"outcome\":\"complete\",\"sealing_seconds\":130},"
+        var next = Screen(Pod + "," + Attributed + "," + Factory + ",\"attempts\":[{\"id\":\"b\",\"stage\":\"sealing\",\"seal\":\"pending\",\"outcome\":\"complete\",\"sealing_seconds\":130},"
             + "{\"id\":\"a\",\"stage\":\"refused\",\"seal\":\"refused\",\"outcome\":\"complete\",\"notice\":{\"code\":\"seal_video_gap\",\"args\":{}}}]");
         Expect(next.Blocker.Headline == "Ready to record", "a newer attempt clears it: " + next.Blocker.Headline);
         Expect(next.Episodes[0].Stage == "Sealing" && next.Episodes[0].Detail == "Sealing for 2 min", "sealing with its time: " + next.Episodes[0].Detail);
@@ -94,31 +94,31 @@ static class OperatorNoticesHarness
         Expect(delivered.Stage == "Delivered" && delivered.Detail == "Freeing space in about 1 h", "finalized is Delivered, never Uploading");
 
         // Start blocks, each with its owner.
-        var held = Screen(Pod + "," + SignedIn + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3},\"ready\":true,\"blocking\":[],\"task\":{\"name\":\"t\"},"
+        var held = Screen(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3},\"ready\":true,\"blocking\":[],\"task\":{\"name\":\"t\"},"
             + "\"start_refusal\":{\"reason\":\"no_episodes\",\"held\":4,\"notice\":{\"code\":\"no_episodes_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"4\"}}}}");
         Expect(held.StartBlocked && held.Blocker.Headline == "No episodes free: 4 held by attempts awaiting review" && held.Blocker.Who == "Floor manager",
             "no episodes, held by review: " + held.Blocker.Headline);
-        var build = Screen(Pod + "," + SignedIn + ",\"factory\":{\"link\":{\"ok\":true},\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"category\":\"build\"}],\"task\":{\"name\":\"t\"},"
+        var build = Screen(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":true},\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"category\":\"build\"}],\"task\":{\"name\":\"t\"},"
             + "\"start_refusal\":{\"reason\":\"readiness\",\"notice\":{\"code\":\"build_not_accepted\",\"args\":{}}}}");
         Expect(build.Blocker.Headline == "App version not approved" && build.Blocker.Action.Contains("approves the trial in the Console"), "build not accepted: " + build.Blocker.Action);
         var registration = new StartRefusal("rig_start_failed", "start_session: {\"detail\":\"rig registration changed; run setup again\"}", DateTime.UtcNow);
-        var reg = PodScreenBoard.Build("{" + Pod + "," + SignedIn + "," + Factory + "}", registration, false, new StreamLiveness(), DateTime.UtcNow);
+        var reg = PodScreenBoard.Build("{" + Pod + "," + Attributed + "," + Factory + "}", registration, false, new StreamLiveness(), DateTime.UtcNow);
         Expect(reg.Blocker.Headline == "The rig's registration changed" && !reg.Blocker.Headline.Contains("start_session"), "registration changed, never clipped raw: " + reg.Blocker.Headline);
         // The real defaults (rig.rs): 600 s x worst bytes/s = 1.32 GB, OQC's session 0.9288 GB: 2.2488 GB, above min_free (2 GiB).
         const long Defaults = 1_320_000_000L + 928_800_000L;
-        var storage = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":1900000000,\"required_bytes\":" + Defaults
+        var storage = Screen(Pod + "," + Attributed + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":1900000000,\"required_bytes\":" + Defaults
             + ",\"backlog_bytes\":0,\"backlog_episodes\":0,\"held\":{\"unreported\":{\"attempts\":2},\"awaiting_factory\":{\"attempts\":3}}}}");
         Expect(storage.StartBlocked && storage.Blocker.Headline == "Not enough space: 1.9 GB free, 2.2 GB needed for the next episode"
             && storage.Blocker.StillFine.StartsWith("5 episodes are waiting to upload"), "storage with numbers: " + storage.Blocker.Headline + " / " + storage.Blocker.StillFine);
         // Episodes still to seal are part of what the rig refuses on: shown apart, adding up.
-        var sealing = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":3000000000,\"required_bytes\":" + (Defaults + 2_200_000_000)
+        var sealing = Screen(Pod + "," + Attributed + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":3000000000,\"required_bytes\":" + (Defaults + 2_200_000_000)
             + ",\"backlog_bytes\":2200000000,\"backlog_episodes\":2,\"held\":{}}}");
         Expect(sealing.StartBlocked && sealing.Blocker.Headline == "Not enough space: 3.0 GB free, 4.4 GB needed (2.2 GB for the next episode, 2.2 GB for 2 episodes still to seal)",
             "storage split: " + sealing.Blocker.Headline);
         // At exactly required_bytes the rig starts, so the card does too (a warning, room for one more only).
-        var exact = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":" + Defaults + ",\"required_bytes\":" + Defaults + ",\"held\":{}}}");
+        var exact = Screen(Pod + "," + Attributed + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":" + Defaults + ",\"required_bytes\":" + Defaults + ",\"held\":{}}}");
         Expect(!exact.StartBlocked && exact.Warnings.Any(w => w.Headline == "Space is tight: 2.2 GB free, 2.2 GB needed for the next episode"), "at the rig's own figure Start is offered, with a warning");
-        var roomy = Screen(Pod + "," + SignedIn + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":" + 2 * Defaults + ",\"required_bytes\":" + Defaults + ",\"held\":{}}}");
+        var roomy = Screen(Pod + "," + Attributed + "," + Factory + ",\"native\":{\"storage\":{\"free_bytes\":" + 2 * Defaults + ",\"required_bytes\":" + Defaults + ",\"held\":{}}}");
         Expect(!roomy.StartBlocked && roomy.Warnings.Count == 0, "room for two episodes: no storage warning");
 
         // The chip follows the banner.
@@ -126,7 +126,7 @@ static class OperatorNoticesHarness
         Expect(failedChip == (PodTone.Error, "Last failed"), "after a failed episode the chip says Last failed: " + failedChip);
 
         // Warnings before Start: they never block it.
-        var warn = Screen(Pod + "," + SignedIn + "," + Factory + ",\"headset\":{\"displayHz\":72.0,\"controllers\":["
+        var warn = Screen(Pod + "," + Attributed + "," + Factory + ",\"headset\":{\"displayHz\":72.0,\"controllers\":["
             + "{\"side\":\"left\",\"connected\":true,\"tracked\":false,\"percent\":80},{\"side\":\"right\",\"connected\":true,\"tracked\":true,\"percent\":12}]},"
             + "\"native\":{\"storage\":{\"free_bytes\":9000000000,\"required_bytes\":7450000000,\"held\":{}}}");
         var words = warn.Warnings.Select(w => w.Headline).ToList();
@@ -135,7 +135,7 @@ static class OperatorNoticesHarness
         Expect(PodScreenBoard.Chip(next, PodReadiness.Ready, "Ready") == (PodTone.Good, "Ready"), "ready: the pod's own chip");
         Expect(words.Contains("The left controller is not tracked") && words.Contains("The right controller is at 12%")
             && words.Contains("The display runs at 72 Hz, not 90 Hz") && words.Any(w => w == "Space is tight: 9.0 GB free, 7.5 GB needed for the next episode"), "pre-start warnings: " + string.Join(" | ", words));
-        var recording = Screen(Pod + "," + SignedIn + "," + Factory + ",\"episodeActive\":true,\"headset\":{\"displayHz\":72.0}");
+        var recording = Screen(Pod + "," + Attributed + "," + Factory + ",\"episodeActive\":true,\"headset\":{\"displayHz\":72.0}");
         Expect(recording.Warnings.Count == 0, "no warnings while recording");
 
         // The one app name, everywhere the operator is told to choose one.

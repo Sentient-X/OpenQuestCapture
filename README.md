@@ -192,7 +192,7 @@ any rig USB device is on the bus; with neither, nothing below happens and record
 * **Local mode (no Factory).** With no `factory_url` in `pod_config.json` the headset records on
   its own: put the YUBI rig in `rig_config.json` (its roles, identities and calibration, in the
   shape the rig defines; passed through as the open config's `rig`). Nothing asks for enrollment
-  or sign-in; the seal's `operator_id` is the start body's, else `local-only`.
+  or a person; the seal's `operator_id` is `""` (unattributed).
   `POST /api/start-recording` and `/api/stop-recording` record episode after episode; each stop
   seals that episode on the headset (`rig_staging/<session>/episode.mcap` + `seal.json`).
   `/api/status` → `rig.seals` holds each episode's verdict (`sealed` | `refused` | `pending`, with
@@ -285,12 +285,17 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   holds a network time fix; Quest 3S is SDK 34). A stalled app stops reporting and the pod reads
   not ready. `rig.deviceReport` in `/api/status` is the last report; `rig.nativeState` is the
   rig's state, `failed` after an internal failure (every rig call then fails until it is reopened).
-* **Collector sign-in:** on an enrolled headset a start needs a signed-in collector, else
-  `409 {"error":"rig_not_ready","reason":"collector_signed_out"}`. `POST /api/sign-in` answers
-  `{"status":"pending","user_code","verification_uri_complete","expires_in"}`; the caller (pod
-  operator, companion app) shows the code, since the wearer cannot see the display, and the
-  collector approves on their own phone. The headset chimes when the sign-in lands, and
-  `rig.floor.operator.signed_in` turns true. `POST /api/sign-out` signs out (409 while recording).
+* **Who collects (the paired phone, sx#4488):** nobody signs in on the headset, and it holds no
+  person's credential: every Factory request goes under the pod's machine key. The paired phone's
+  person opens the pod's Factory shift from the phone (on the companion's Accept), and the app
+  tells the rig which phone is paired and whether it is connected (`sx_rig_phone_link`:
+  `{}` unpaired, else `{"collector_id","connected"}` with `CompanionAccept.collector_id`), once at
+  start-up and on every change; the heartbeat carries it as `paired_phone`, and the Factory
+  credits the shift's person only while that phone is paired and connected.
+  `rig.floor.collector` is that person (`{"id","name"}`) or `null`; the headset chimes when a
+  collector arrives. With no phone paired the pod still records, unattributed: a start is never
+  refused for want of a person. The Pod card and the phone say "Recording for <name>" or
+  "No phone paired: recording unattributed". There is no `/api/sign-in` or `/api/sign-out`.
 * **Collector commands:** `POST /api/command` passes `{"command":"review_success"|"review_failure",
   "episode_id","answers":[...],"failure_cause"?}` or `{"command":"end_collection"|"finalize"|
   "close_failed_collection"}` to the rig and answers `{"answer","floor"}`; a `command_id` (UUID)
@@ -298,11 +303,10 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   400 `invalid_body` | `unknown_command` | `command_refused` (argument), 409 `not_enrolled` |
   `command_refused` (reason `state`, e.g. a review before the Factory observed the attempt:
   retry), 503 `command_refused`.
-* While the rig is expected, the seal's `operator_id` is the signed-in collector's name
-  (`rig.floor.operator.display_name`, as sx-pod's seal names `Principal.display_name`); on an
-  enrolled headset with nobody signed in a start is refused `409 collector_signed_out` ("Sign in to
-  record"). Local only, or not enrolled: the start body's `"operator_id"`, else `local-only`.
-  `pod_config.json` never names it (a stale `operator_id` there is ignored). The start body may
+* The seal's `operator_id` is native, never the app's: the collector the Factory collection was
+  opened for (the shift's person's central principal id), `""` when unattributed (no phone paired,
+  Local only, not enrolled). A start body's `"operator_id"` is ignored, and `pod_config.json`
+  never names it (a stale `operator_id` there is ignored). The start body may
   carry `"task_assignment_id"` and `"mode"`
   (`"directed"`|`"undirected"`), which open the collection on the Factory; the episode also records `quest_apk_build_id` (`sha256:` of the
   installed APK, as the laptop pod computes it) and `quest_session_dir`, which the seal reads.
@@ -311,7 +315,7 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   native workers and admits sealing. Repeated stop requests retain the first timestamp, so
   file-finalization time does not extend the episode and the seal never reads an open file.
 * `GET /api/status` → `rig` carries `enrolled`, `podId`, `registeredRig`, `seals`, `uplink`,
-  `floor` (operator sign-in, open collection, pending commands),
+  `floor` (the collector or `null`, open collection, pending commands),
   `headsetSerial`, `tailscaleIp` and `apkBuildId`.
 * **Embodiment meshes for the on-headset seal** (11 `yubi_description` files, 18.9 MB) are
   generated, not committed: before every APK build run

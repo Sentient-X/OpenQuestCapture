@@ -22,6 +22,13 @@ namespace RealityLog.Rig
         public const string ListenerInterfaceName = "io.sentientx.sx.companion.CompanionHeadset$Listener";
         public const string StatusBuilderClassName = "io.sentientx.sx.companion.HeadsetStatusBuilder";
 
+        /// <summary>
+        /// The answer to a phone that still asks to end the collection (companion.proto keeps
+        /// END_COLLECTION, and the library's Listener still declares it): the headset has no such
+        /// control, because the Factory ends a collection between episodes when a change needs it.
+        /// </summary>
+        public const string EndCollectionRefusal = "The Factory ends collections itself; keep recording";
+
         private readonly AndroidJavaObject headset;
         private readonly ConcurrentQueue<(string kind, string a, string b)> events;
 
@@ -29,6 +36,12 @@ namespace RealityLog.Rig
         public bool Paired { get; private set; }
         public string PhoneName { get; private set; } = "";
         public string OperatorName { get; private set; } = "";
+        /// <summary>
+        /// The paired phone's person, their central principal id (CompanionAccept.collector_id,
+        /// the library's pairedCollectorId); "" when the phone did not say one (an older phone)
+        /// or the library predates it. What the rig's heartbeat names (sx_rig_phone_link).
+        /// </summary>
+        public string CollectorId { get; private set; } = "";
 
         private CompanionLink(AndroidJavaObject headset, ConcurrentQueue<(string, string, string)> events)
         {
@@ -60,10 +73,10 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// Applies the library's queued callbacks (main thread): its states and errors to
-        /// <paramref name="tracker"/>, the phone's asks to the handlers. A phone that no longer
+        /// <paramref name="tracker"/>, the phone's control asks to <paramref name="controlAsk"/>. A phone that no longer
         /// holds this pairing is forgotten here too.
         /// </summary>
-        public void Drain(CompanionLinkTracker tracker, Action signInAsk, Action signOutAsk, Action<PodControl> controlAsk)
+        public void Drain(CompanionLinkTracker tracker, Action<PodControl> controlAsk)
         {
             while (events.TryDequeue(out var e))
             {
@@ -84,14 +97,12 @@ namespace RealityLog.Rig
                             RefreshPairing();
                         }
                         break;
-                    case "sign_in":
-                        signInAsk();
-                        break;
-                    case "sign_out":
-                        signOutAsk();
-                        break;
                     case "control":
                         controlAsk((PodControl)Enum.Parse(typeof(PodControl), e.a));
+                        break;
+                    case "end_collection":
+                        Debug.Log($"[{Constants.LOG_TAG}] CompanionLink: the phone asked End collection; refused, the Factory ends collections");
+                        headset.Call<bool>("sendCommandResult", "END_COLLECTION", false, EndCollectionRefusal);
                         break;
                 }
             }
@@ -118,13 +129,8 @@ namespace RealityLog.Rig
             Paired = false;
             PhoneName = "";
             OperatorName = "";
+            CollectorId = "";
         }
-
-        public bool SendSignInRequest(string userCode, string verificationUriComplete, long expiresAtMs) =>
-            headset.Call<bool>("sendSignInRequest", userCode, verificationUriComplete, expiresAtMs);
-
-        /// <summary>One of <paramref name="collector"/> (signed in) or <paramref name="error"/> is non-empty.</summary>
-        public bool SendSignInResult(string collector, string error) => headset.Call<bool>("sendSignInResult", collector, error);
 
         /// <summary>How one of the operator's controls ended, pressed on the phone or on the Pod card. False when no session is open.</summary>
         public bool SendCommandResult(PodControlResult result) =>
@@ -159,6 +165,21 @@ namespace RealityLog.Rig
             Paired = headset.Call<bool>("isPaired");
             PhoneName = Paired ? headset.Call<string>("pairedPhoneName") ?? "" : "";
             OperatorName = Paired ? headset.Call<string>("pairedOperatorName") ?? "" : "";
+            CollectorId = Paired ? PairedCollectorId() : "";
+        }
+
+        /// <summary>The library's pairedCollectorId; "" from a library without it, so an older .aar still pairs (unattributed).</summary>
+        private string PairedCollectorId()
+        {
+            try
+            {
+                return headset.Call<string>("pairedCollectorId") ?? "";
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] CompanionLink: pairedCollectorId: {ex.Message}");
+                return "";
+            }
         }
 
         /// <summary>CompanionHeadset.Listener: each callback is queued for the main thread.</summary>
@@ -171,12 +192,11 @@ namespace RealityLog.Rig
             // Called through JNI by name, on the library's thread.
             public void onState(string state, string detail) => events.Enqueue(("state", state ?? "", detail ?? ""));
             public void onPaired(string phoneName, string operatorDisplayName) => events.Enqueue(("paired", phoneName ?? "", operatorDisplayName ?? ""));
-            public void onSignInAsk() => events.Enqueue(("sign_in", "", ""));
-            public void onSignOutAsk() => events.Enqueue(("sign_out", "", ""));
             public void onCheckAsk() => events.Enqueue(("control", nameof(PodControl.Check), ""));
             public void onStartAsk() => events.Enqueue(("control", nameof(PodControl.Start), ""));
             public void onStopAsk() => events.Enqueue(("control", nameof(PodControl.Stop), ""));
-            public void onEndCollectionAsk() => events.Enqueue(("control", nameof(PodControl.EndCollection), ""));
+            // Declared by the library's Listener; answered with a refusal so the phone does not wait.
+            public void onEndCollectionAsk() => events.Enqueue(("end_collection", "", ""));
             public void onError(string failure, string detail) => events.Enqueue(("error", failure ?? "", detail ?? ""));
         }
 
