@@ -100,6 +100,13 @@ MONO_PATH="$unity_managed" "$mono" "$out/episode-length-harness.exe"
     "$repo/Assets/RealityLog/Scripts/Runtime/Camera/CaptureFailureWatch.cs"
 "$mono" "$out/capture-failure-harness.exe"
 
+# HeadVideoGapWatch: a head camera stalling mid-episode is reported once, as itself (OQC#44).
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/head-video-gap-harness.exe" "$here/HeadVideoGapHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Camera/HeadVideoGapWatch.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Camera/CaptureFailureWatch.cs"
+"$mono" "$out/head-video-gap-harness.exe"
+
 # PodStatusBoard: the recordings menu's Pod status block and the last start's refusal.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" "$notices" \

@@ -168,6 +168,37 @@ namespace RealityLog.Camera
             return text;
         }
 
+        // Set once the AAR answered getCaptureReportJson with "no such method": never asked again.
+        private volatile bool captureReportUnsupported;
+
+        /// <summary>
+        /// Main thread: this eye's live counters for <see cref="HeadVideoGapWatch"/>, or null while it
+        /// is not recording or the recorder cannot be asked. Two JNI calls (the encoder's written frame
+        /// count and the recorder's compact capture report, whose <c>stage_max_ns</c> are live);
+        /// RecordingManager.Update asks at ~4 Hz, as it asks <see cref="PollCaptureError"/>.
+        /// </summary>
+        public HeadVideoSample? PollHeadVideo(long elapsedMs)
+        {
+            var bound = recorder;
+            if (bound == null || !isRecordingSessionActive || captureReportUnsupported) return null;
+            try
+            {
+                var written = bound.CallLong("getSelectedFrameCount", J);
+                var report = bound.CallString("getCaptureReportJson", S);
+                return new HeadVideoSample(
+                    elapsedMs,
+                    written,
+                    CaptureReportJson.StageMaxNs(report, "camera_frame_interval"),
+                    CaptureReportJson.StageMaxNs(report, "camera_frame_callback"));
+            }
+            catch (Exception ex)
+            {
+                captureReportUnsupported = true;
+                Debug.LogWarning($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider ({outputVideoFileName}): live counters unavailable, a mid-episode stall surfaces only at the seal: {ex.Message}");
+                return null;
+            }
+        }
+
         public override AndroidJavaObject? GetJavaInstance(CameraMetadata metadata)
         {
             cameraMetadata = metadata;
@@ -489,6 +520,7 @@ namespace RealityLog.Camera
             }
 
             WriteVideoMetadata(dataPath, sessionDirName);
+            LogCaptureReport(sessionDirName);
 
             if (stopSucceeded && scheduleFinalizationPoll)
             {
@@ -676,6 +708,27 @@ namespace RealityLog.Camera
                 .Replace("\"", "\\\"")
                 .Replace("\r", "\\r")
                 .Replace("\n", "\\n");
+        }
+
+        /// <summary>
+        /// One line per eye per recording with the recorder's capture report: the selected timeline's
+        /// longest gap and mean rate, the Camera2 frame-number holes, and each stage's worst case
+        /// (camera callback and interval, encoder, fragment and sidecar write and fsync, I/O backlog).
+        /// Until now this lived only in the eye's metadata sidecar, which a refused take never ships:
+        /// 109 takes on 2026-11-22 were refused for a head-video gap with no record of whether the
+        /// exposures were lost at the camera, the encoder or the writer. The app log is shipped to the
+        /// Factory, so from here on every take says.
+        /// </summary>
+        private void LogCaptureReport(string sessionDirName)
+        {
+            var maxGap = CaptureReportJson.Integer(captureReportJson, "selected_max_gap_ns") ?? -1L;
+            var interval = CaptureReportJson.StageMaxNs(captureReportJson, "camera_frame_interval");
+            var callback = CaptureReportJson.StageMaxNs(captureReportJson, "camera_frame_callback");
+            var summary = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "selected {0} of {1} source frames, source dropped {2}, longest selected gap {3:F0} ms, longest camera-frame interval {4:F0} ms, longest camera callback {5:F0} ms",
+                selectedFrameCount, sourceFrameCount, sourceDroppedFrameCount, maxGap / 1e6, interval / 1e6, callback / 1e6);
+            var verdict = maxGap > 50_000_000L ? "the seal refuses this eye (gap over 50 ms)" : "within the seal's 50 ms";
+            Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider capture report {sessionDirName}/{outputVideoFileName}: {summary}; {verdict}; capture_error={(captureError == null ? "none" : "\"" + captureError + "\"")}; {captureReportJson}");
         }
 
         private void ReadCaptureStats()

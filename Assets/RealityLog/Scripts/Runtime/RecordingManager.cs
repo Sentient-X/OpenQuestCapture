@@ -289,7 +289,7 @@ namespace RealityLog
                 }
             }
 
-            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}'");
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: Starting recording session '{currentSessionDirectory}' ({CaptureDisplayRate.Describe()})");
             MainThreadFrames.Watch("start", 5);
 
             try
@@ -522,7 +522,8 @@ namespace RealityLog
             LastRigStopReceiptJson = receipt;
             // A failed rig episode, or a camera that failed mid-episode, already buzzed when it
             // failed; a clean one chimes stop.
-            var cameraFailed = CaptureFailed is { } failedCamera && failedCamera.session == savedDirectory;
+            var cameraFailed = (CaptureFailed is { } failedCamera && failedCamera.session == savedDirectory)
+                || (HeadVideoStalled is { } stalled && stalled.session == savedDirectory);
             if (receipt != null && RigCoordinator.Instance is { } rigForCue && !RigStatusJson.StopFailed(receipt) && !cameraFailed)
             {
                 rigForCue.Cue(RigCues.Cue.Stop, "recording stopped");
@@ -582,6 +583,26 @@ namespace RealityLog
         private (CaptureFailureWatch watch, int generation, string session)? captureWatch;
         private float nextCaptureWatchPollAt;
 
+        // ── A head camera stalling mid-episode (OQC#44) ──
+
+        /// <summary>
+        /// The session whose head camera stalled mid-episode (a gap the seal is certain to refuse),
+        /// with the stall, or null. Set on the main thread when the watch reports, before
+        /// <see cref="HeadVideoGapped"/> runs; kept until the next start.
+        /// </summary>
+        public (string session, HeadVideoGap gap)? HeadVideoStalled { get; private set; }
+
+        /// <summary>
+        /// Main thread, once per recording whose head camera stalled while it recorded (the recording
+        /// is still running): the HTTP controller buzzes, shows the seal's notice now and stops it as
+        /// failed through the stop path, instead of the collector recording on for minutes to a refusal.
+        /// </summary>
+        public event Action<string, HeadVideoGap>? HeadVideoGapped;
+
+        // This session's stall watch, polled with the failure watch; null while none records.
+        private (HeadVideoGapWatch watch, int generation, string session)? gapWatch;
+        private readonly System.Diagnostics.Stopwatch recordingClock = new();
+
         /// <summary>
         /// Arms the poll of both eyes' recorders for their first failure (<see cref="CaptureFailureWatch"/>),
         /// at ~4 Hz from <see cref="Update"/>, on Unity's main thread: one JNI call per eye
@@ -591,21 +612,32 @@ namespace RealityLog
         private void StartCaptureFailureWatch(string session)
         {
             CaptureFailed = null;
+            HeadVideoStalled = null;
             var generation = System.Threading.Interlocked.Increment(ref captureWatchGeneration);
-            var eyes = cameraProviders.OfType<VideoRecorderSurfaceProvider>()
+            var providers = cameraProviders.OfType<VideoRecorderSurfaceProvider>().ToArray();
+            var eyes = providers
                 .Select(p => (p.OutputVideoFileName, (Func<string?>)p.PollCaptureError)).ToArray();
             captureWatch = eyes.Length == 0 ? null : (new CaptureFailureWatch(eyes), generation, session);
+            recordingClock.Restart();
+            var counters = providers
+                .Select(p => (p.OutputVideoFileName, (Func<HeadVideoSample?>)(() => p.PollHeadVideo(recordingClock.ElapsedMilliseconds)))).ToArray();
+            gapWatch = counters.Length == 0 ? null : (new HeadVideoGapWatch(counters), generation, session);
             nextCaptureWatchPollAt = Time.realtimeSinceStartup + CaptureFailureWatch.PollIntervalMs / 1000f;
         }
 
         /// <summary>Main thread, from Update: one poll when due; the watch ends with its generation.</summary>
         private void PollCaptureWatch()
         {
-            if (captureWatch is not { } armed) return;
+            if (captureWatch is not { } armed)
+            {
+                gapWatch = null;
+                return;
+            }
             if (System.Threading.Volatile.Read(ref captureWatchGeneration) != armed.generation
                 || State != RecordingState.Recording)
             {
                 captureWatch = null;
+                gapWatch = null;
                 return;
             }
             if (Time.realtimeSinceStartup < nextCaptureWatchPollAt) return;
@@ -613,8 +645,22 @@ namespace RealityLog
             if (armed.watch.Poll() is { } failure)
             {
                 captureWatch = null;
+                gapWatch = null;
                 Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {failure.Describe()}");
                 OnCaptureFailure(armed.generation, armed.session, failure);
+                return;
+            }
+            if (gapWatch is { } stalls && stalls.generation == armed.generation && stalls.watch.Poll() is { } gap)
+            {
+                gapWatch = null;
+                Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {gap.Describe()}");
+                if (System.Threading.Volatile.Read(ref captureWatchGeneration) != stalls.generation
+                    || State != RecordingState.Recording || currentSessionDirectory != stalls.session)
+                {
+                    return;
+                }
+                HeadVideoStalled = (stalls.session, gap);
+                HeadVideoGapped?.Invoke(stalls.session, gap);
             }
         }
 
