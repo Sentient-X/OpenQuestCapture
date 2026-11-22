@@ -95,7 +95,8 @@ except json.JSONDecodeError:
     before = None
 config = dict(before) if isinstance(before, dict) else {}
 config["headset_serial"] = os.environ["SERIAL"]
-config.setdefault("local_only", False)
+# local_only is retired (no Local only mode since 2026-11-22): never written; a stale one is left
+# alone and the app ignores it.
 # The seal's operator_id is the signed-in collector, never this file: drop a stale one.
 config.pop("operator_id", None)
 print("changed" if config != before else "unchanged")

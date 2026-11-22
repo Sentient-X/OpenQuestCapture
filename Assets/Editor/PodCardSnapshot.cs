@@ -194,7 +194,7 @@ public static class PodCardSnapshot
     // ---- The operator's words, through the real board from the status the rig and the app write ----
 
     private const string LivePod =
-        "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
+        "\"expected\":true,\"enrolled\":true,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
         "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"collector\":{\"id\":\"usr_asha\",\"name\":\"Asha Rao\"}}," +
         "\"roles\":[" +
         "{\"role\":\"left_hand_camera\",\"registered\":\"c1\",\"attached\":true,\"port\":\"1-1.3\",\"check\":\"ready\"}," +
@@ -271,11 +271,11 @@ public static class PodCardSnapshot
         return state;
     }
 
-    /// <summary>(a) A fresh install: not enrolled, Local only off, nothing plugged in; the real boards' words.</summary>
+    /// <summary>(a) A fresh install: not enrolled (it records nothing until it is), nothing plugged in; the real boards' words.</summary>
     private static PodCardState NotEnrolled()
     {
         const string status =
-            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"localOnly\":false,\"headsetSerial\":null," +
+            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"headsetSerial\":null," +
             "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false,\"openError\":null," +
             "\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[],\"attachErrors\":{}}," +
             "\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null,\"deviceReport\":null," +
@@ -288,7 +288,7 @@ public static class PodCardSnapshot
             LeftPct = null,
             RightPct = null,
             SetupAvailable = true,
-            SetupMessage = PodStatusBoard.SetupStatus(null, 999, false, false, false),
+            SetupMessage = PodStatusBoard.SetupStatus(null, 999, false, false),
             FactoryUrl = PodSetupJson.DefaultFactoryUrl,
             AuthUrl = PodSetupJson.DefaultAuthUrl,
             PhonePhase = CompanionPhase.NotPaired,
@@ -378,7 +378,7 @@ public static class PodCardSnapshot
     private static PodCardState Unattributed()
     {
         const string status =
-            "{\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
+            "{\"expected\":true,\"enrolled\":true,\"library\":\"present\",\"open\":true,\"podId\":\"pod-17\"," +
             "\"apkBuildId\":\"sha256:0123456789abcdef0123\",\"floor\":{\"collector\":null}," +
             "\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}}}";
         var state = Enrolled(PodScreenBoard.Build(status, null, false, new StreamLiveness(), DateTime.UtcNow),

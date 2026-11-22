@@ -214,6 +214,8 @@ namespace RealityLog.Rig
             // The rig's tracking refusals are coded by the notice they word (RigStartGate.TrackingKinds).
             "controllers_not_in_hand" or "controllers_wrong_side" or "body_tracking_unavailable" or "head_tracking_stopped"
                 => OperatorNotice.Of(code),
+            // A headset not set up records nothing (409 not_enrolled, libsx_rig's refusal kind too).
+            "not_enrolled" => OperatorNotice.Of("not_enrolled"),
             _ => OperatorNotice.Of("unknown", ("code", code.Length > 0 ? code : "none")),
         };
 

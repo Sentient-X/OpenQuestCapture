@@ -19,7 +19,8 @@ namespace RealityLog.Rig
     /// as a fallback, then <b>Enroll</b>. sx_rig_enroll_site answers with its steps (join,
     /// commission, rig, builds); each is told on the status line and with a sound: succeeded
     /// blips, unavailable a falling tone (it completes later), failed the buzz; enrolled ends
-    /// with the chime and turns Local only off. The headset serial stays pod_config.json's.
+    /// with the chime: from then on the headset records, and declares what it records. The
+    /// headset serial stays pod_config.json's.
     /// Shown by the recordings menu (RecordingListUI).
     /// </summary>
     public class PodSetupController : MonoBehaviour
@@ -40,7 +41,7 @@ namespace RealityLog.Rig
         public string Status
         {
             get => PodStatusBoard.SetupStatus(status, Time.unscaledTime - statusSetAt, Busy,
-                RigCoordinator.Instance is { Enrolled: true }, RigCoordinator.Instance?.LocalOnly ?? true);
+                RigCoordinator.Instance is { Enrolled: true });
             private set
             {
                 status = value;
@@ -159,7 +160,7 @@ namespace RealityLog.Rig
                         rig.FinishEnrollment(true);
                         enrolling = false;
                         JoinCode = "";
-                        Status = "Enrolled (" + RigStatusJson.EnrollmentSummary(answer) + "): " + PodSetupJson.Describe(steps) + ". Local only is off.";
+                        Status = "Enrolled (" + RigStatusJson.EnrollmentSummary(answer) + "): " + PodSetupJson.Describe(steps) + ".";
                         StartCoroutine(PlaySteps(steps, enrolled: true));
                     });
                 }

@@ -12,7 +12,7 @@ static class PodScreenHarness
 
     static readonly DateTime T0 = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
 
-    const string Pod = "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\"";
+    const string Pod = "\"expected\":true,\"enrolled\":true,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\"";
     const string Attributed = "\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"}}";
     const string Unattributed = "\"floor\":{\"collector\":null}";
     const string Heard = "\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}";
@@ -117,8 +117,6 @@ static class PodScreenHarness
             + "{\"id\":\"operator\",\"state\":\"fail\",\"category\":\"operator\",\"summary\":\"no collector\"}]," + Task + "}");
         Expect(!operatorCheck.StartBlocked && operatorCheck.Blocker.Headline == "Ready to record" && !operatorCheck.Next.Contains("signed in"),
             "a Factory operator check never blocks the headset, nor names a sign-in as next: " + operatorCheck.Next);
-        var localOnly = Screen("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"factory\":{\"start_refusal\":{\"reason\":\"no_episodes\"}}");
-        Expect(!localOnly.StartBlocked, "Local only never asks the Factory");
         var refused409 = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
             new StartRefusal("rig_start_failed", "start_session: {\"code\":\"http_409\",\"message\":\"no assigned episodes remain available; unfinished attempts reserve demand\"}", T0));
         Expect(refused409.Blocker.Headline == "No episodes left in this task", "a 409 refusal in plain words: " + refused409.Blocker.Headline);
@@ -131,11 +129,10 @@ static class PodScreenHarness
         Expect(noTask.Blocker.Headline == "No task is assigned to this pod" && noTask.Blocker.Who == "Floor manager", "no task -> the floor manager assigns one");
         Expect(noTask.Task == "none assigned" && noTask.Next == "a task assigned to this pod in the Console", "no task: collection says so");
 
-        // Recorder build trial not admitted.
-        var trial = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"summary\":\"build not accepted\",\"remediation\":null}]," + Task + "}");
-        Expect(trial.Blocker.Headline == "App version not approved"
-            && trial.Blocker.Action == "The floor manager approves the trial in the Console, or a technician installs an approved version.", "trial: " + trial.Blocker.Action);
-        Expect(trial.Next == "this app version approved in the Console (build 0123456789ab)", "trial next: " + trial.Next);
+        // Any build records (2026-11-22); a failing recorder_build check carries the Factory's own remediation, never a build approval.
+        var unread = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"summary\":\"Recorder fingerprint is not established\",\"remediation\":\"Run the hardware check to establish the original Quest identity.\"}]," + Task + "}");
+        Expect(!unread.Blocker.Headline.Contains("approved") && !unread.Blocker.Action.Contains("approve"), "unread build: no approval to ask for: " + unread.Blocker.Headline);
+        Expect(unread.Next == "Run the hardware check to establish the original Quest identity.", "unread build next: " + unread.Next);
 
         // The notice table no longer words a sign-in: no blocker ever asks for one.
         Expect(!System.Linq.Enumerable.Contains(OperatorNotices.Codes, "signed_out") && !System.Linq.Enumerable.Contains(OperatorNotices.Codes, "sign_in_pending"), "the notice table carries no sign-in notices");
@@ -238,16 +235,21 @@ static class PodScreenHarness
         var afterOom = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "},\"attempts\":["
             + "{\"id\":\"20261020_120000\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right_camera: streaming: Out of memory (os error 12)\"}]");
         Expect(afterOom.Devices[1].Pill == "Failed last episode" && afterOom.Devices[1].Tone == PodTone.Warning, "the last episode's failed device warns");
-        Expect(afterOom.Blocker.Headline == "Recording failed" && afterOom.Blocker.Action == "Tell a technician (code failed).",
+        Expect(afterOom.Blocker.Headline == "Recording failed" && afterOom.Blocker.Action == "Share this error code with a technician.",
             "last episode failed without a notice (an older library): the unknown code, never its words: " + afterOom.Blocker.Headline);
         var withNotice = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "},\"attempts\":["
             + "{\"id\":\"20261020_120000\",\"stage\":\"failed\",\"outcome\":\"failed\",\"detail\":\"right_camera: streaming: Out of memory (os error 12)\",\"notice\":{\"code\":\"usb_bandwidth\",\"args\":{}}}]");
         Expect(withNotice.Blocker.Headline == "The USB hub ran out of bandwidth" && withNotice.Blocker.Who == "Technician", "last episode failed -> its notice: " + withNotice.Blocker.Headline);
         Expect(withNotice.Episodes[0].Fix == "Put both wrist cameras on one powered hub, then press Check.", "the episode row carries the fix");
 
-        // Local only.
-        var local = Screen("\"expected\":true,\"enrolled\":false,\"localOnly\":true,\"open\":true,\"roles\":" + ReadyRoles);
-        Expect(local.Blocker.Headline == "Ready (Local only)" && local.Link == "not used (Local only)", "local only: ready, no Factory");
+        // Not set up: there is no Local only mode, so nothing records until it is (not_enrolled).
+        var unenrolled = Screen("\"expected\":true,\"enrolled\":false,\"library\":\"present\",\"open\":true,\"roles\":" + ReadyRoles);
+        Expect(unenrolled.StartBlocked && unenrolled.Blocker.Headline == "This headset is not set up as a pod"
+            && unenrolled.Link == "not enrolled", "not set up: Start blocked with not_enrolled, no Factory link: " + unenrolled.Blocker.Headline);
+        Expect(PodScreenBoard.StartBlocker(JObject.Parse("{\"expected\":false,\"enrolled\":false}")) is { } bare
+            && bare.Headline == "This headset is not set up as a pod", "no rig and not set up: a start is refused too");
+        Expect(PodScreenBoard.StartBlocker(JObject.Parse("{\"expected\":false,\"enrolled\":false,\"localOnly\":true}")) != null,
+            "a status an earlier build wrote with localOnly still refuses the start of a headset not set up");
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures == 0 ? 0 : 1;

@@ -9,7 +9,7 @@ static class PodStatusBoardHarness
     static int failures;
     static void Expect(bool ok, string what) { Console.WriteLine((ok ? "PASS " : "FAIL ") + what); if (!ok) failures++; }
 
-    const string Base = "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\"";
+    const string Base = "\"expected\":true,\"enrolled\":true,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\"";
 
     static PodStatusLines Lines(string body, StartRefusal? start = null, bool succeeded = false) =>
         PodStatusBoard.Lines("{" + body + "}", start, succeeded);
@@ -20,12 +20,11 @@ static class PodStatusBoardHarness
         RealityLog.Rig.OperatorNotices.Load(System.IO.File.ReadAllText(Environment.GetEnvironmentVariable("SX_OPERATOR_NOTICES")!));
         // Nothing parses -> safe defaults, never a throw.
         var empty = PodStatusBoard.Lines("not json", null, false);
-        Expect(empty.Pod == "Pod: not enrolled · Local only ON" && empty.Rig.StartsWith("Rig: not expected"), "unreadable status -> not enrolled, no rig");
-        var local = PodStatusBoard.Lines("{\"expected\":false,\"enrolled\":false,\"localOnly\":true,\"floor\":null}", null, false);
+        Expect(empty.Pod == "Pod: not enrolled · set it up to record" && empty.Rig.StartsWith("Rig: not expected"), "unreadable status -> not enrolled, no rig");
+        var local = PodStatusBoard.Lines("{\"expected\":false,\"enrolled\":false,\"floor\":null}", null, false);
         Expect(local.Collector == "Collector: enroll this headset first" && local.Task == "Task: none (not enrolled)", "not enrolled: no collector, no task");
 
-        Expect(Lines(Base + ",\"floor\":null").Pod == "Pod: pod_q1 · Local only OFF", "pod line names the pod and Local only");
-        Expect(Lines("\"enrolled\":true,\"localOnly\":true,\"podId\":\"pod_q1\"").Collector == "Collector: none (Local only)", "Local only names no collector");
+        Expect(Lines(Base + ",\"floor\":null").Pod == "Pod: pod_q1", "pod line names the pod (no Local only mode)");
 
         // The collector: the paired phone's person (floor.collector), or unattributed. Never a sign-in.
         var attributed = Lines(Base + ",\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"},\"collection\":null}");
@@ -39,10 +38,11 @@ static class PodStatusBoardHarness
         Expect(Lines(Base + ",\"floor\":null,\"native\":{\"floor_error\":\"no route to host\"}").Collector == "Collector: waiting for the Factory", "no floor: waiting; the floor error stays in the log");
 
         // The setup line: a step's message for a while, then the current state.
-        Expect(PodStatusBoard.SetupStatus("Enrolled as pod_q1", 5, false, true, false) == "Enrolled as pod_q1", "a fresh message shows");
-        Expect(PodStatusBoard.SetupStatus("Enrolled as pod_q1", 61, false, true, false).StartsWith("Enrolled as a pod. Local only is off"), "an old message gives way to the state");
-        Expect(PodStatusBoard.SetupStatus(null, 0, false, true, false).StartsWith("Enrolled as a pod"), "a cleared message shows the state at once");
-        Expect(PodStatusBoard.SetupStatus("Enrolling...", 600, true, false, true) == "Enrolling...", "a running step keeps its message");
+        Expect(PodStatusBoard.SetupStatus("Enrolled as pod_q1", 5, false, true) == "Enrolled as pod_q1", "a fresh message shows");
+        Expect(PodStatusBoard.SetupStatus("Enrolled as pod_q1", 61, false, true) == "Enrolled as a pod. Scan a new code only to enroll again.", "an old message gives way to the state");
+        Expect(PodStatusBoard.SetupStatus(null, 0, false, true).StartsWith("Enrolled as a pod"), "a cleared message shows the state at once");
+        Expect(PodStatusBoard.SetupStatus(null, 0, false, false).StartsWith("Not set up: it records nothing until it is"), "not set up: says it records nothing");
+        Expect(PodStatusBoard.SetupStatus("Enrolling...", 600, true, false) == "Enrolling...", "a running step keeps its message");
 
         // Task.
         var task = Lines(Base + ",\"floor\":{\"collector\":null,\"collection\":{\"id\":\"c1\",\"status\":\"in_progress\",\"episodes\":[{\"id\":\"e1\"},{\"id\":\"e2\"}]}}");
@@ -91,17 +91,17 @@ static class PodStatusBoardHarness
         Expect(Lines(Base + ",\"seals\":{},\"uplink\":null").LastEpisode == "Last episode: none sealed yet", "no episodes");
 
         // The card: its chip and the label/value split.
-        Expect(empty.Readiness == PodReadiness.LocalOnly && empty.ReadinessText == "Local only" && empty.PodName == "", "unreadable status -> Local only chip, no pod name");
-        Expect(PodStatusBoard.Lines("{\"enrolled\":false,\"localOnly\":false}", null, false).Readiness == PodReadiness.NotReady, "not enrolled -> not ready");
+        Expect(empty.Readiness == PodReadiness.NotReady && empty.ReadinessText == "Not set up" && empty.PodName == "", "unreadable status -> Not set up chip, no pod name");
+        Expect(PodStatusBoard.Lines("{\"enrolled\":false}", null, false).Readiness == PodReadiness.NotReady, "not enrolled -> not ready");
         var ready = Lines(Base + ",\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"}},\"lastCheck\":{\"ready\":true,\"problems\":[]}");
         Expect(ready.Readiness == PodReadiness.Ready && ready.PodName == "pod_q1", "attributed with the rig checked ready -> Ready");
         var readyUnattributed = Lines(Base + ",\"floor\":{\"collector\":null},\"lastCheck\":{\"ready\":true,\"problems\":[]}");
         Expect(readyUnattributed.Readiness == PodReadiness.Ready, "no phone paired, the rig checked ready -> Ready (records unattributed)");
-        Expect(Lines("\"expected\":false,\"enrolled\":true,\"localOnly\":false,\"floor\":{\"collector\":null}").Readiness == PodReadiness.Ready, "no rig expected: the Factory answering is enough");
+        Expect(Lines("\"expected\":false,\"enrolled\":true,\"floor\":{\"collector\":null}").Readiness == PodReadiness.Ready, "no rig expected: the Factory answering is enough");
         Expect(Lines(Base + ",\"floor\":null,\"lastCheck\":{\"ready\":true,\"problems\":[]}").Readiness == PodReadiness.NotReady, "the Factory not answering yet -> not ready");
         Expect(Lines(Base + ",\"floor\":{\"collector\":null},\"lastCheck\":null").Readiness == PodReadiness.NotReady, "an unchecked rig is not ready");
         Expect(Lines(Base + ",\"lastRefusal\":{\"code\":\"rig_check_failed\",\"message\":\"x\"}").Readiness == PodReadiness.Refused, "a standing refusal -> Refused");
-        Expect(Lines("\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"missing\"").ReadinessText == "Rig error", "a missing rig library -> Rig error");
+        Expect(Lines("\"expected\":true,\"enrolled\":true,\"library\":\"missing\"").ReadinessText == "Rig error", "a missing rig library -> Rig error");
         Expect(PodStatusBoard.RecordingFor("Asha") == "Recording for Asha" && PodStatusBoard.RecordingFor("") == PodStatusBoard.Unattributed
             && PodStatusBoard.RecordingFor(null) == PodStatusBoard.Unattributed, "who the pod records for, or unattributed");
         Expect(PodStatusBoard.Field("Rig: not ready: left_camera: gone · 3 devices") == ("Rig", "not ready: left_camera: gone · 3 devices"), "field split at the first colon");

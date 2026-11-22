@@ -290,49 +290,6 @@ namespace RealityLog.Network
             });
         }
 
-        // ── POST /api/settings ──
-
-        /// <summary>
-        /// <c>{"local_only": bool}</c>: Local only (default true) keeps the headset off the
-        /// Factory and the rig in local mode. Answers the settings. 400 invalid_body, 409
-        /// recording, 503 when the main thread does not take it.
-        /// </summary>
-        private HttpResponse HandleSettings(HttpRequest request)
-        {
-            JObject? fields = null;
-            try
-            {
-                fields = JToken.Parse(string.IsNullOrWhiteSpace(request.Body) ? "null" : request.Body) as JObject;
-            }
-            catch (JsonException)
-            {
-            }
-            if (fields?["local_only"] is not JValue { Type: JTokenType.Boolean } flag)
-            {
-                return TypedError(400, "invalid_body", "the body must be {\"local_only\": true|false}");
-            }
-            if (recordingManager is not null && recordingManager.State != RecordingState.Idle)
-            {
-                return TypedError(409, "recording", "stop the recording before changing settings");
-            }
-            var rig = RigCoordinator.Instance;
-            if (rig is null)
-            {
-                return TypedError(503, "settings_failed", "the rig coordinator is not running");
-            }
-            string? error = null;
-            var signal = server!.EnqueueOnMainThread(() => error = rig.SetLocalOnly((bool)flag));
-            if (!signal.Wait(5000))
-            {
-                return MainThreadTimeoutResponse("Main thread did not apply the setting within 5 s");
-            }
-            if (error != null)
-            {
-                return TypedError(409, "settings_failed", error);
-            }
-            return HttpResponse.Ok("{\"local_only\":" + (rig.LocalOnly ? "true" : "false") + "}");
-        }
-
         // ── Left menu button: start / stop recording ──
 
         // 1 while a menu-button start or stop runs; presses meanwhile are ignored (a start arms
@@ -448,16 +405,16 @@ namespace RealityLog.Network
         {
             if (server == null) return;
 
-            // An enrolled headset that is not Local only requires the rig's bearer token on every
-            // request; Local only (or not enrolled yet) keeps the open LAN API.
+            // An enrolled headset requires the rig's bearer token on every request; one not
+            // enrolled serves only what setting it up needs (RigApiGuard.OpenBeforeSetUp).
             server.Guard = request =>
             {
                 var rig = RigCoordinator.Instance;
                 if (rig is null) return null;
                 request.Headers.TryGetValue("Authorization", out var authorization);
-                return RigApiGuard.Authorized(authorization, rig.ApiToken, rig.LocalOnly)
+                return RigApiGuard.Authorized(authorization, rig.ApiToken, rig.Enrolled, request.Method, request.Path)
                     ? null
-                    : TypedError(401, "unauthorized", "this headset is enrolled: send Authorization: Bearer <api token>");
+                    : TypedError(401, "unauthorized", "headset authorization is unavailable or the bearer token is missing or invalid");
             };
             server.Get("/api/status", HandleStatus);
             server.Post("/api/start-recording", request => RecordStart(HandleStartRecording(request)));
@@ -471,7 +428,6 @@ namespace RealityLog.Network
             server.Post("/api/timesync/ping", HandleTimesyncPing);
             server.Post("/api/enroll", HandleEnroll);
             server.Post("/api/command", HandleCommand);
-            server.Post("/api/settings", HandleSettings);
         }
 
         // ── GET /api/status ──
@@ -526,7 +482,6 @@ namespace RealityLog.Network
                 $"  \"app\": {HeadTrackingMonitor.AppJson("  ")},\n" +
                 $"  \"selfRelaunch\": {FrozenHeadRecovery.StatusJson()},\n" +
                 $"  \"controllers\": {HeadTrackingMonitor.ControllersJson("  ")},\n" +
-                $"  \"local_only\": {(RigCoordinator.Instance is { } settingsRig ? (settingsRig.LocalOnly ? "true" : "false") : "true")},\n" +
                 $"  \"rig\": {RigCoordinator.StatusJsonOrDefault},\n" +
                 $"  \"apkVersion\": \"{EscapeJson(cachedAppVersion)}\",\n" +
                 $"  \"uptimeMs\": {uptimeMs}\n" +
@@ -552,6 +507,13 @@ namespace RealityLog.Network
             if (HeadTrackingMonitor.AppPaused)
             {
                 return AppPausedResponse();
+            }
+            // A headset not set up records nothing, rig or no rig: there is no Local only mode,
+            // so no take stays where the Factory cannot see it. No coordinator refuses too.
+            var setUp = RigCoordinator.Instance;
+            if (setUp == null || !setUp.Enrolled)
+            {
+                return NotEnrolledResponse();
             }
             // The check (seconds) and the arming run on this thread; the log says whether the
             // main thread kept its frames meanwhile.
@@ -1694,11 +1656,6 @@ namespace RealityLog.Network
             {
                 return AppPausedResponse();
             }
-            if (rig is not null && rig.LocalOnly)
-            {
-                return TypedError(409, "local_only",
-                    "this headset is set to Local only and never contacts the Factory");
-            }
             if (rig is null || !rig.IsOpen)
             {
                 return TypedError(409, "not_enrolled",
@@ -1738,7 +1695,7 @@ namespace RealityLog.Network
         /// carries all three; the URLs default to production). Enrolls this headset as a Factory
         /// pod of kind headset through sx_rig_enroll_site (up to 60 s per request, on this worker
         /// thread) and answers <c>{"status": "enrolled", "enrollment": {"pod_id", "pod",
-        /// "steps"}}</c>; Local only turns off. Errors are <c>{"error", "reason"?, "message",
+        /// "steps"}}</c>. Errors are <c>{"error", "reason"?, "message",
         /// "rig"?}</c>: 400 invalid_body / join_code_required / enroll_failed (argument), 409
         /// recording, 503 app_paused / enroll_failed (the steps in message, the error with its
         /// refusal {kind: enrollment_failed, steps} in rig).
@@ -1822,6 +1779,14 @@ namespace RealityLog.Network
                     reason, ex.ErrorJson);
             }
         }
+
+        /// <summary>
+        /// 409 not_enrolled: the start of a headset not set up as a pod, refused before anything
+        /// records. Its notice is the table's not_enrolled (libsx_rig refuses a start the same way).
+        /// </summary>
+        private static HttpResponse NotEnrolledResponse() => TypedError(409, "not_enrolled",
+            "this headset is not set up as a pod and records nothing until it is; scan the setup QR code from the Console",
+            "not_enrolled", "{\"notice\":{\"code\":\"not_enrolled\",\"who\":\"floor_manager\",\"args\":{}}}");
 
         private static HttpResponse TypedError(int status, string error, string message,
             string? reason = null, string? rigJson = null)

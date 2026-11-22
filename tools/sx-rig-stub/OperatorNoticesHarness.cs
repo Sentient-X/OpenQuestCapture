@@ -51,8 +51,8 @@ static class OperatorNoticesHarness
         Expect(true, "every code renders its four parts, with or without arguments, and no raw text");
 
         var unknown = OperatorNotices.Render(OperatorNotice.Of("seal_hyperdrive"));
-        Expect(unknown.Headline == "Recording failed" && unknown.Action == "Tell a technician (code seal_hyperdrive)." && unknown.Who == "technician",
-            "an unknown code: Recording failed, tell a technician with the code");
+        Expect(unknown.Headline == "Recording failed" && unknown.Action == "Share this error code with a technician." && unknown.Who == "technician",
+            "an unknown code: Recording failed, share the error code with a technician");
 
         // The top production failures, as libsx_rig's attempts carry them: the blocker shows each until the next start.
         string Attempt(string stage, string seal, string outcome, string notice) =>

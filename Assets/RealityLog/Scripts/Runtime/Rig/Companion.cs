@@ -34,8 +34,6 @@ namespace RealityLog.Rig
         void EpisodeNotice(OperatorNotice notice, OperatorMessage words);
         /// <summary>How long the last episode has waited for its seal.</summary>
         void EpisodeSealing(long seconds);
-        /// <summary>Local only: nothing recorded is delivered.</summary>
-        void LocalOnly(bool localOnly);
     }
 
     /// <summary>The Touch controllers' charge (<see cref="ControllerBattery"/>); null where unknown.</summary>
@@ -202,7 +200,6 @@ namespace RealityLog.Rig
                 if (blocker.Notice is { } notice) writer.BlockerNotice(notice, OperatorNotices.Render(notice));
             }
             writer.StartBlocked(screen.StartBlocked);
-            writer.LocalOnly(screen.LocalOnly);
             foreach (var warning in screen.Warnings)
             {
                 if (warning.Notice is { } notice) writer.Warning(notice, OperatorNotices.Render(notice));
@@ -299,8 +296,6 @@ namespace RealityLog.Rig
 
         // The minutes, not the seconds: a sealing episode's age moves every second.
         public void EpisodeSealing(long seconds) => text.Append("ES|").Append(seconds / 60).Append('\n');
-
-        public void LocalOnly(bool localOnly) => text.Append("L|").Append(localOnly).Append('\n');
 
         private void Notice(string tag, OperatorNotice notice)
         {
