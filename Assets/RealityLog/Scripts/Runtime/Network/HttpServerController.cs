@@ -85,7 +85,10 @@ namespace RealityLog.Network
             if (recordingManager == null)
                 Debug.LogError($"[{Constants.LOG_TAG}] HttpServerController: RecordingManager not found!");
             else
+            {
                 recordingManager.CameraFailed += OnCameraFailed;
+                recordingManager.HeadVideoGapped += OnHeadVideoGap;
+            }
         }
 
         private void Start()
@@ -188,7 +191,11 @@ namespace RealityLog.Network
 
         private void OnDestroy()
         {
-            if (recordingManager != null) recordingManager.CameraFailed -= OnCameraFailed;
+            if (recordingManager != null)
+            {
+                recordingManager.CameraFailed -= OnCameraFailed;
+                recordingManager.HeadVideoGapped -= OnHeadVideoGap;
+            }
             if (ReferenceEquals(Instance, this))
             {
                 Instance = null;
@@ -266,6 +273,42 @@ namespace RealityLog.Network
             if (RigCoordinator.Instance is { } rig) rig.Cue(RigCues.Cue.Refused, reason);
             else RigCues.Play(RigCues.Cue.Refused, reason, gameObject);
             StopFailedRecording(session, "camera-failure");
+        }
+
+        /// <summary>
+        /// Main thread, once per recording whose head camera stalled while it recorded
+        /// (RecordingManager's watch of the recorder's live counters, OQC#44): the episode is stopped
+        /// as failed now, with the seal's own notice (seal_video_gap: "the {side} head camera skipped
+        /// frames"), instead of recording on for minutes to the same refusal at the seal (the 109
+        /// refused takes of 2026-11-22 averaged 434 s). The cause is kept beside the session as
+        /// rig_refusal.json (code head_video_gap) with the eye, the gap, when it began and whether the
+        /// eye's camera thread or the camera itself took it. The stop runs the normal path, so the rig's
+        /// receipt and seal follow as for any stop; the seal's refusal then names the same gap.
+        /// </summary>
+        private void OnHeadVideoGap(string session, RealityLog.Camera.HeadVideoGap gap)
+        {
+            var refusal = new JObject
+            {
+                ["code"] = "head_video_gap",
+                ["message"] = gap.Describe(),
+                ["detail"] = new JObject
+                {
+                    ["eye"] = gap.Eye,
+                    ["side"] = gap.Side,
+                    ["lost_frames"] = gap.LostFrames,
+                    ["gap_ms"] = Math.Round(gap.GapMs, 1),
+                    ["at_seconds"] = Math.Round(gap.AtSeconds, 1),
+                    ["camera_thread_blocked"] = gap.CameraThreadBlocked,
+                    ["camera_callback_max_ms"] = Math.Round(gap.FrameCallbackMaxMs, 1),
+                },
+            };
+            WriteSessionJson(session, "rig_refusal.json", refusal.ToString(Formatting.None));
+            var notice = OperatorNotice.Of(RealityLog.Camera.HeadVideoGap.NoticeCode, ("side", gap.Side), ("camera", "head"));
+            PodStartLog.Shared.RecordFailure("head_video_gap", gap.Describe(), notice, DateTime.Now);
+            var reason = $"{gap.Side} head camera skipped {gap.LostFrames} frames mid-episode";
+            if (RigCoordinator.Instance is { } rig) rig.Cue(RigCues.Cue.Refused, reason);
+            else RigCues.Play(RigCues.Cue.Refused, reason, gameObject);
+            StopFailedRecording(session, "head-video-gap");
         }
 
         /// <summary>Stops <paramref name="session"/> through POST /api/stop-recording's path, off the main thread.</summary>
