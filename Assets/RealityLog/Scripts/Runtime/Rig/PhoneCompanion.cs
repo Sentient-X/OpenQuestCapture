@@ -258,7 +258,7 @@ namespace RealityLog.Rig
             });
         }
 
-        /// <summary>The phone's Check, Start, Stop or (confirmed there) End collection: the Pod card's own control.</summary>
+        /// <summary>The phone's Check, Start or Stop: the Pod card's own control.</summary>
         private void ControlAsked(PodControl control)
         {
             Debug.Log($"[{Constants.LOG_TAG}] PhoneCompanion: the phone asked {control}");

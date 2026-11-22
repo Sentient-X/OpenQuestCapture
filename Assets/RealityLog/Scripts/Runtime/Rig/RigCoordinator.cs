@@ -959,54 +959,6 @@ namespace RealityLog.Rig
             }
         }
 
-        /// <summary>
-        /// End collection now, on the Pod card and from the paired phone (after the operator
-        /// confirmed): <c>sx_rig_command {"command": "end_recording"}</c>, sx-pod's End collection.
-        /// The rig ends the open collection and tells the Factory. Each episode still needs
-        /// its collector's explicit review before finalization and upload. Refused while an episode records. Calling (worker) thread: it waits on
-        /// the network with the rig claimed, so no start slips in while it ends, and without the
-        /// episode lock, so nothing that only reads waits on the Factory.
-        /// </summary>
-        public PodControlResult EndCollectionNow()
-        {
-            if (!opened || !enrolled || localOnly)
-            {
-                return new PodControlResult(PodControl.EndCollection, false,
-                    localOnly ? "Local only records no Factory collection" : "this headset is not on the Factory");
-            }
-            lock (episodeLock)
-            {
-                ClaimRigLocked("command");
-                if (episodeActive || reservedSession != null)
-                {
-                    ReleaseRigLocked();
-                    return new PodControlResult(PodControl.EndCollection, false, "an episode is recording; stop it first");
-                }
-            }
-            try
-            {
-                var answer = SxRig.Command("{\"command\":\"end_recording\"}");
-                var heard = JToken.Parse(answer)["answer"]?["heard"] is JValue { Type: JTokenType.Boolean } flag && (bool)flag;
-                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: collection ended by the operator: {answer}");
-                return new PodControlResult(PodControl.EndCollection, true, heard
-                    ? "Ended; review its episodes before they can finalize and upload"
-                    : "Ended; the Factory is told when it hears the headset again");
-            }
-            catch (SxRigException ex)
-            {
-                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: end collection refused: {ex.Message}");
-                return new PodControlResult(PodControl.EndCollection, false, ErrorDetail(ex));
-            }
-            catch (JsonException)
-            {
-                return new PodControlResult(PodControl.EndCollection, true, "Ended");
-            }
-            finally
-            {
-                lock (episodeLock) ReleaseRigLocked();
-            }
-        }
-
         /// <summary>The rig's own words for a refusal: its error's detail, else the error.</summary>
         private static string ErrorDetail(SxRigException ex)
         {

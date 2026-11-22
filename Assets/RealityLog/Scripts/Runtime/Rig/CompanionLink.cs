@@ -22,6 +22,13 @@ namespace RealityLog.Rig
         public const string ListenerInterfaceName = "io.sentientx.sx.companion.CompanionHeadset$Listener";
         public const string StatusBuilderClassName = "io.sentientx.sx.companion.HeadsetStatusBuilder";
 
+        /// <summary>
+        /// The answer to a phone that still asks to end the collection (companion.proto keeps
+        /// END_COLLECTION, and the library's Listener still declares it): the headset has no such
+        /// control, because the Factory ends a collection between episodes when a change needs it.
+        /// </summary>
+        public const string EndCollectionRefusal = "The Factory ends collections itself; keep recording";
+
         private readonly AndroidJavaObject headset;
         private readonly ConcurrentQueue<(string kind, string a, string b)> events;
 
@@ -92,6 +99,10 @@ namespace RealityLog.Rig
                         break;
                     case "control":
                         controlAsk((PodControl)Enum.Parse(typeof(PodControl), e.a));
+                        break;
+                    case "end_collection":
+                        Debug.Log($"[{Constants.LOG_TAG}] CompanionLink: the phone asked End collection; refused, the Factory ends collections");
+                        headset.Call<bool>("sendCommandResult", "END_COLLECTION", false, EndCollectionRefusal);
                         break;
                 }
             }
@@ -184,7 +195,8 @@ namespace RealityLog.Rig
             public void onCheckAsk() => events.Enqueue(("control", nameof(PodControl.Check), ""));
             public void onStartAsk() => events.Enqueue(("control", nameof(PodControl.Start), ""));
             public void onStopAsk() => events.Enqueue(("control", nameof(PodControl.Stop), ""));
-            public void onEndCollectionAsk() => events.Enqueue(("control", nameof(PodControl.EndCollection), ""));
+            // Declared by the library's Listener; answered with a refusal so the phone does not wait.
+            public void onEndCollectionAsk() => events.Enqueue(("end_collection", "", ""));
             public void onError(string failure, string detail) => events.Enqueue(("error", failure ?? "", detail ?? ""));
         }
 

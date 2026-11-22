@@ -30,11 +30,8 @@
     "pill_warnings": "Warnings",
     "ready": "Ready to record",
     "ready_action": "Press the menu button, or hold the right gripper button for 2 s, to start",
-    "ready_local": "Ready (Local only)",
-    "ready_local_action": "Press the menu button, or hold the right gripper button for 2 s, to record. Nothing is delivered.",
     "recording": "Recording",
     "recording_action": "Press the menu button to stop",
-    "local_only": "Local only: nothing is delivered",
     "phone_linked": "Phone linked"
   },
   "tokens": {
@@ -191,8 +188,8 @@
     "not_enrolled": {
       "who": "floor_manager",
       "headline": "This headset is not set up as a pod",
-      "still_fine": "Local only recording still works.",
-      "action": "Scan the setup QR code from the Console."
+      "still_fine": "It records nothing until it is set up. Your earlier episodes are safe.",
+      "action": "Scan the setup QR code from the Console, then start again."
     },
     "no_task": {
       "who": "floor_manager",

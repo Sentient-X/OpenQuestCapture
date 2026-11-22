@@ -11,9 +11,8 @@ namespace RealityLog.Rig
     /// <summary>
     /// The operator's controls, one at a time, for the Pod card and the paired phone alike:
     /// <b>Check</b> (<see cref="RigCoordinator.CheckNow"/>, sx_rig_check), <b>Start</b> and
-    /// <b>Stop</b> (the left menu button's path, <see cref="StartOrStop"/>), and <b>End
-    /// collection</b> (<see cref="RigCoordinator.EndCollectionNow"/>, sx-pod's End collection;
-    /// each screen asks the operator to confirm first). Each ends in one
+    /// <b>Stop</b> (the left menu button's path, <see cref="StartOrStop"/>). The operator never
+    /// ends a collection: the Factory ends one between episodes when a change needs it. Each ends in one
     /// <see cref="PodControlResult"/>, raised on the main thread as <see cref="Finished"/>, which
     /// the card shows and the phone companion sends to the phone, whichever screen it was
     /// pressed on. It also reads the Touch controllers' charge once a second.
@@ -64,8 +63,7 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// Runs <paramref name="control"/> (main thread). End collection runs only after the
-        /// screen that asked has confirmed it. A refusal before it starts is a result too.
+        /// Runs <paramref name="control"/> (main thread). A refusal before it starts is a result too.
         /// </summary>
         public void Run(PodControl control)
         {
@@ -92,20 +90,6 @@ namespace RealityLog.Rig
                     }
                     Running = control;
                     Task.Run(() => done.Enqueue(Guarded(control, rig.CheckNow)));
-                    return;
-                case PodControl.EndCollection:
-                    if (recording)
-                    {
-                        Finish(new PodControlResult(control, false, "an episode is recording; stop it first"));
-                        return;
-                    }
-                    if (rig == null)
-                    {
-                        Finish(new PodControlResult(control, false, "no rig on this headset"));
-                        return;
-                    }
-                    Running = control;
-                    Task.Run(() => done.Enqueue(Guarded(control, rig.EndCollectionNow)));
                     return;
                 default:
                     if (StartOrStop is not { } startOrStop)
@@ -143,11 +127,10 @@ namespace RealityLog.Rig
             while (done.TryDequeue(out var result))
             {
                 Running = null;
-                // Start and Stop cue on their own path; a check or an end is heard here.
-                if (result.Control is PodControl.Check or PodControl.EndCollection)
+                // Start and Stop cue on their own path; a check is heard here.
+                if (result.Control is PodControl.Check)
                 {
-                    RigCoordinator.Instance?.QueueCue(!result.Ok ? RigCues.Cue.Refused
-                        : result.Control == PodControl.Check ? RigCues.Cue.Sealed : RigCues.Cue.Stop,
+                    RigCoordinator.Instance?.QueueCue(result.Ok ? RigCues.Cue.Sealed : RigCues.Cue.Refused,
                         $"pod card {result.Control} {(result.Ok ? "done" : "refused")}");
                 }
                 Publish(result);

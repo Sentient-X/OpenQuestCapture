@@ -268,11 +268,11 @@ static class CompanionHarness
         Expect(Map(Pod).Pads == (null, null), "unread controllers stay absent");
         Expect(Fingerprint(Pod, T0, new ControllerCharge(72, 40)) != Fingerprint(Pod, T0, new ControllerCharge(71, 40)), "a controller's charge changing is a change");
 
-        // Words: wire names are companion.proto's, the question carries the numbers, a result line names its control.
-        Expect(PodControlWords.WireName(PodControl.Check) == "CHECK" && PodControlWords.WireName(PodControl.EndCollection) == "END_COLLECTION"
+        // Words: wire names are companion.proto's, a result line names its control. The operator has no
+        // End collection: the Factory ends a collection between episodes, and sign-out ends it.
+        Expect(PodControlWords.WireName(PodControl.Check) == "CHECK"
             && PodControlWords.WireName(PodControl.Start) == "START" && PodControlWords.WireName(PodControl.Stop) == "STOP", "wire names");
-        Expect(PodControlWords.EndQuestion(3, 10) == "End collection now? 3 of 10 recorded", "end question with numbers");
-        Expect(PodControlWords.EndQuestion(0, 0) == "End collection now?", "end question without a target");
+        Expect(string.Join(",", Enum.GetNames(typeof(PodControl))) == "Check,Start,Stop", "the controls are Check, Start and Stop only");
         Expect(PodControlWords.Line(new PodControlResult(PodControl.Check, true, "Ready to record")) == "Check: Ready to record", "result line");
         Expect(PodControlWords.Line(new PodControlResult(PodControl.Stop, false, "")) == "Stop: refused", "an empty refusal still says refused");
         Expect(PodControlWords.HttpWords(200, "{}", true) == "Recording", "a start that worked");

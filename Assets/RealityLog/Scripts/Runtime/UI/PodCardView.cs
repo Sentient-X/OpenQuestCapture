@@ -23,9 +23,7 @@ namespace RealityLog.UI
         public bool Enrolled, LocalOnly, Recording;
         /// <summary>The control running now, if any.</summary>
         public PodControl? Running;
-        /// <summary>End collection waits for its second tap.</summary>
-        public bool EndArmed;
-        /// <summary>The panel under the controls: End collection's question, a running control, or the last answer.</summary>
+        /// <summary>The panel under the controls: a running control, or the last answer.</summary>
         public PodTone PanelTone;
         public string PanelHeadline = "", PanelAction = "";
         /// <summary>False when this build has no PodSetupController: the setup actions are hidden.</summary>
@@ -43,8 +41,9 @@ namespace RealityLog.UI
     /// The recordings menu's Pod page: one card of rows, each fact on one row (label on the
     /// left, value in the middle, state pill on the right, one row height), its long text
     /// wrapping inside its own cell. Sections, top to bottom: the title and chip; the blocker
-    /// banner (what is in the way, what clears it); Controls (Check, Start/Stop, End collection,
-    /// then their answer); Battery (headset, left, right in one row); Devices; Collection;
+    /// banner (what is in the way, what clears it); Controls (Check, Start/Stop, then their
+    /// answer; the operator never ends a collection: the Factory ends one between episodes when a
+    /// change needs it); Battery (headset, left, right in one row); Devices; Collection;
     /// Episodes (each across the pipeline's steps); Phone; Setup (Scan QR, Local only,
     /// Set up manually and the manual fields, collapsed until asked for). It sits in its own
     /// ScrollRect (RecordingListUI's Pod tab), so it never draws over the recordings list.
@@ -95,8 +94,8 @@ namespace RealityLog.UI
         private const int WarningRows = 8;
         private readonly FactRow[] warnings = new FactRow[WarningRows];
         // Controls.
-        private TextMeshProUGUI checkText = default!, toggleText = default!, endText = default!;
-        private Image checkImage = default!, toggleImage = default!, endImage = default!;
+        private TextMeshProUGUI checkText = default!, toggleText = default!;
+        private Image checkImage = default!, toggleImage = default!;
         private GameObject controlPanelObj = default!;
         private Image controlPanel = default!;
         private TextMeshProUGUI controlHeadline = default!, controlAction = default!;
@@ -142,8 +141,7 @@ namespace RealityLog.UI
 
         private float forgetArmedUntil = float.NegativeInfinity;
         private const float ForgetConfirmSeconds = 4f;
-        private float endArmedUntil = float.NegativeInfinity;
-        private const float EndConfirmSeconds = 8f;
+        private const float ReviewConfirmSeconds = 8f;
         private const float ResultShownSeconds = 60f;
 
         private RecordingManager? recorder;
@@ -251,16 +249,7 @@ namespace RealityLog.UI
             };
             state.SetupMessage = setup == null ? null : !state.Enrolled ? setup.Status : setup.StepMessage;
 
-            var canEnd = state.Running == null && !state.Recording && state.Enrolled && !state.LocalOnly;
-            if (!canEnd) endArmedUntil = float.NegativeInfinity;
-            state.EndArmed = Time.unscaledTime < endArmedUntil;
-            if (state.EndArmed)
-            {
-                state.PanelTone = PodTone.Warning;
-                state.PanelHeadline = PodControlWords.EndQuestion(screen.Credited, screen.Requested);
-                state.PanelAction = "Tap End now to end this collection. Review each stopped episode below; delivery follows the platform checks.";
-            }
-            else if (state.Running is PodControl busy)
+            if (state.Running is PodControl busy)
             {
                 state.PanelTone = PodTone.Neutral;
                 state.PanelHeadline = PodControlWords.Running(busy);
@@ -354,9 +343,6 @@ namespace RealityLog.UI
             // Start dims while it would certainly be refused (the blocker says why); a tap still says why.
             ShowEnabled(toggleImage, toggleText, state.Recording ? ErrorColor : PrimaryColor,
                 running == null && (state.Recording || !state.Screen.StartBlocked));
-            var canEnd = running == null && !state.Recording && state.Enrolled && !state.LocalOnly;
-            Set(endText, running == PodControl.EndCollection ? PodControlWords.Running(PodControl.EndCollection) : state.EndArmed ? "End now" : "End collection");
-            ShowEnabled(endImage, endText, state.EndArmed ? ErrorColor : SecondaryColor, canEnd);
 
             var panel = state.PanelHeadline.Length > 0;
             Show(controlPanelObj, panel);
@@ -617,25 +603,6 @@ namespace RealityLog.UI
             PodControls.Instance?.Run(recording ? PodControl.Stop : PodControl.Start);
         }
 
-        /// <summary>End collection asks for a second tap, with how far the collection got.</summary>
-        private void EndCollection()
-        {
-            if (Time.unscaledTime < endArmedUntil)
-            {
-                endArmedUntil = float.NegativeInfinity;
-                PodControls.Instance?.Run(PodControl.EndCollection);
-                return;
-            }
-            recorder ??= FindFirstObjectByType<RecordingManager>();
-            if (recorder != null && recorder.State != RecordingState.Idle)
-            {
-                // Refused with its reason, on the card and the phone.
-                PodControls.Instance?.Run(PodControl.EndCollection);
-                return;
-            }
-            endArmedUntil = Time.unscaledTime + EndConfirmSeconds;
-        }
-
         private void ClearReviewConfirmation()
         {
             reviewArmedKey = "";
@@ -667,7 +634,7 @@ namespace RealityLog.UI
                 reviewArmedKey = item.Key;
                 reviewArmedSubject = state.Screen.ReviewCollectorSubject;
                 reviewArmedSuccess = success;
-                reviewArmedUntil = Time.unscaledTime + EndConfirmSeconds;
+                reviewArmedUntil = Time.unscaledTime + ReviewConfirmSeconds;
                 return;
             }
             ClearReviewConfirmation();
@@ -760,12 +727,11 @@ namespace RealityLog.UI
             for (var i = 0; i < WarningRows; i++) warnings[i] = Fact(warningsSection, "Warning", withPill: false);
             warningsObj.SetActive(false);
 
-            // Controls: Check · Start/Stop · End collection, their answer, then the battery row.
+            // Controls: Check · Start/Stop, their answer, then the battery row.
             var controls = Section(transform, "Controls");
             var actions = Row("ControlActions", controls, PillHeight);
             Pill(actions, "Check", SecondaryColor, () => PodControls.Instance?.Run(PodControl.Check), out checkText, out checkImage);
             Pill(actions, "StartStop", PrimaryColor, StartOrStop, out toggleText, out toggleImage);
-            Pill(actions, "EndCollection", SecondaryColor, EndCollection, out endText, out endImage);
             controlPanelObj = Panel("ControlPanel", controls, out controlPanel).gameObject;
             controlHeadline = Text("Headline", controlPanelObj.transform, 22, TextColor, Cell.Wrapping);
             controlHeadline.fontStyle = FontStyles.Bold;

@@ -88,13 +88,16 @@ namespace RealityLog.Rig
         public static int? First(int? preferred, int? fallback) => preferred ?? fallback;
     }
 
-    /// <summary>The operator's controls, on the Pod card and from the paired phone (companion.proto CompanionCommand).</summary>
+    /// <summary>
+    /// The operator's controls, on the Pod card and from the paired phone (companion.proto
+    /// CompanionCommand). Ending a collection is not one: the Factory ends it between episodes
+    /// when a change needs it.
+    /// </summary>
     public enum PodControl
     {
         Check,
         Start,
         Stop,
-        EndCollection,
     }
 
     /// <summary>How one control ended, in the card's words; the phone gets the same.</summary>
@@ -120,16 +123,14 @@ namespace RealityLog.Rig
         {
             PodControl.Check => "CHECK",
             PodControl.Start => "START",
-            PodControl.Stop => "STOP",
-            _ => "END_COLLECTION",
+            _ => "STOP",
         };
 
         public static string Label(PodControl control) => control switch
         {
             PodControl.Check => "Check",
             PodControl.Start => "Start",
-            PodControl.Stop => "Stop",
-            _ => "End collection",
+            _ => "Stop",
         };
 
         /// <summary>The pill's word while the control runs.</summary>
@@ -137,13 +138,8 @@ namespace RealityLog.Rig
         {
             PodControl.Check => "Checking...",
             PodControl.Start => "Starting...",
-            PodControl.Stop => "Stopping...",
-            _ => "Ending...",
+            _ => "Stopping...",
         };
-
-        /// <summary>"End collection now? 3 of 10 recorded": what both screens ask before ending.</summary>
-        public static string EndQuestion(long credited, long requested) =>
-            requested > 0 ? "End collection now? " + credited + " of " + requested + " recorded" : "End collection now?";
 
         /// <summary>The result line under the controls: "Check: Ready to record".</summary>
         public static string Line(PodControlResult result) =>
