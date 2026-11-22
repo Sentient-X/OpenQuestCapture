@@ -170,7 +170,7 @@ namespace RealityLog.Rig
         /// (<c>{"id", "name"}</c>), the person whose paired phone opened the Factory shift (or
         /// whom a floor manager put on the pod). Its name, else its id when the name is empty;
         /// null when the pod records unattributed (<c>"collector": null</c>), and when the
-        /// status carries no floor (Local only, not enrolled). The headset never signs anyone
+        /// status carries no floor (not enrolled, or the Factory not heard yet). The headset never signs anyone
         /// in; the rig seals this collector itself.
         /// </summary>
         public static string? CollectorName(JObject? status)

@@ -22,20 +22,22 @@ namespace RealityLog.Rig
         public const string KeysSchema = "sx.rig_config_keys/v1";
 
         /// <summary>pod_config.json keys the app itself reads; never sent to the rig.</summary>
-        public static readonly string[] AppKeys = { "local_only" };
+        public static readonly string[] AppKeys = Array.Empty<string>();
 
         /// <summary>
         /// pod_config.json keys the app no longer reads, tolerated so a headset provisioned
-        /// before still opens: <c>operator_id</c> (the rig seals the Factory shift's collector now).
+        /// before still opens: <c>operator_id</c> (the rig seals the Factory shift's collector now)
+        /// and <c>local_only</c> (the Local only mode, removed 2026-11-22: an enrolled headset
+        /// always declares, and one not set up records nothing).
         /// </summary>
-        public static readonly string[] RetiredKeys = { "operator_id" };
+        public static readonly string[] RetiredKeys = { "operator_id", "local_only" };
 
         /// <summary>Rig settings pod_config.json may give, sent when present.</summary>
         public static readonly string[] Settings =
             { "min_free_bytes", "max_episode_seconds", "seal", "headset_serial", "pod_name", "tailscale_ip" };
 
-        /// <summary>The site pod_config.json may give, sent only when Local only is off.</summary>
-        public static readonly string[] Site = { "factory_url", "auth_url", "rig_type_id", "upload_limit_mib_s" };
+        /// <summary>The site pod_config.json may give, sent when present.</summary>
+        public static readonly string[] Site = { "factory_url", "auth_url", "rig_type_id", "upload_limit_mib_s", "lan_limit_mib_s" };
 
         /// <summary>Rig keys the app sets itself (pod_config.json may not).</summary>
         public static readonly string[] AppSet =
@@ -46,7 +48,7 @@ namespace RealityLog.Rig
         /// APK's content identity, which the rig reports as its recorder build, and the app's
         /// version, which the rig's activity names as its Quest app.
         /// </summary>
-        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "local_only", "quest_app_version" };
+        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "quest_app_version" };
 
         /// <summary>The <c>quest_app_version</c> value: the app's versionName and versionCode.</summary>
         public static JObject QuestAppVersion(string versionName, long versionCode) => new()
@@ -114,13 +116,13 @@ namespace RealityLog.Rig
         /// <summary>
         /// The config: the app's own paths (staging, credentials, pod_config.json for the
         /// serial, the installed meshes), rig_config.json as <c>rig</c> when present, the rig
-        /// settings pod_config.json names, its site only when <paramref name="localOnly"/> is
-        /// off, and the tailnet address when pod_config.json names none. Throws
+        /// settings and site pod_config.json names, and the tailnet address when pod_config.json
+        /// names none. Throws
         /// <see cref="InvalidOperationException"/> on any key not in <paramref name="rigKeys"/>,
         /// rather than send it.
         /// </summary>
         public static JObject Build(JObject podConfig, ISet<string> rigKeys, string stagingDir, string credentialsDir,
-            string podConfigPath, string? embodimentAssetsDir, string? tailscaleIp, JToken? rig, bool localOnly,
+            string podConfigPath, string? embodimentAssetsDir, string? tailscaleIp, JToken? rig,
             string? questApkBuildId = null, JObject? questAppVersion = null)
         {
             var config = new JObject
@@ -129,7 +131,7 @@ namespace RealityLog.Rig
                 ["credentials_dir"] = credentialsDir,
                 ["pod_config_path"] = podConfigPath,
             };
-            foreach (var key in Settings.Concat(localOnly ? Array.Empty<string>() : Site))
+            foreach (var key in Settings.Concat(Site))
             {
                 if (podConfig[key] is JToken value && value.Type != JTokenType.Null) config[key] = value.DeepClone();
             }
@@ -152,13 +154,6 @@ namespace RealityLog.Rig
             if (questAppVersion != null && rigKeys.Contains("quest_app_version"))
             {
                 config["quest_app_version"] = questAppVersion.DeepClone();
-            }
-            // A rig that takes local_only never contacts the Factory while it is true, even with
-            // an enrolled credential and its kept site.json (dropping factory_url alone does not
-            // stop that). credentials_dir is still passed, so the kept rig.json is used.
-            if (rigKeys.Contains("local_only"))
-            {
-                config["local_only"] = localOnly;
             }
             var unknown = config.Properties().Select(p => p.Name).Where(k => !rigKeys.Contains(k)).ToArray();
             if (unknown.Length > 0)

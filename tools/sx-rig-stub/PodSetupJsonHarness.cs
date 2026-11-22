@@ -1,5 +1,5 @@
 // Host check of PodSetupJson (QR payload, URLs, join code, enroll_site request and steps) and
-// RigApiGuard (bearer token when enrolled and not Local only). Run by test_binding.sh.
+// RigApiGuard (bearer token when enrolled; a headset not set up serves only its setup). Run by test_binding.sh.
 using System;
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -37,12 +37,23 @@ static class PodSetupJsonHarness
         Expect(PodSetupJson.Steps("garbage").Count == 0, "unreadable -> no steps");
 
         var token = new string('a', 64);
-        Expect(RigApiGuard.Authorized(null, token, localOnly: true), "Local only keeps the API open");
-        Expect(RigApiGuard.Authorized(null, null, localOnly: false), "not enrolled (no token) keeps the API open");
-        Expect(!RigApiGuard.Authorized(null, token, localOnly: false), "enrolled, not Local only: no header is refused");
-        Expect(!RigApiGuard.Authorized("Bearer " + new string('b', 64), token, false), "a wrong token is refused");
-        Expect(!RigApiGuard.Authorized("Basic " + token, token, false), "another scheme is refused");
-        Expect(RigApiGuard.Authorized("Bearer " + token, token, false), "the right bearer token is accepted");
+        const string Get = "GET", Post = "POST", Status = "/api/status";
+        // A headset not set up serves only what setting it up needs; it records nothing.
+        Expect(RigApiGuard.Authorized(null, null, false, Get, Status), "unenrolled: status is open");
+        Expect(RigApiGuard.Authorized(null, null, false, Get, "/api/diagnostics"), "unenrolled: diagnostics are open");
+        Expect(RigApiGuard.Authorized(null, null, false, Post, "/api/enroll"), "unenrolled: enrollment is open");
+        foreach (var (method, path) in new[] { (Post, "/api/start-recording"), (Post, "/api/stop-recording"), (Post, "/api/mark-episode"),
+            (Post, "/api/command"), (Post, "/api/settings"), (Get, "/api/recordings"), (Get, "/api/recordings/x.zip"), ("DELETE", "/api/recordings/x"),
+            (Get, "/api/preview.jpg"), (Post, "/api/keep-awake"), (Post, "/api/timesync/ping"), (Post, Status), (Get, "/api/enroll") })
+        {
+            Expect(!RigApiGuard.Authorized(null, null, false, method, path), "unenrolled: " + method + " " + path + " is refused");
+        }
+        Expect(!RigApiGuard.Authorized(null, null, true, Get, Status), "enrolled token lookup failure never opens the API");
+        Expect(!RigApiGuard.Authorized("Bearer " + token, "", true, Get, Status), "an empty enrolled token is refused even with a header");
+        Expect(!RigApiGuard.Authorized(null, token, true, Get, Status), "enrolled: no header is refused, even for status");
+        Expect(!RigApiGuard.Authorized("Bearer " + new string('b', 64), token, true, Get, Status), "a wrong token is refused");
+        Expect(!RigApiGuard.Authorized("Basic " + token, token, true, Get, Status), "another scheme is refused");
+        Expect(RigApiGuard.Authorized("Bearer " + token, token, true, Post, "/api/start-recording"), "the right bearer token is accepted");
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;

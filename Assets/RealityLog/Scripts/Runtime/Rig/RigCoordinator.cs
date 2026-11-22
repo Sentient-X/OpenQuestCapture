@@ -41,9 +41,9 @@ namespace RealityLog.Rig
         public const string ConfigFileName = "rig_config.json";
         /// <summary>
         /// Optional site keys merged into the sx_rig_open config (factory_url, auth_url,
-        /// pod_name, rig_type_id, upload_limit_mib_s, seal, min_free_bytes, tailscale_ip), and
-        /// headset_serial, which provisioning writes over adb (apps cannot read ro.serialno on
-        /// the Quest 3S); the rig also reads it through pod_config_path. POST /api/enroll with
+        /// pod_name, rig_type_id, upload_limit_mib_s, lan_limit_mib_s, seal, min_free_bytes,
+        /// tailscale_ip), and headset_serial, which provisioning writes over adb (apps cannot
+        /// read ro.serialno on the Quest 3S); the rig also reads it through pod_config_path. POST /api/enroll with
         /// a base_url writes factory_url and auth_url here.
         /// </summary>
         public const string PodConfigFileName = "pod_config.json";
@@ -199,8 +199,6 @@ namespace RealityLog.Rig
         private volatile string? activeEpisodeId;
         private string? failureHandledFor; // status timer thread only
         private readonly System.Collections.Concurrent.ConcurrentQueue<(string session, JObject failure)> failures = new();
-        // pod_config.json's local_only (default true), re-read with the identity poll.
-        private volatile bool localOnly = true;
         // floor.collector's name from the last readable status (the paired phone's person), or
         // null while the pod records unattributed. Shown and sent to the phone; never sealed by
         // this app (the rig seals the Factory shift's collector itself).
@@ -225,7 +223,7 @@ namespace RealityLog.Rig
         private bool floorObserved; // native-status timer thread only
 
         private const string NotExpectedStatus =
-            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"localOnly\":true,\"headsetSerial\":null," +
+            "{\"expected\":false,\"configured\":false,\"enrolled\":false,\"headsetSerial\":null," +
             "\"tailscaleIp\":null,\"apkBuildId\":null,\"library\":\"unknown\",\"open\":false," +
             "\"openError\":null,\"episodeActive\":false,\"usb\":{\"present\":0,\"attached\":[],\"awaitingPermission\":[]," +
             "\"attachErrors\":{}},\"podId\":null,\"registeredRig\":null,\"seals\":null,\"uplink\":null,\"floor\":null," +
@@ -275,7 +273,6 @@ namespace RealityLog.Rig
             // The machine credential lives in app-private storage, never on shared storage.
             credentialsPath = Path.Combine(Application.persistentDataPath, CredentialsDirectoryName);
             stagingPath = Path.Combine(Application.persistentDataPath, StagingDirectoryName);
-            localOnly = ReadLocalOnly(); // before the first open
             // The operator's words (sx_operator_notices.json, shipped with the library). Without
             // them every notice reads as its code, never raw text; the failure is reported.
             try
@@ -718,58 +715,8 @@ namespace RealityLog.Rig
         /// </summary>
         public event Action<string, JObject>? EpisodeFailed;
 
-        /// <summary>
-        /// pod_config.json's <c>local_only</c> (default true): the app never contacts the
-        /// Factory (no enrollment, commands or uplink, whatever factory_url says) and
-        /// the rig opens in local mode. Any thread.
-        /// </summary>
-        public bool LocalOnly => localOnly;
-
         /// <summary>True when this headset holds a machine credential: it is enrolled as a pod.</summary>
         public bool Enrolled => enrolled;
-
-        /// <summary>
-        /// Main thread: sets local_only in pod_config.json and reopens the rig with the new
-        /// config when no episode is active. Returns why not, or null.
-        /// </summary>
-        public string? SetLocalOnly(bool value)
-        {
-            lock (episodeLock)
-            {
-                if (episodeActive || reservedSession != null) return "a rig episode is active";
-                if (rigWork != null) return "the rig is busy (" + rigWork + "); try again in a moment";
-            }
-            try
-            {
-                var config = ReadPodConfig();
-                config["local_only"] = value;
-                WritePodConfig(config);
-            }
-            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException
-                || ex is UnauthorizedAccessException)
-            {
-                return $"cannot write {PodConfigFileName}: {ex.Message}";
-            }
-            localOnly = value;
-            if (opened && BuildConfig() != openedConfigJson)
-            {
-                CloseRig(); // the next poll opens it with the new config
-            }
-            Poll();
-            return null;
-        }
-
-        private bool ReadLocalOnly()
-        {
-            try
-            {
-                return ReadPodConfig()["local_only"] is not JValue { Type: JTokenType.Boolean } flag || (bool)flag;
-            }
-            catch (Exception)
-            {
-                return true;
-            }
-        }
 
         /// <summary>Queues a cue for the main thread (any thread); <paramref name="reason"/> is logged with it.</summary>
         public void QueueCue(RigCues.Cue cue, string reason) => cues.Enqueue((cue, reason));
@@ -812,13 +759,12 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// Main thread, after <see cref="Enroll"/>: a successful enrollment turns Local only off
-        /// (the headset is a Factory pod now) and reads the API token.
+        /// Main thread, after <see cref="Enroll"/>: reads the API token. The rig is on its site
+        /// already (sx_rig_enroll_site started its floor and uplink), so it records and declares.
         /// </summary>
         public void FinishEnrollment(bool enrolledNow)
         {
             if (!enrolledNow) return;
-            if (localOnly) SetLocalOnly(false);
             RefreshApiToken();
         }
 
@@ -904,7 +850,7 @@ namespace RealityLog.Rig
             {
                 lock (episodeLock)
                 {
-                    if (!opened || !enrolled || localOnly)
+                    if (!opened || !enrolled)
                         throw new InvalidOperationException("Enroll this headset with the Factory before reviewing episodes");
                     if (RigStatusJson.CollectorId(parsedStatus.Current) != collectorId)
                         throw new InvalidOperationException("The pod's collector changed; select the review again");
@@ -1256,8 +1202,8 @@ namespace RealityLog.Rig
         private string BuildConfig()
         {
             // An explicit allow-list (RigOpenConfig): the rig refuses unknown keys, and
-            // pod_config.json carries the app-only local_only (and the retired operator_id, never read). Local only (the
-            // default) drops the site, so the rig never contacts the Factory. Apps cannot read
+            // pod_config.json may still carry the retired operator_id and local_only, never read or
+            // sent: an enrolled headset always has its site (no Local only mode). Apps cannot read
             // ro.serialno on the 3S: provisioning writes headset_serial into pod_config.json,
             // which the rig also reads through pod_config_path. The seal's meshes are passed
             // when installed, and when the install failed (the rig's readiness then names what
@@ -1266,7 +1212,7 @@ namespace RealityLog.Rig
             JToken? rig = File.Exists(configPath) ? JObject.Parse(File.ReadAllText(configPath)) : null;
             var questApp = apkVersionCode >= 0 ? RigOpenConfig.QuestAppVersion(appVersion, apkVersionCode) : null;
             return RigOpenConfig.Build(ReadPodConfig(), rigKeys ?? new HashSet<string>(), stagingPath, credentialsPath, podConfigPath,
-                meshes, tailscaleIp, rig, localOnly, apkBuildId, questApp).ToString(Formatting.None);
+                meshes, tailscaleIp, rig, apkBuildId, questApp).ToString(Formatting.None);
         }
 
         private string ReadPodConfigName()
@@ -1349,7 +1295,6 @@ namespace RealityLog.Rig
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
                 headsetSerial = ReadPodConfigSerial();
                 podName = ReadPodConfigName();
-                localOnly = ReadLocalOnly();
                 using (var embodiment = new AndroidJavaClass(EmbodimentAssetsClassName))
                 {
                     embodimentStateJson = embodiment.CallStatic<string>("stateJson") ?? embodimentStateJson;
@@ -1475,7 +1420,6 @@ namespace RealityLog.Rig
             json.Append("{\"expected\":").Append(Expected ? "true" : "false")
                 .Append(",\"configured\":").Append(configPresent ? "true" : "false")
                 .Append(",\"enrolled\":").Append(enrolled ? "true" : "false")
-                .Append(",\"localOnly\":").Append(localOnly ? "true" : "false")
                 .Append(",\"headsetSerial\":").Append(JsonString(headsetSerial))
                 .Append(",\"tailscaleIp\":").Append(JsonString(tailscaleIp))
                 .Append(",\"apkBuildId\":").Append(JsonString(apkBuildId))

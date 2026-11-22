@@ -21,7 +21,7 @@ static class PodReviewHarness
     };
     static JObject Status(params JObject[] items) => new()
     {
-        ["expected"] = true, ["open"] = true, ["enrolled"] = true, ["localOnly"] = false,
+        ["expected"] = true, ["open"] = true, ["enrolled"] = true,
         ["floor"] = new JObject
         {
             // The paired phone's person, whom the rig answers reviews as (floor.collector).
@@ -85,8 +85,10 @@ static class PodReviewHarness
         var retired = Status(Item()); ((JObject)retired["floor"]!).Remove("collector");
         retired["floor"]!["operator"] = new JObject { ["signed_in"] = true, ["subject"] = "collector-1" };
         Expect(Screen(retired).ReviewCollectorSubject == "", "the retired floor.operator.subject is never read");
-        var local = Status(Item()); local["localOnly"] = true;
-        Expect(Screen(local).ReviewUnavailable.Contains("Local only"), "local-only mode cannot submit Factory reviews");
+        // No Local only mode (2026-11-22): a status an earlier build wrote with localOnly reviews as any enrolled pod.
+        var legacy = Status(Item()); legacy["localOnly"] = true;
+        Expect(Screen(legacy).ReviewUnavailable == Screen(Status(Item())).ReviewUnavailable && Screen(legacy).Reviews.Count == Screen(Status(Item())).Reviews.Count,
+            "a stale localOnly in the status never hides the Factory review queue");
         var recording = Status(Item()); recording["episodeActive"] = true;
         Expect(Screen(recording).ReviewUnavailable.Contains("Stop recording"), "reviews wait until recording stops");
         var unavailable = Status(); ((JObject)unavailable["floor"]!).Remove("review_queue");

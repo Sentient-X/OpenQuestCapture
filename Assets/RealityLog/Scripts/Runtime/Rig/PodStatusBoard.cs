@@ -17,8 +17,6 @@ namespace RealityLog.Rig
         NotReady,
         /// <summary>The last start was refused, or the rig failed to open or load.</summary>
         Refused,
-        /// <summary>Local only: the headset never contacts the Factory.</summary>
-        LocalOnly,
     }
 
     /// <summary>The recordings menu's Pod card: its six lines and its chip.</summary>
@@ -170,14 +168,13 @@ namespace RealityLog.Rig
         private const string NoRefusal = "Last refusal: none";
 
         /// <summary>
-        /// The chip: Local only first; then not set up; a rig that failed to load or open is an
+        /// The chip: not set up first (it records nothing until it is); a rig that failed to load or open is an
         /// error; a Factory floor with the rig checked ready (or no rig expected) is ready, with
         /// a collector or without one (an unpaired pod records unattributed); else a standing
         /// refusal shows as refused, and anything else is not ready.
         /// </summary>
         public static (PodReadiness readiness, string text) Readiness(JObject? status, bool hasRefusal)
         {
-            if (Bool(status, "localOnly") ?? true) return (PodReadiness.LocalOnly, "Local only");
             if (Bool(status, "enrolled") != true) return (PodReadiness.NotReady, "Not set up");
             var rigExpected = Bool(status, "expected") == true;
             if (rigExpected && (Str(status!["library"]) == "missing" || (Bool(status, "open") != true && status["openError"] is JObject)))
@@ -224,11 +221,9 @@ namespace RealityLog.Rig
 
         public static string PodLine(JObject? status)
         {
-            var localOnly = Bool(status, "localOnly") ?? true;
-            var local = "Local only " + (localOnly ? "ON" : "OFF");
-            if (Bool(status, "enrolled") != true) return "Pod: not enrolled · " + local;
+            if (Bool(status, "enrolled") != true) return "Pod: not enrolled · set it up to record";
             var pod = Str(status?["podId"]);
-            return "Pod: " + (pod.Length > 0 ? pod : "enrolled") + " · " + local;
+            return "Pod: " + (pod.Length > 0 ? pod : "enrolled");
         }
 
         /// <summary>
@@ -239,7 +234,6 @@ namespace RealityLog.Rig
         public static string CollectorLine(JObject? status)
         {
             if (Bool(status, "enrolled") != true) return "Collector: enroll this headset first";
-            if (Bool(status, "localOnly") ?? true) return "Collector: none (Local only)";
             if (status?["floor"] is not JObject)
             {
                 // The floor's error stays in the status for the logs, never on the card.
@@ -255,7 +249,6 @@ namespace RealityLog.Rig
         public static string TaskLine(JObject? status)
         {
             if (Bool(status, "enrolled") != true) return "Task: none (not enrolled)";
-            if (Bool(status, "localOnly") ?? true) return "Task: none (Local only records without one)";
             if (status?["floor"] is not JObject floor) return "Task: unknown until the Factory answers";
             if (floor["collection"] is not JObject collection) return "Task: no collection open yet; a start opens the assigned one";
             var state = Str(collection["status"]).Replace('_', ' ');
@@ -389,12 +382,12 @@ namespace RealityLog.Rig
         /// The Pod setup line: a step's message while a step runs or for
         /// <see cref="SetupMessageSeconds"/> after it, then the current state.
         /// </summary>
-        public static string SetupStatus(string? lastMessage, double messageAgeSeconds, bool busy, bool enrolled, bool localOnly)
+        public static string SetupStatus(string? lastMessage, double messageAgeSeconds, bool busy, bool enrolled)
         {
             if (SetupMessage(lastMessage, messageAgeSeconds, busy) is { } message) return message;
             return enrolled
-                ? "Enrolled as a pod. Local only is " + (localOnly ? "on" : "off") + ". Scan a new code only to enroll again."
-                : "Not set up: scan the console's QR code, or type the join code.";
+                ? "Enrolled as a pod. Scan a new code only to enroll again."
+                : "Not set up: it records nothing until it is. Scan the console's QR code, or type the join code.";
         }
 
         /// <summary>A step's message while the step runs or for <see cref="SetupMessageSeconds"/> after it; else null.</summary>

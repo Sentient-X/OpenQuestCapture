@@ -13,7 +13,7 @@ static class CompanionHarness
 
     static readonly DateTime T0 = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
 
-    const string Pod = "\"expected\":true,\"enrolled\":true,\"localOnly\":false,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\"";
+    const string Pod = "\"expected\":true,\"enrolled\":true,\"library\":\"present\",\"open\":true,\"podId\":\"pod_q1\",\"apkBuildId\":\"sha256:0123456789abcdef0123\"";
     const string Attributed = "\"floor\":{\"collector\":{\"id\":\"usr_1\",\"name\":\"Asha\"}}";
     const string Heard = "\"link\":{\"ok\":true,\"heard_seconds_ago\":3,\"error\":null}";
     const string Task = "\"task\":{\"name\":\"fold towel\",\"status\":\"active\",\"target\":2,\"done\":1}";
@@ -50,8 +50,6 @@ static class CompanionHarness
         public void EpisodeNotice(OperatorNotice notice, OperatorMessage words) => EpisodeNotices.Add(notice);
         public long? Sealing;
         public void EpisodeSealing(long seconds) => Sealing = seconds;
-        public bool? Local;
-        public void LocalOnly(bool localOnly) => Local = localOnly;
     }
 
     static Recorder Map(string body, StreamLiveness? live = null, DateTime? at = null, ControllerCharge pads = default)
@@ -140,19 +138,17 @@ static class CompanionHarness
         Expect(HeadsetStatusMap.StateName(PodDeviceState.Missing) == "MISSING" && HeadsetStatusMap.StageNames[6] == "IN_CATALOG"
             && HeadsetStatusMap.StageNames[HeadsetStatusMap.StageFailed] == "FAILED", "proto names: MISSING, IN_CATALOG, FAILED");
 
-        // Warnings before Start and Local only reach the phone by code.
+        // Warnings before Start reach the phone by code.
         var warned = Map(Pod + "," + Attributed + ",\"roles\":" + readyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task
             + ",\"warnings\":[{\"code\":\"slots_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"3\"}}]},\"headset\":{\"displayHz\":90.0,\"controllers\":[{\"side\":\"left\",\"connected\":true,\"tracked\":false,\"percent\":70}]}");
         Expect(warned.Block == null && warned.Warnings.Count == 2 && warned.Warnings[0].notice.Code == "controller_not_tracked"
-            && warned.Warnings[1].words.Headline == "3 episodes are held by attempts awaiting review" && warned.Local == false, "warnings to the phone: " + warned.Warnings.Count);
-        var local = Map("\"expected\":true,\"enrolled\":true,\"localOnly\":true,\"library\":\"present\",\"open\":true,\"roles\":" + readyRoles);
-        Expect(local.Local == true, "Local only reaches the phone");
+            && warned.Warnings[1].words.Headline == "3 episodes are held by attempts awaiting review", "warnings to the phone: " + warned.Warnings.Count);
         var sealing = Map(Pod + "," + Attributed + ",\"attempts\":[{\"id\":\"ep-4\",\"stage\":\"sealing\",\"seal\":\"pending\",\"sealing_seconds\":130}]");
         Expect(sealing.Episodes[0].stage == HeadsetStatusMap.StageSealing && sealing.Sealing == 130 && sealing.Episodes[0].reason == "Sealing: Sealing for 2 min",
             "sealing reaches the phone with its time: " + sealing.Episodes[0]);
 
         // Not enrolled, no rig: kinds before roles; no pod id.
-        var bare = Map("\"expected\":false,\"enrolled\":false,\"localOnly\":true");
+        var bare = Map("\"expected\":false,\"enrolled\":false");
         Expect(bare.Head.podId == "" && bare.Devices.Count == 0 && bare.Block != null, "bare headset: no pod id, no devices, a blocker");
         var unplaced = Map(Pod + "," + Attributed + ",\"devices\":[{\"kind\":\"camera\",\"port\":\"1-1.1\"}]");
         Expect(unplaced.Devices.Count == 4 && unplaced.Devices[0] == ("camera", "", "1-1.1", PodDeviceState.Starting, "port 1-1.1", "")
@@ -277,7 +273,7 @@ static class CompanionHarness
         Expect(PodControlWords.Line(new PodControlResult(PodControl.Stop, false, "")) == "Stop: refused", "an empty refusal still says refused");
         Expect(PodControlWords.HttpWords(200, "{}", true) == "Recording", "a start that worked");
         Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"message\":\"the device check did not pass: right camera missing\"}", true)
-            == "Recording failed: Tell a technician (code rig_not_ready).", "a refused start with no notice: never the rig's words");
+            == "Recording failed: Share this error code with a technician.", "a refused start with no notice: never the rig's words");
         Expect(PodControlWords.HttpWords(503, "{\"error\":\"rig_not_ready\",\"reason\":\"rig_check_failed\",\"message\":\"x\",\"notice\":{\"code\":\"device_missing\",\"args\":{\"side\":\"right\",\"part\":\"wrist_camera\"}}}", true)
             == "The right wrist camera is not plugged in: Plug it into the hub, then press Check.", "a refused start in its notice's words");
         Expect(PodControlWords.HttpWords(409, "{\"error\":\"not_recording\"}", false) == "The stop was refused (code not_recording)", "a refused stop names its code");

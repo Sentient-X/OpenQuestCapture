@@ -20,7 +20,7 @@ namespace RealityLog.UI
         public PodStatusLines Lines;
         public PodScreen Screen = new();
         public int? HeadsetPct, LeftPct, RightPct;
-        public bool Enrolled, LocalOnly, Recording;
+        public bool Enrolled, Recording;
         /// <summary>The control running now, if any.</summary>
         public PodControl? Running;
         /// <summary>The panel under the controls: a running control, or the last answer.</summary>
@@ -44,7 +44,7 @@ namespace RealityLog.UI
     /// banner (what is in the way, what clears it); Controls (Check, Start/Stop, then their
     /// answer; the operator never ends a collection: the Factory ends one between episodes when a
     /// change needs it); Battery (headset, left, right in one row); Devices; Collection;
-    /// Episodes (each across the pipeline's steps); Phone; Setup (Scan QR, Local only,
+    /// Episodes (each across the pipeline's steps); Phone; Setup (Scan QR,
     /// Set up manually and the manual fields, collapsed until asked for). It sits in its own
     /// ScrollRect (RecordingListUI's Pod tab), so it never draws over the recordings list.
     /// The actions are PodSetupController's, RigCoordinator's, PodControls' and PhoneCompanion's.
@@ -77,7 +77,6 @@ namespace RealityLog.UI
 
         private Sprite? sprite;
         private TMP_FontAsset? font;
-        private Action<string>? onError;
 
         private TextMeshProUGUI title = default!;
         private Image chip = default!;
@@ -133,7 +132,7 @@ namespace RealityLog.UI
         // Setup.
         private GameObject setupSection = default!;
         private FactRow setupLine = default!;
-        private TextMeshProUGUI scanText = default!, localText = default!, manualText = default!;
+        private TextMeshProUGUI scanText = default!, manualText = default!;
         private Image scanImage = default!;
         private GameObject manual = default!;
         private TextMeshProUGUI factoryValue = default!, authValue = default!, joinValue = default!, enrollText = default!;
@@ -174,14 +173,13 @@ namespace RealityLog.UI
         }
 
         /// <summary>Builds the card into <paramref name="parent"/> (the Pod page's scroll content).</summary>
-        public static PodCardView Create(Transform parent, Sprite? sprite, TMP_FontAsset? font, Action<string> onError)
+        public static PodCardView Create(Transform parent, Sprite? sprite, TMP_FontAsset? font)
         {
             var card = new GameObject("PodCard", typeof(RectTransform));
             card.transform.SetParent(parent, false);
             var view = card.AddComponent<PodCardView>();
             view.sprite = sprite;
             view.font = font;
-            view.onError = onError;
             view.Build();
             view.Refresh(force: true);
             return view;
@@ -236,7 +234,6 @@ namespace RealityLog.UI
                 LeftPct = controls?.Controllers.Left,
                 RightPct = controls?.Controllers.Right,
                 Enrolled = coordinator is { Enrolled: true },
-                LocalOnly = coordinator?.LocalOnly ?? false,
                 Recording = recorder != null ? recorder.State != RecordingState.Idle : screen.Recording,
                 Running = controls?.Running,
                 SetupAvailable = setup != null,
@@ -445,7 +442,7 @@ namespace RealityLog.UI
         private string ReviewBlockedReason(PodCardState state, PodReviewItem? item)
         {
             if (state.Screen.ReviewUnavailable.Length > 0) return state.Screen.ReviewUnavailable;
-            if (state.LocalOnly || !state.Enrolled) return "Use Factory mode to review this collection.";
+            if (!state.Enrolled) return "Set up this headset on Factory before reviewing.";
             if (state.Recording) return "Stop recording before reviewing an episode.";
             if (state.Running != null) return "Wait for the current control to finish before reviewing.";
             if (reviewBusy) return "Saving the selected review...";
@@ -467,8 +464,8 @@ namespace RealityLog.UI
 
         private void ShowReviews(PodCardState state)
         {
-            Show(reviewSection, state.Enrolled && !state.LocalOnly);
-            if (!state.Enrolled || state.LocalOnly) return;
+            Show(reviewSection, state.Enrolled);
+            if (!state.Enrolled) return;
             var item = SelectedReview(state.Screen);
             var blocked = ReviewBlockedReason(state, item);
             if (blocked.Length > 0 || (reviewArmedSubject.Length > 0 && reviewArmedSubject != state.Screen.ReviewCollectorSubject))
@@ -548,7 +545,6 @@ namespace RealityLog.UI
             Set(setupLine.Value, state.SetupMessage ?? "");
             Set(scanText, state.Scanning ? "Cancel scan" : "Scan QR");
             scanImage.color = state.Enrolled ? SecondaryColor : PrimaryColor;
-            Set(localText, state.LocalOnly ? "Local only: On" : "Local only: Off");
             Set(manualText, expanded ? "Hide setup" : "Set up manually");
             Show(manual, expanded);
             if (expanded)
@@ -687,16 +683,6 @@ namespace RealityLog.UI
             forgetArmedUntil = Time.unscaledTime + ForgetConfirmSeconds;
         }
 
-        private void ToggleLocalOnly()
-        {
-            var coordinator = RigCoordinator.Instance;
-            if (coordinator is null) return;
-            var error = coordinator.SetLocalOnly(!coordinator.LocalOnly);
-            if (error != null) onError?.Invoke(error);
-            shownStatus = null; // Local only is in the status: show the change at once.
-            Refresh(force: true);
-        }
-
         // ---- Building ----
 
         private void Build()
@@ -806,7 +792,6 @@ namespace RealityLog.UI
                 if (controller.Scanning) controller.CancelScan();
                 else controller.StartScan();
             }, out scanText, out scanImage);
-            Pill(setupActions, "LocalOnly", SecondaryColor, ToggleLocalOnly, out localText, out _);
             Pill(setupActions, "SetUpManually", FieldColor, () => { expanded = !expanded; Refresh(force: false); }, out manualText, out _);
             manualText.color = TextColor;
 

@@ -245,8 +245,6 @@ namespace RealityLog.Rig
 
             public void EpisodeSealing(long seconds) => Call("setEpisodeSealingSeconds", Clamp(seconds));
 
-            public void LocalOnly(bool localOnly) => Call("setLocalOnly", localOnly);
-
             /// <summary>companion.proto's HeadsetNoticeOwner name without its prefix.</summary>
             private static string Owner(string who) => who switch
             {

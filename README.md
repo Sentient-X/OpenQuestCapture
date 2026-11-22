@@ -257,14 +257,16 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   rig's `sx_rig_enroll_site` answers with its steps (join, commission, rig, builds), each told on
   the status line and with a sound: succeeded blips, unavailable a falling tone (it completes
   later: the rig once all four parts are attached, the builds once the Factory serves them),
-  failed the buzz with its reason; enrolled ends with the chime and turns Local only off. The
-  serial stays `pod_config.json`'s. `POST /api/enroll {"join_code", "factory_url"?, "auth_url"?}`
+  failed the buzz with its reason; enrolled ends with the chime: from then on the headset records,
+  and declares what it records. The serial stays `pod_config.json`'s. `POST /api/enroll {"join_code", "factory_url"?, "auth_url"?}`
   does the same over HTTP.
-* **The HTTP API** is open on the LAN in local mode (Local only, or not enrolled yet): the
-  headset sits on the operator's network and never reaches the Factory. An enrolled headset that
-  is not Local only requires `Authorization: Bearer <token>` on every request (401
-  `unauthorized` otherwise), the token the rig derives from its machine credential
-  (`sx_rig_api_token`); it is never logged or shown in a status.
+* **The HTTP API:** an enrolled headset requires `Authorization: Bearer <token>` on every
+  request (401 `unauthorized` otherwise), the token the rig derives from its machine credential
+  (`sx_rig_api_token`); it is never logged or shown in a status. A headset not set up serves only
+  `GET /api/status`, `GET /api/diagnostics` and `POST /api/enroll` without a token, and records
+  nothing: `POST /api/start-recording` answers 409 `not_enrolled`. There is no Local only mode
+  (removed 2026-11-22, sx#4544): an enrolled headset always declares what it records, and a stale
+  `local_only` in `pod_config.json` is ignored, never sent to the rig.
 * **Provisioning (once per headset, before enrolling):** apps cannot read `ro.serialno` on the
   Quest 3S, so write the serial into `pod_config.json` over adb (the shell can read it). This
   overwrites the file; if one already exists, add the key by hand instead:
@@ -314,8 +316,8 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   `command_refused` (reason `state`, e.g. a review before the Factory observed the attempt:
   retry), 503 `command_refused`.
 * The seal's `operator_id` is native, never the app's: the collector the Factory collection was
-  opened for (the shift's person's central principal id), `""` when unattributed (no phone paired,
-  Local only, not enrolled). A start body's `"operator_id"` is ignored, and `pod_config.json`
+  opened for (the shift's person's central principal id), `""` when unattributed (no phone
+  paired). A start body's `"operator_id"` is ignored, and `pod_config.json`
   never names it (a stale `operator_id` there is ignored). The start body may
   carry `"task_assignment_id"` and `"mode"`
   (`"directed"`|`"undirected"`), which open the collection on the Factory; the episode also records `quest_apk_build_id` (`sha256:` of the

@@ -296,7 +296,7 @@ namespace RealityLog.UI
 
             var sprite = recordingItemPrefab != null && recordingItemPrefab.TryGetComponent<Image>(out var image) ? image.sprite : null;
             var font = recordingItemPrefab != null ? recordingItemPrefab.GetComponentInChildren<TextMeshProUGUI>(true)?.font : null;
-            podCard = PodCardView.Create(content, sprite, font, error => OnOperationComplete("Local only", false, error));
+            podCard = PodCardView.Create(content, sprite, font);
 
             BuildTabs(panel, sprite, font);
             ShowTab(tab);

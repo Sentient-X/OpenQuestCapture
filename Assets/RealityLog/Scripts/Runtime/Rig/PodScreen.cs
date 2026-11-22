@@ -195,8 +195,6 @@ namespace RealityLog.Rig
         /// held by unfinished attempts. Empty while recording.
         /// </summary>
         public List<PodBlocker> Warnings { get; } = new();
-        /// <summary>Local only: nothing recorded is delivered.</summary>
-        public bool LocalOnly { get; set; }
         /// <summary>The blocker is the newest episode's failure, shown until the next start.</summary>
         public bool LastFailed { get; set; }
     }
@@ -384,7 +382,7 @@ namespace RealityLog.Rig
         public static PodScreen Build(JObject? status, StartRefusal? lastStart, bool lastStartSucceeded,
             StreamLiveness liveness, DateTime now)
         {
-            var screen = new PodScreen { Recording = Recording(status), LocalOnly = Bool(status, "localOnly") ?? true };
+            var screen = new PodScreen { Recording = Recording(status) };
             var refusal = lastStart;
             if (refusal == null && !lastStartSucceeded && status?["lastRefusal"] is JObject rigRefusal)
             {
@@ -412,7 +410,6 @@ namespace RealityLog.Rig
             screen.ReviewQueueAvailable = queue != null;
             screen.ReviewUnavailable = status == null || Bool(status, "open") != true
                 ? "Waiting for the headset's review status."
-                : screen.LocalOnly ? "Local only recordings have no Factory review queue."
                 : Bool(status, "enrolled") != true ? "Set up this headset on Factory before reviewing."
                 : screen.ReviewCollectorSubject.Length == 0 ? "Pair your phone to review your recordings."
                 : screen.Recording ? "Stop recording before reviewing an episode."
@@ -491,18 +488,20 @@ namespace RealityLog.Rig
 
         public static PodBlocker? StartBlocker(JObject? status)
         {
-            if (Bool(status, "expected") != true || Recording(status)) return null;
+            if (Recording(status)) return null;
+            // A headset not set up records nothing (there is no Local only mode): set it up first.
+            if (status != null && Bool(status, "enrolled") != true) return PodBlocker.Of("not_enrolled", PodTone.Warning);
+            if (Bool(status, "expected") != true) return null;
             if (Str(status?["library"]) == "missing") return PodBlocker.Of("library_missing", PodTone.Error);
             if (Bool(status, "open") != true && status?["openError"] is JObject) return PodBlocker.Of("rig_open_failed", PodTone.Error);
             // No collector is needed: with no phone paired the pod records unattributed.
-            var localOnly = Bool(status, "localOnly") ?? true;
             if (status?["usb"] is JObject usb && usb["awaitingPermission"] is JArray waiting && waiting.Count > 0)
             {
                 return PodBlocker.Of("usb_permission", PodTone.Warning);
             }
             // Exactly what the rig's require_storage refuses on: free below required_bytes.
             if (Storage(status) is { } space && space.Free < space.Needed) return PodBlocker.Of(StorageNotice(space, low: true), PodTone.Error);
-            if (localOnly || Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
+            if (Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
             if (OperatorNotice.FromJson(refused["notice"]) is { } notice) return PodBlocker.Of(notice, PodTone.Error);
             // A runtime older than its notices: the reason alone.
             return Str(refused["reason"]) switch
@@ -566,8 +565,7 @@ namespace RealityLog.Rig
             {
                 screen.Warnings.Add(PodBlocker.Of(StorageNotice(space, low: false), PodTone.Warning));
             }
-            var localOnly = Bool(status, "localOnly") ?? true;
-            if (!localOnly && Lifted(status, "factory") is JObject factory && factory["warnings"] is JArray held)
+            if (Lifted(status, "factory") is JObject factory && factory["warnings"] is JArray held)
             {
                 foreach (var warning in held)
                 {
@@ -635,7 +633,7 @@ namespace RealityLog.Rig
             if (screen.Recording && screen.Blocker.Tone == PodTone.Warning) return (PodTone.Warning, text);
             if (screen.Blocker.Tone != PodTone.Good)
             {
-                return tone == PodTone.Good || readiness == PodReadiness.LocalOnly
+                return tone == PodTone.Good
                     ? (screen.Blocker.Tone == PodTone.Error ? PodTone.Error : PodTone.Warning, "Not ready")
                     : (tone, text);
             }
@@ -659,11 +657,10 @@ namespace RealityLog.Rig
             if (Bool(status, "expected") != true && Bool(status, "enrolled") != true) return PodBlocker.Of("not_enrolled", PodTone.Neutral);
             if (Str(status?["library"]) == "missing") return PodBlocker.Of("library_missing", PodTone.Error);
             if (Bool(status, "open") != true && status?["openError"] is JObject) return PodBlocker.Of("rig_open_failed", PodTone.Error);
-            var localOnly = Bool(status, "localOnly") ?? true;
-            var enrolled = Bool(status, "enrolled") == true;
-            if (!localOnly && !enrolled) return PodBlocker.Of("not_enrolled", PodTone.Warning);
+            // A headset not set up records nothing (there is no Local only mode): set it up first.
+            if (Bool(status, "enrolled") != true) return PodBlocker.Of("not_enrolled", PodTone.Warning);
             var factory = Lifted(status, "factory") as JObject;
-            if (!localOnly && factory?["link"] is JObject link && Bool(link, "ok") != true && Str(link["error"]).Length > 0)
+            if (factory?["link"] is JObject link && Bool(link, "ok") != true && Str(link["error"]).Length > 0)
             {
                 // Recording goes on on the headset; idle, a start may not open a collection.
                 return recording ? PodBlocker.Of("factory_unheard_local", PodTone.Warning) : PodBlocker.Of("factory_unheard", PodTone.Error);
@@ -677,7 +674,7 @@ namespace RealityLog.Rig
                 if (device.Tone == PodTone.Error) return PodBlocker.Of(DeviceNotice(device), PodTone.Error);
             }
             if (StartBlocker(status) is { } certain) return certain;
-            if (!localOnly && factory != null)
+            if (factory != null)
             {
                 if (factory["blocking"] is JArray blocking)
                 {
@@ -689,7 +686,8 @@ namespace RealityLog.Rig
                         if (id == "operator") continue;
                         // A failing hardware check alone never refuses a start (its own check runs first).
                         if (Str(check["category"]) == "hardware") continue;
-                        if (id == "recorder_build") return PodBlocker.Of("build_not_accepted", PodTone.Error);
+                        // Any build records (2026-11-22): a failing recorder_build check carries the
+                        // Factory's own remediation (Next), never a build approval to ask for.
                         if (id == "task_contract" && factory["task"] is not JObject) return PodBlocker.Of("no_task", PodTone.Error);
                     }
                 }
@@ -719,10 +717,8 @@ namespace RealityLog.Rig
             {
                 return PodBlocker.Of(OperatorNotice.FromJson(lastCheck["notice"]) ?? CheckNotice(failedCheck.problems), PodTone.Error);
             }
-            if (!localOnly && Unfinished(factory) is { } unfinished) return unfinished;
-            return localOnly
-                ? new PodBlocker(OperatorNotices.Phrase("ready_local"), OperatorNotices.Phrase("ready_local_action"), PodTone.Good)
-                : new PodBlocker(OperatorNotices.Phrase("ready"), OperatorNotices.Phrase("ready_action"), PodTone.Good);
+            if (Unfinished(factory) is { } unfinished) return unfinished;
+            return new PodBlocker(OperatorNotices.Phrase("ready"), OperatorNotices.Phrase("ready_action"), PodTone.Good);
         }
 
         /// <summary>
@@ -964,11 +960,10 @@ namespace RealityLog.Rig
 
         private static void Collection(PodScreen screen, JObject? status)
         {
-            var localOnly = Bool(status, "localOnly") ?? true;
-            if (localOnly || Bool(status, "enrolled") != true)
+            if (Bool(status, "enrolled") != true)
             {
-                screen.Task = localOnly ? "none (Local only records without one)" : "none (not enrolled)";
-                screen.Link = localOnly ? "not used (Local only)" : "not enrolled";
+                screen.Task = "none (not enrolled)";
+                screen.Link = "not enrolled";
                 return;
             }
             var factory = Lifted(status, "factory") as JObject;
@@ -1037,7 +1032,6 @@ namespace RealityLog.Rig
             if (factory["blocking"] is JArray blocking
                 && blocking.OfType<JObject>().FirstOrDefault(c => Str(c["id"]) != "operator") is JObject check)
             {
-                if (Str(check["id"]) == "recorder_build") return "this app version approved in the Console (build " + ShortBuild(Str(status?["apkBuildId"])) + ")";
                 var remediation = Str(check["remediation"]);
                 return Clip(remediation.Length > 0 ? remediation : Str(check["summary"]), 70);
             }
