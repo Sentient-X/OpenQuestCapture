@@ -596,9 +596,16 @@ namespace RealityLog
         private static string BodyJson(BodySample body, double? statusAgeMs)
         {
             var age = body.AgeMs + statusAgeMs;
+            // The body logger's latest gap over the seal's 100 ms law between two rows it
+            // wrote, placed on mono_time_ns: libsx_rig fails a take on one inside its episode
+            // (sx_pod_core::tracking::BodyGap), so it stops instead of recording on to a
+            // refused seal (OQC#44). Null before any; after a recording it stays that
+            // recording's until the next starts, which the rig's anchor rules out.
+            var gap = BodyGapCounter.Current?.Latest?.ToJson() ?? "null";
             return $"{{\"sampleAgeMs\": {Number(age)}, \"confidence\": {Finite(body.Confidence)}, " +
                 $"\"leftShoulder\": {ControllerJson(body.LeftShoulder)}, " +
-                $"\"rightShoulder\": {ControllerJson(body.RightShoulder)}}}";
+                $"\"rightShoulder\": {ControllerJson(body.RightShoulder)}, " +
+                $"\"gap\": {gap}}}";
         }
 
         private static string ControllerJson(ControllerSample sample)

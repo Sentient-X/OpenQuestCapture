@@ -159,22 +159,59 @@ namespace RealityLog.OVR
         public static void Publish(BodyGapCounter counter) => Volatile.Write(ref current, counter);
 
         private double last = double.NaN;
+        private long lastMonoNs;
         private long gaps;
         private long longestTicks; // max gap in 100 ns units, for Interlocked reads
+        // The latest gap over the law, as one immutable object (readers take the reference).
+        private volatile Gap? latest;
+
+        /// <summary>
+        /// One interval over the law between two written rows: its length by the rows' OVR
+        /// timestamps (what the seal measures) and the rows' process-monotonic stamps
+        /// (<c>mono_time_ns</c>, the clock the rig anchors an episode on), so the rig can tell
+        /// a gap inside its recording from one before its anchor.
+        /// </summary>
+        public sealed class Gap
+        {
+            public double Ms { get; }
+            public long StartMonoNs { get; }
+            public long EndMonoNs { get; }
+            public Gap(double ms, long startMonoNs, long endMonoNs) { Ms = ms; StartMonoNs = startMonoNs; EndMonoNs = endMonoNs; }
+
+            /// <summary>The controllers block's <c>body.gap</c> object, as libsx_rig reads it.</summary>
+            public string ToJson() =>
+                "{\"ms\": " + Ms.ToString("F3", CultureInfo.InvariantCulture)
+                + ", \"startMonoNs\": " + StartMonoNs.ToString(CultureInfo.InvariantCulture)
+                + ", \"endMonoNs\": " + EndMonoNs.ToString(CultureInfo.InvariantCulture) + "}";
+        }
 
         /// <summary>One written row's OVR timestamp (seconds). Rows only advance, as the logger writes them.</summary>
-        public void Row(double ovrSeconds)
+        public void Row(double ovrSeconds) => Row(ovrSeconds, 0);
+
+        /// <summary>
+        /// One written row: its OVR timestamp (seconds) and its <c>mono_time_ns</c> stamp (0 when
+        /// the caller has none, and then no gap is placed for the rig).
+        /// </summary>
+        public void Row(double ovrSeconds, long monoNs)
         {
             if (double.IsNaN(ovrSeconds) || double.IsInfinity(ovrSeconds)) return;
             if (!double.IsNaN(last))
             {
                 var gap = ovrSeconds - last;
-                if (gap > GapLimitSeconds) Interlocked.Increment(ref gaps);
+                if (gap > GapLimitSeconds)
+                {
+                    Interlocked.Increment(ref gaps);
+                    if (lastMonoNs > 0 && monoNs >= lastMonoNs) latest = new Gap(gap * 1000.0, lastMonoNs, monoNs);
+                }
                 var ticks = (long)(gap * 1e7);
                 if (ticks > Interlocked.Read(ref longestTicks)) Interlocked.Exchange(ref longestTicks, ticks);
             }
             last = ovrSeconds;
+            lastMonoNs = monoNs;
         }
+
+        /// <summary>The latest gap over the law with both rows' mono stamps; null before one.</summary>
+        public Gap? Latest => latest;
 
         /// <summary>Gaps over 100 ms so far.</summary>
         public long Gaps => Interlocked.Read(ref gaps);
