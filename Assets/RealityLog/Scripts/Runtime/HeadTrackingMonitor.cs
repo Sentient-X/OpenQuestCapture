@@ -22,7 +22,7 @@ namespace RealityLog
     /// so a broken stream is refused up front instead of found after transfer.
     ///
     /// Auto-bootstraps at runtime; no scene wiring. Runs before other scripts each frame so
-    /// a start queued by the HTTP server or cloud relay never sees a pose age left over from
+    /// a start queued by the HTTP server or the rig never sees a pose age left over from
     /// a long main-thread stall.
     /// </summary>
     [DefaultExecutionOrder(-10000)]

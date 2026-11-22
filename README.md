@@ -185,8 +185,8 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   12 s) on the HTTP worker thread, before OQC's streams start, and refuses with
   `503 {"error":"rig_not_ready","reason":"rig_library_missing|rig_open_failed|rig_usb_permission|rig_check_failed|rig_start_failed","message":...,"rig":<library error>}`.
   The rig starts with `CLOCK_MONOTONIC` and UTC anchors read back to back; the session directory
-  name is the rig's `episode_id`. While the rig is expected, the other start paths (cloud relay,
-  calibration) are refused with `rig_not_armed`.
+  name is the rig's `episode_id`. While the rig is expected, the other start path (the
+  calibration start) is refused with `rig_not_armed`.
 * `POST /api/stop-recording` returns the rig's stop receipt as `"rig"` (and writes it to
   `rig_stop_receipt.json`); `GET /api/status` has a `"rig"` object.
 * **Local mode (no Factory).** With no `factory_url` in `pod_config.json` the headset records on
