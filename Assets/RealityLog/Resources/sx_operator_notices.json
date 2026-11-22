@@ -41,72 +41,84 @@
   },
   "notices": {
     "seal_video_gap": {
+      "support_code": 3101,
       "who": "collector",
       "headline": "Last episode not kept: the {side} {camera} camera skipped frames",
       "still_fine": "The rig and your earlier episodes are fine.",
       "action": "Record it again. If it happens twice in a row, call a technician."
     },
     "seal_controller_frozen": {
+      "support_code": 3102,
       "who": "collector",
       "headline": "Last episode not kept: the {side} controller stopped tracking",
       "still_fine": "The cameras and grippers recorded fine.",
       "action": "Keep both controllers awake and in view of the headset, then record again."
     },
     "seal_head_cameras_out_of_step": {
+      "support_code": 3103,
       "who": "collector",
       "headline": "Last episode not kept: the head cameras fell out of step",
       "still_fine": "The wrist cameras and grippers recorded fine.",
       "action": "Restart the app so the display runs at 90 Hz, then record again."
     },
     "seal_gripper_timing": {
+      "support_code": 3104,
       "who": "technician",
       "headline": "Last episode not kept: the {side} gripper sensor's timing was off",
       "still_fine": "The cameras recorded fine.",
       "action": "Record again. If it repeats, a technician checks the {side} gripper sensor."
     },
     "seal_clock_coverage": {
+      "support_code": 3105,
       "who": "technician",
       "headline": "Last episode not kept: the headset's tracking clock had gaps",
       "still_fine": "The rig is fine.",
       "action": "Record again. If it repeats, call a technician."
     },
     "seal_device_info_missing": {
+      "support_code": 3106,
       "who": "technician",
       "headline": "Last episode not kept: the headset's camera details were missing",
       "still_fine": "The rig is fine.",
       "action": "Restart the app and record again. If it repeats, call a technician."
     },
     "seal_raw_files_removed": {
+      "support_code": 3197,
       "who": "technician",
       "headline": "Episode not kept: its raw files were removed from the headset",
       "still_fine": "The rig and your other episodes are fine.",
       "action": "Nothing to record again here. A technician can clear it from the headset."
     },
     "seal_quality": {
+      "support_code": 3107,
       "who": "technician",
       "headline": "Last episode not kept: it did not pass the quality check",
       "still_fine": "The rig is fine.",
       "action": "Record again. If it repeats, call a technician."
     },
     "seal_held": {
+      "support_code": 3196,
       "who": "technician",
       "headline": "An episode is waiting: sealing it stopped the same way three times",
       "still_fine": "Its recorded files are kept, and you can keep recording.",
       "action": "Tell a technician (code {code}). The next app update seals it again."
     },
     "head_camera_failed": {
+      "support_code": 3185,
       "who": "collector",
       "headline": "Last episode stopped: the {side} head camera failed",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Restart the app, then record again. If it happens twice in a row, call a technician."
     },
     "video_behind": {
+      "support_code": 3111,
       "who": "collector",
       "headline": "Last episode stopped: the {side} wrist camera video could not keep up",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Let the headset cool for a few minutes, then record again. If it repeats, call a technician."
     },
     "gripper_link_lost": {
+      "support_code": 3112,
       "who": "collector",
       "headline": "Last episode stopped: the {side} gripper sensor lost its connection",
       "still_fine": "The cameras and controllers are fine.",
@@ -114,6 +126,7 @@
       "button": "check"
     },
     "device_disconnected": {
+      "support_code": 3113,
       "who": "collector",
       "headline": "Last episode stopped: the {side} {part} came unplugged",
       "still_fine": "Your earlier episodes are safe.",
@@ -121,6 +134,7 @@
       "button": "check"
     },
     "usb_bandwidth": {
+      "support_code": 3114,
       "who": "technician",
       "headline": "The USB hub ran out of bandwidth",
       "still_fine": "The devices themselves are fine.",
@@ -128,12 +142,14 @@
       "button": "check"
     },
     "recording_interrupted": {
+      "support_code": 3115,
       "who": "collector",
       "headline": "Last episode stopped: the app closed while recording",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Keep the app open while you record."
     },
     "device_missing": {
+      "support_code": 3121,
       "who": "collector",
       "headline": "The {side} {part} is not plugged in",
       "still_fine": "The other devices are ready.",
@@ -141,6 +157,7 @@
       "button": "check"
     },
     "device_silent": {
+      "support_code": 3122,
       "who": "collector",
       "headline": "The {side} {part} sends nothing",
       "still_fine": "The other devices are ready.",
@@ -148,6 +165,7 @@
       "button": "check"
     },
     "usb_other_app": {
+      "support_code": 3123,
       "who": "collector",
       "headline": "Another app holds the {side} {part}",
       "still_fine": "The device itself is fine.",
@@ -155,12 +173,14 @@
       "button": "check"
     },
     "usb_permission": {
+      "support_code": 3124,
       "who": "collector",
       "headline": "A rig device is waiting for USB access",
       "still_fine": "The other devices are fine.",
       "action": "Choose OpenQuestCapture when Android asks. If no prompt shows, replug the device."
     },
     "rig_check_failed": {
+      "support_code": 3125,
       "who": "collector",
       "headline": "The rig's devices did not pass the check",
       "still_fine": "Your earlier episodes are safe.",
@@ -168,66 +188,77 @@
       "button": "check"
     },
     "library_missing": {
+      "support_code": 3126,
       "who": "technician",
       "headline": "This app version cannot run the rig",
       "still_fine": "Your earlier episodes are safe.",
       "action": "A technician installs an approved version."
     },
     "rig_open_failed": {
+      "support_code": 3127,
       "who": "technician",
       "headline": "The rig did not start",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Restart the app. If it repeats, call a technician."
     },
     "app_paused": {
+      "support_code": 3128,
       "who": "collector",
       "headline": "The app was paused",
       "still_fine": "Nothing was recorded or lost.",
       "action": "Put the headset on, keep the app open, then start again."
     },
     "not_enrolled": {
+      "support_code": 3133,
       "who": "floor_manager",
       "headline": "This headset is not set up as a pod",
       "still_fine": "It records nothing until it is set up. Your earlier episodes are safe.",
       "action": "Scan the setup QR code from the Console, then start again."
     },
     "no_task": {
+      "support_code": 3134,
       "who": "floor_manager",
       "headline": "No task is assigned to this pod",
       "still_fine": "Your earlier episodes are safe.",
       "action": "The floor manager assigns a task to this pod in the Console."
     },
     "no_episodes": {
+      "support_code": 3135,
       "who": "floor_manager",
       "headline": "No episodes left in this task",
       "still_fine": "Everything recorded so far counts.",
       "action": "The floor manager adds episodes or assigns a new task in the Console."
     },
     "no_episodes_held": {
+      "support_code": 3136,
       "who": "floor_manager",
       "headline": "No episodes free: {held} held by attempts awaiting review",
       "still_fine": "They count once reviewed.",
       "action": "The floor manager reviews them in the Console, or adds episodes."
     },
     "build_not_accepted": {
+      "support_code": 3137,
       "who": "floor_manager",
       "headline": "App version not approved",
       "still_fine": "The rig is fine.",
       "action": "The floor manager approves the trial in the Console, or a technician installs an approved version."
     },
     "rig_registration_changed": {
+      "support_code": 3138,
       "who": "technician",
       "headline": "The rig's registration changed",
       "still_fine": "Your earlier episodes are safe.",
       "action": "A technician runs setup again from the Console."
     },
     "rig_devices_unregistered": {
+      "support_code": 3191,
       "who": "technician",
       "headline": "A {part} attached is not registered to any rig",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Attach the registered one, or a technician registers it in the Console."
     },
     "rig_devices_mixed": {
+      "support_code": 3190,
       "who": "collector",
       "headline": "The attached devices are from different rigs: {rigs}",
       "still_fine": "Each device is registered.",
@@ -235,6 +266,7 @@
       "button": "check"
     },
     "rig_devices_incomplete": {
+      "support_code": 3189,
       "who": "collector",
       "headline": "Rig {rig} is missing its {side} {part}",
       "still_fine": "The attached devices are rig {rig}'s.",
@@ -242,42 +274,49 @@
       "button": "check"
     },
     "rig_swap_while_recording": {
+      "support_code": 3192,
       "who": "collector",
       "headline": "This shift is recording on rig {rig}; the attached devices are rig {attached}",
       "still_fine": "The episode being recorded stays on rig {rig}.",
       "action": "Stop the recording, then press Check to switch to rig {attached}."
     },
     "readiness_clock": {
+      "support_code": 3139,
       "who": "collector",
       "headline": "The headset's clock is not synced",
       "still_fine": "The rig is fine.",
       "action": "Connect the headset to the floor Wi-Fi. The clock syncs by itself."
     },
     "readiness_power": {
+      "support_code": 3140,
       "who": "collector",
       "headline": "The headset battery is too low to record",
       "still_fine": "The rig is fine.",
       "action": "Plug the headset in to charge."
     },
     "readiness_network": {
+      "support_code": 3141,
       "who": "collector",
       "headline": "The headset is not on the network",
       "still_fine": "The rig is fine.",
       "action": "Connect the headset to the floor Wi-Fi."
     },
     "readiness_heartbeat": {
+      "support_code": 3142,
       "who": "collector",
       "headline": "The Factory has not heard this headset recently",
       "still_fine": "The rig is fine.",
       "action": "Keep the app open and the headset on Wi-Fi."
     },
     "readiness_storage": {
+      "support_code": 3143,
       "who": "collector",
       "headline": "The headset is short of space",
       "still_fine": "Delivered episodes free space by themselves.",
       "action": "Keep the headset on Wi-Fi so uploads finish."
     },
     "readiness_devices": {
+      "support_code": 3144,
       "who": "collector",
       "headline": "The rig's devices have not passed a check",
       "still_fine": "Your earlier episodes are safe.",
@@ -285,172 +324,200 @@
       "button": "check"
     },
     "readiness_rig": {
+      "support_code": 3145,
       "who": "technician",
       "headline": "This pod has no registered rig",
       "still_fine": "Your earlier episodes are safe.",
       "action": "A technician registers the rig for this pod in the Console."
     },
     "readiness_task": {
+      "support_code": 3146,
       "who": "floor_manager",
       "headline": "This pod's task is not ready to record",
       "still_fine": "Your earlier episodes are safe.",
       "action": "The floor manager checks the task's setup in the Console."
     },
     "readiness_other": {
+      "support_code": 3147,
       "who": "technician",
       "headline": "A Factory check is failing",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Call a technician. The Console names the check."
     },
     "storage_low": {
+      "support_code": 3148,
       "who": "collector",
       "headline": "Not enough space: {free_gb} GB free, {needed_gb} GB needed for the next episode",
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi so uploads finish, or delete exported recordings."
     },
     "storage_low_backlog": {
+      "support_code": 3149,
       "who": "collector",
       "headline": "Not enough space: {free_gb} GB free, {needed_gb} GB needed ({next_gb} GB for the next episode, {backlog_gb} GB for {backlog} episodes still to seal)",
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi and idle so the seals finish and uploads free space, or delete exported recordings."
     },
     "factory_unanswered": {
+      "support_code": 3150,
       "who": "collector",
       "headline": "The Factory did not answer. Nothing was recorded.",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Check the headset's Wi-Fi, then start again."
     },
     "factory_unheard_local": {
+      "support_code": 3151,
       "who": "collector",
       "headline": "The Factory is not answering. Recording continues on the headset.",
       "still_fine": "Episodes are kept and sent when it reconnects.",
       "action": "Check the headset's Wi-Fi."
     },
     "factory_unheard": {
+      "support_code": 3152,
       "who": "collector",
       "headline": "The Factory is not answering",
       "still_fine": "Your earlier episodes are safe.",
       "action": "Check the headset's Wi-Fi, then start again."
     },
     "collection_unfinished": {
+      "support_code": 3153,
       "who": "floor_manager",
       "headline": "A collection cannot finish yet",
       "still_fine": "You can keep recording.",
       "action": "The floor manager checks it in the Console."
     },
     "controller_not_tracked": {
+      "support_code": 3171,
       "who": "collector",
       "headline": "The {side} controller is not tracked",
       "still_fine": "You can still start.",
       "action": "Pick it up or press a button to wake it."
     },
     "controller_disconnected": {
+      "support_code": 3172,
       "who": "collector",
       "headline": "The {side} controller is not connected",
       "still_fine": "You can still start.",
       "action": "Hold its Meta button to turn it on."
     },
     "controller_battery_low": {
+      "support_code": 3173,
       "who": "collector",
       "headline": "The {side} controller is at {percent}%",
       "still_fine": "You can still start.",
       "action": "Swap its battery before the next episode."
     },
     "display_rate": {
+      "support_code": 3174,
       "who": "collector",
       "headline": "The display runs at {hz} Hz, not 90 Hz",
       "still_fine": "You can still start.",
       "action": "Restart the app so it sets 90 Hz. At this rate the head cameras fall out of step."
     },
     "storage_tight": {
+      "support_code": 3175,
       "who": "collector",
       "headline": "Space is tight: {free_gb} GB free, {needed_gb} GB needed for the next episode",
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi so uploads finish."
     },
     "storage_tight_backlog": {
+      "support_code": 3176,
       "who": "collector",
       "headline": "Space is tight: {free_gb} GB free, {needed_gb} GB needed ({next_gb} GB for the next episode, {backlog_gb} GB for {backlog} episodes still to seal)",
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi and idle so the seals finish and uploads free space."
     },
     "slots_held": {
+      "support_code": 3177,
       "who": "floor_manager",
       "headline": "{held} episodes are held by attempts awaiting review",
       "still_fine": "They count once reviewed.",
       "action": "The floor manager reviews them in the Console."
     },
     "seal_body_tracking_gap": {
+      "support_code": 3193,
       "who": "collector",
       "headline": "Last episode not kept: body tracking dropped out",
       "still_fine": "The cameras and grippers recorded fine.",
       "action": "Face forward with your shoulders and arms in view of the headset, then record again. If it repeats, restart the capture app."
     },
     "seal_head_tracking_gap": {
+      "support_code": 3195,
       "who": "collector",
       "headline": "Last episode not kept: head tracking paused",
       "still_fine": "The cameras and grippers recorded fine.",
       "action": "Record again. If it repeats, restart the capture app."
     },
     "seal_controller_tracking_gap": {
+      "support_code": 3194,
       "who": "collector",
       "headline": "Last episode not kept: the {side} controller's tracking dropped out",
       "still_fine": "The cameras and grippers recorded fine.",
       "action": "Keep both controllers in view of the headset, then record again."
     },
     "controllers_not_in_hand": {
+      "support_code": 3182,
       "who": "collector",
       "headline": "Controllers not in hand",
       "still_fine": "Nothing was recorded.",
       "action": "Pick up both grippers, then start again."
     },
     "controllers_wrong_side": {
+      "support_code": 3183,
       "who": "collector",
       "headline": "The grippers are on the wrong sides",
       "still_fine": "Nothing was recorded.",
       "action": "Hold the left gripper on your left and the right gripper on your right, then start again."
     },
     "body_tracking_unavailable": {
+      "support_code": 3180,
       "who": "collector",
       "headline": "Body tracking cannot place you",
       "still_fine": "Nothing was recorded.",
       "action": "Stand facing forward with the grippers in hand and wait for tracking, then start again. If it persists, call a technician."
     },
     "head_tracking_stopped": {
+      "support_code": 3186,
       "who": "collector",
       "headline": "Head tracking stopped on the headset",
       "still_fine": "Nothing was recorded.",
       "action": "Restart the capture app or reboot the headset, then start again."
     },
     "controller_lost": {
+      "support_code": 3181,
       "who": "collector",
       "headline": "The {side} controller is out of hand",
       "still_fine": "Recording continues; its poses are frozen until it is back.",
       "action": "Wake it and hold it."
     },
     "recording_limit_near": {
+      "support_code": 3187,
       "who": "collector",
       "headline": "This take stops in {left} min, at the {minutes}-minute limit",
       "still_fine": "It is kept and sealed as usual when it stops.",
       "action": "Finish the step you are on, then start a new take to continue."
     },
     "recording_limit_reached": {
+      "support_code": 3188,
       "who": "collector",
       "headline": "This take reached the {minutes}-minute limit and was stopped",
       "still_fine": "It was kept and is sealed as usual.",
       "action": "Start a new one to continue."
     },
     "gripper_switch_mismatch": {
+      "support_code": 3184,
       "who": "technician",
       "headline": "The {side} gripper sensor names the wrong side",
       "still_fine": "The menu button still starts and stops recording.",
       "action": "Tell a technician: the gripper's start button works only when its sensor is set to its own side."
     },
     "unknown": {
+      "support_code": 3199,
       "who": "technician",
       "headline": "Recording failed",
       "still_fine": "Your earlier episodes are safe.",
-      "action": "Tell a technician (code {code})."
+      "action": "Share this error code with a technician."
     }
   }
 }
