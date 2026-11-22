@@ -7552,7 +7552,6 @@ GameObject:
   - component: {fileID: 1104910060}
   - component: {fileID: 1104910061}
   - component: {fileID: 1104910062}
-  - component: {fileID: 1104910063}
   - component: {fileID: 2200000020}
   m_Layer: 0
   m_Name: RealityLog
@@ -7637,18 +7636,6 @@ MonoBehaviour:
           m_StringArgument:
           m_BoolArgument: 0
         m_CallState: 2
-      - m_Target: {fileID: 1104910063}
-        m_TargetAssemblyTypeName: RealityLog.FileOperations.R2Uploader, RealityLog.FileOperations
-        m_MethodName: OnRecordingSaved
-        m_Mode: 0
-        m_Arguments:
-          m_ObjectArgument: {fileID: 0}
-          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
-          m_IntArgument: 0
-          m_FloatArgument: 0
-          m_StringArgument:
-          m_BoolArgument: 0
-        m_CallState: 2
   onRecordingStarted:
     m_PersistentCalls:
       m_Calls:
@@ -7715,32 +7702,6 @@ MonoBehaviour:
   fileName: body_tracking.csv
   directoryName:
   startLoggingOnStart: 0
---- !u!114 &1104910063
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1104910057}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 787187e14149a4c409c0bb4040851f5d, type: 3}
-  m_Name:
-  m_EditorClassIdentifier: RealityLog.FileOperations::RealityLog.FileOperations.R2Uploader
-  presignEndpoint:
-  authToken:
-  autoUploadOnSave: 1
-  deleteZipAfterUpload: 1
-  maxRetries: 3
-  initialRetryDelaySec: 2
-  retryFailedOnStartup: 1
-  wifiPollIntervalSec: 15
-  OnUploadProgress:
-    m_PersistentCalls:
-      m_Calls: []
-  OnUploadComplete:
-    m_PersistentCalls:
-      m_Calls: []
 --- !u!1 &1142010763
 GameObject:
   m_ObjectHideFlags: 0
@@ -8553,7 +8514,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: RealityLog.UI::RealityLog.UI.RecordingListUI
   listManager: {fileID: 730769974}
   operations: {fileID: 730769972}
-  r2Uploader: {fileID: 1104910063}
+  r2Uploader: {fileID: 0}
   listContainer: {fileID: 444668024}
   recordingItemPrefab: {fileID: 7293218277158385423, guid: ef7392c5a3bb5cf479d539d74232a243, type: 3}
   emptyListMessage: {fileID: 487324546}
