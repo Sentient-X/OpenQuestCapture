@@ -279,6 +279,16 @@ any rig USB device is on the bus; with neither, nothing below happens and record
   type the headset commissions as) has no default in code; `POST /api/enroll` refuses with
   `409 enroll_failed` (reason `pod_config_incomplete`) without it. The site (`factory_url`,
   `auth_url`) is written by enrollment: its `base_url`, else production.
+* **Installing one APK on the whole fleet:** `scripts/install_fleet.sh [--jobs N] [--stop]
+  [--keep-awake] [--dry-run] [--discover CIDR] <apk> [<target>...]`. Targets are adb serials or
+  `ip[:5555]` (a pod provisioned without `--no-wifi` keeps Wi-Fi ADB on until it reboots), a list
+  on stdin, or `--discover 192.168.29.0/24` to find every headset answering `adb connect` on the
+  lab network. Each headset is handled once: already on the APK's versionCode means `up to date`;
+  a running app is skipped unless `--stop` (it may be recording); `adb install -r` then the
+  versionCode is re-read and DUMP granted. A signer mismatch is reported for a person to uninstall
+  by hand, never uninstalled. One table at the end (target, serial, before, after, result), logs
+  under `~/p3/tmp/install-fleet/<timestamp>/`, exit 1 when any headset failed or was unreachable.
+  `scripts/tests/test-install-fleet.sh` runs it against a fake adb.
 * **Heartbeat readiness:** every 15 s the app reports `battery_percent`, `charging` (plugged in)
   and `network_time_synchronized` to the rig; the Factory heartbeat trusts a report for 60 s.
   The time flag is true only when `SystemClock.currentNetworkTimeClock()` answers (the platform
