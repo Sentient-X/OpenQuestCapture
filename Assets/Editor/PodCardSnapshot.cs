@@ -189,6 +189,7 @@ public static class PodCardSnapshot
         yield return ("i-prestart-warnings", PreStartWarnings());
         yield return ("j-refused-not-in-hand", RefusedNotInHand());
         yield return ("k-recording-controller-lost", RecordingControllerLost());
+        yield return ("l-gripper-sensor-silent", GripperSensorSilent());
     }
 
     // ---- The operator's words, through the real board from the status the rig and the app write ----
@@ -257,6 +258,18 @@ public static class PodCardSnapshot
         "\"notice\":{\"code\":\"controllers_not_in_hand\",\"who\":\"collector\",\"args\":{}}},\"controllers_lost\":[]}," +
         "\"lastRefusal\":{\"code\":\"controllers_not_in_hand\",\"message\":\"left controller is 1.9 m from the headset\"," +
         "\"detail\":{\"kind\":\"controllers_not_in_hand\",\"notice\":{\"code\":\"controllers_not_in_hand\",\"who\":\"collector\",\"args\":{}}}}",
+        PodReadiness.Refused, "Refused");
+
+    /// <summary>
+    /// (l) The right gripper sensor fell silent twice in the last minute (Pod 19, OQC #44): the
+    /// rig's encoders.start_refusal, so Start is not offered and the card names the cable.
+    /// </summary>
+    private static PodCardState GripperSensorSilent() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
+        "\"encoders\":{\"start_refusal\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\"," +
+        "\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s (last for 1.4 s, 8 s ago); reseat the sensor's cable at the sensor and at the hub\"," +
+        "\"notice\":{\"code\":\"gripper_sensor_silent\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}}," +
+        "\"sides\":[{\"side\":\"left\",\"last_sample_age_ms\":12,\"gaps_recent\":0,\"encoder_ok\":true}," +
+        "{\"side\":\"right\",\"last_sample_age_ms\":9,\"gaps_recent\":2,\"last_gap_ms\":1400,\"last_gap_ago_ms\":8000,\"encoder_ok\":false}]}",
         PodReadiness.Refused, "Refused");
 
     /// <summary>(k) Recording, the left controller out of hand for 3 s: the banner says so, recording goes on.</summary>

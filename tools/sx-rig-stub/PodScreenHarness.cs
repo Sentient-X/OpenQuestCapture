@@ -242,6 +242,22 @@ static class PodScreenHarness
         Expect(withNotice.Blocker.Headline == "The USB hub ran out of bandwidth" && withNotice.Blocker.Who == "Technician", "last episode failed -> its notice: " + withNotice.Blocker.Headline);
         Expect(withNotice.Episodes[0].Fix == "Put both wrist cameras on one powered hub, then press Check.", "the episode row carries the fix");
 
+        // A gripper sensor the rig's readers saw fall silent in the last minute (OQC #44, Pod 19):
+        // the rig's encoders.start_refusal blocks Start before any check, in the table's words.
+        var silentSensor = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
+            + ",\"encoders\":{\"start_refusal\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\",\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s\","
+            + "\"notice\":{\"code\":\"gripper_sensor_silent\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}},\"sides\":[]}");
+        Expect(silentSensor.StartBlocked && silentSensor.Blocker.Headline == "The right gripper sensor keeps stopping" && silentSensor.Blocker.Who == "Collector"
+            && silentSensor.Blocker.Action.StartsWith("Reseat the right gripper sensor's cable at the sensor and at the hub"),
+            "a silent gripper sensor blocks Start with its cable named: " + silentSensor.Blocker.Headline + " / " + silentSensor.Blocker.Action);
+        Expect(PodScreenBoard.EncoderRefusal(JObject.Parse("{\"native\":{\"encoders\":{\"start_refusal\":null,\"sides\":[]}}}")) == null
+            && PodScreenBoard.EncoderRefusal(JObject.Parse("{\"native\":{}}")) == null, "no encoder refusal, or an older library: nothing");
+        var noticeFromWords = PodScreenBoard.FailureNotice("right encoder: the gripper sensor stopped sending 2 times in the last 60 s", "right", "gripper_sensor");
+        Expect(noticeFromWords?.Code == "gripper_sensor_silent" && noticeFromWords.Args["side"] == "right", "the check's words name the sensor's notice");
+        var noticeMidTake = PodScreenBoard.FailureNotice("right encoder: encoder has emitted no sample for 500 ms [link: 18003 bulk reads]", "right", "gripper_sensor");
+        Expect(noticeMidTake?.Code == "gripper_sensor_silent", "a take the stale law stopped names the same notice");
+        Expect(PodScreenBoard.FailureNotice("right camera: no sample", "right", "wrist_camera") == null, "a camera's words do not");
+
         // Not set up: there is no Local only mode, so nothing records until it is (not_enrolled).
         var unenrolled = Screen("\"expected\":true,\"enrolled\":false,\"library\":\"present\",\"open\":true,\"roles\":" + ReadyRoles);
         Expect(unenrolled.StartBlocked && unenrolled.Blocker.Headline == "This headset is not set up as a pod"
