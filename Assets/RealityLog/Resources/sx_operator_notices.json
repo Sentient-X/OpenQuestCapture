@@ -428,6 +428,13 @@
       "still_fine": "{uploads} episodes are waiting to upload and free space once delivered.",
       "action": "Keep the headset on Wi-Fi and idle so the seals finish and uploads free space."
     },
+    "upload_backlog": {
+      "support_code": 3100,
+      "who": "collector",
+      "headline": "{count} episodes ({gb} GB) are waiting to upload",
+      "still_fine": "Nothing is lost while they wait; they go up while the headset is on Wi-Fi and idle.",
+      "action": "Keep the headset on and on Wi-Fi until the Pod card says all delivered. Do not switch it off at the end of the shift while episodes are waiting."
+    },
     "slots_held": {
       "support_code": 3177,
       "who": "floor_manager",

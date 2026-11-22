@@ -189,6 +189,7 @@ public static class PodCardSnapshot
         yield return ("i-prestart-warnings", PreStartWarnings());
         yield return ("j-refused-not-in-hand", RefusedNotInHand());
         yield return ("k-recording-controller-lost", RecordingControllerLost());
+        yield return ("l-upload-backlog", UploadBacklog());
     }
 
     // ---- The operator's words, through the real board from the status the rig and the app write ----
@@ -232,6 +233,16 @@ public static class PodCardSnapshot
         "\"attempts\":[{\"id\":\"20261029_141502\",\"stage\":\"sealing\",\"outcome\":\"complete\",\"seal\":\"pending\",\"sealing_seconds\":190}," +
         "{\"id\":\"20261029_140911\",\"stage\":\"reported\",\"outcome\":\"complete\",\"seal\":\"sealed\",\"integrity\":\"pending\"}]",
         PodReadiness.Refused, "Refused");
+
+    /// <summary>(l) Pod 11 on 2026-11-22: an upload moving at 1.8 MiB/s with 13 sealed takes (6.8 GB) queued behind it.</summary>
+    private static PodCardState UploadBacklog() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
+        "\"uplink\":{\"state\":\"uploading\",\"upload\":{\"artifact\":\"artifact_4ea37989eab5\",\"episode\":\"20261123_001348\"," +
+        "\"size_bytes\":489800000,\"transferred_bytes\":201326592,\"parts\":3,\"rate_mib_s\":1.8,\"waiting_for\":null}," +
+        "\"queue\":{\"artifacts\":13,\"bytes\":6800000000}," +
+        "\"notice\":{\"code\":\"upload_backlog\",\"who\":\"collector\",\"args\":{\"count\":\"13\",\"gb\":\"6.8\"}}}," +
+        "\"attempts\":[{\"id\":\"20261123_001348\",\"stage\":\"sealed\",\"outcome\":\"complete\",\"seal\":\"sealed\"}," +
+        "{\"id\":\"20261123_000440\",\"stage\":\"sealed\",\"outcome\":\"complete\",\"seal\":\"sealed\"}]",
+        PodReadiness.Ready, "Ready");
 
     /// <summary>(h) Not enough space, with the rig's own numbers and the uploads that will free it.</summary>
     private static PodCardState StorageLow() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +

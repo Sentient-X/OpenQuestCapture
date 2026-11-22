@@ -104,7 +104,7 @@ namespace RealityLog.UI
         private FactRow devicesNote = default!;
         // Collection.
         private FactRow collector = default!;
-        private FactRow task = default!, progress = default!, next = default!, link = default!;
+        private FactRow task = default!, progress = default!, next = default!, link = default!, upload = default!;
         // Episodes.
         private GameObject episodesSection = default!;
         private readonly EpisodeLine[] episodes = new EpisodeLine[EpisodeRows];
@@ -392,6 +392,9 @@ namespace RealityLog.UI
             Set(next.Value, s.Next ?? "");
             Set(link.Value, s.Link ?? "");
             link.Value.color = s.LinkTone == PodTone.Neutral ? TextColor : Tint(s.LinkTone);
+            Show(upload.Row, !string.IsNullOrEmpty(s.Upload));
+            Set(upload.Value, s.Upload ?? "");
+            upload.Value.color = s.UploadTone == PodTone.Neutral ? TextColor : Tint(s.UploadTone);
         }
 
         private void ShowEpisodes(PodScreen s)
@@ -743,6 +746,7 @@ namespace RealityLog.UI
             progress = Fact(collection, "Progress", withPill: false);
             next = Fact(collection, "Next", withPill: false);
             link = Fact(collection, "Factory", withPill: false);
+            upload = Fact(collection, "Upload", withPill: false);
 
             // Human review is separate from Check, stop, local seal and collection end.
             var review = Section(transform, "Review stopped episodes");

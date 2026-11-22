@@ -168,6 +168,9 @@ namespace RealityLog.Rig
         public string Next { get; set; } = "";
         public string Link { get; set; } = "";
         public PodTone LinkTone { get; set; } = PodTone.Neutral;
+        /// <summary>What is being sent and what still waits to upload (<see cref="PodScreenBoard.UploadState"/>); "" without an uplink.</summary>
+        public string Upload { get; set; } = "";
+        public PodTone UploadTone { get; set; } = PodTone.Neutral;
         public List<PodEpisodeRow> Episodes { get; } = new();
         /// <summary>Explicit collector work, including earlier collections still draining.</summary>
         public List<PodReviewItem> Reviews { get; } = new();
@@ -392,6 +395,7 @@ namespace RealityLog.Rig
             var failures = FailureTexts(status, refusal);
             Devices(screen, status, failures, liveness, now);
             Collection(screen, status);
+            (screen.Upload, screen.UploadTone, _) = UploadState(status);
             Episodes(screen, status);
             Reviews(screen, status);
             screen.Blocker = Blocker(status, refusal, screen);
@@ -572,7 +576,65 @@ namespace RealityLog.Rig
                     if (OperatorNotice.FromJson(warning) is { } notice) screen.Warnings.Add(PodBlocker.Of(notice, PodTone.Warning));
                 }
             }
+            // More than a few sealed takes waiting to upload: the link is slower than the recording,
+            // and the headset must stay on until they are delivered.
+            if (UploadState(status).warning is { } backlog)
+            {
+                screen.Warnings.Add(PodBlocker.Of(backlog, PodTone.Warning));
+            }
         }
+
+        /// <summary>
+        /// The upload line, its tone and the backlog warning when one is due, from the rig's uplink
+        /// status: what is being sent and how fast (<c>upload</c>, while <c>state</c> is
+        /// <c>uploading</c>), what the Factory says still waits in this pod's scope (<c>queue</c>,
+        /// told on every claim and kept between passes), the rig's own backlog warning
+        /// (<c>notice</c>, libsx_rig's notice.rs::of_upload_backlog), the last pass's error, or that
+        /// everything is delivered. Nothing and Neutral without an uplink; the queue is unknown (no
+        /// warning, no "all delivered") from a Factory that does not say. 2026-11-22, Pod 11: 27 GB went up
+        /// over four hours at 1.8 MiB/s behind a card that said "upload: ok", and 13 sealed takes
+        /// were waiting when the headset was switched off at the end of the shift.
+        /// </summary>
+        public static (string line, PodTone tone, OperatorNotice? warning) UploadState(JObject? status)
+        {
+            if (Lifted(status, "uplink") is not JObject uplink) return ("", PodTone.Neutral, null);
+            var queue = uplink["queue"] as JObject;
+            var waiting = queue != null ? Long(queue["artifacts"]) : -1;
+            var waitingBytes = queue != null ? Long(queue["bytes"]) : 0;
+            var backlog = waiting > 0
+                ? waiting.ToString(CultureInfo.InvariantCulture) + " sealed waiting (" + Gigabytes(waitingBytes) + " GB)"
+                : "";
+            var warning = OperatorNotice.FromJson(uplink["notice"]);
+            var tone = warning != null ? PodTone.Warning : PodTone.Neutral;
+            var state = Str(uplink["state"]);
+            if (state == "uploading" && uplink["upload"] is JObject upload)
+            {
+                var episode = Str(upload["episode"]);
+                var line = "sending " + (episode.Length > 0 ? episode : "an episode") + ": "
+                    + Megabytes(Long(upload["transferred_bytes"])) + " of " + Megabytes(Long(upload["size_bytes"])) + " MB";
+                var rate = upload["rate_mib_s"] is JValue { Type: JTokenType.Float or JTokenType.Integer } value ? (double)value : 0;
+                if (Str(upload["waiting_for"]) == "capture") line += " · paused while recording";
+                else if (rate > 0) line += " at " + rate.ToString("F1", CultureInfo.InvariantCulture) + " MiB/s";
+                if (backlog.Length > 0) line += " · " + backlog;
+                return (line, tone, warning);
+            }
+            var log = uplink["log"] as JArray;
+            foreach (var entry in log?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var error = Str(entry["error"]);
+                if (error.Length == 0) error = entry["result"] is JObject outcome ? Str(outcome["Err"]) : Str(entry["result"]);
+                if (error.Length > 0)
+                {
+                    return ("failed: " + Clip(error, 60) + (backlog.Length > 0 ? " · " + backlog : ""), PodTone.Error, warning);
+                }
+            }
+            if (waiting > 0) return (backlog + "; they go up while the headset is on and idle", tone, warning);
+            if (waiting == 0) return ("all delivered", PodTone.Good, null);
+            if (state != "idle") return (state.Length > 0 ? state : "unknown", PodTone.Neutral, null);
+            return (log == null || log.Count == 0 ? "nothing to send" : "ok", PodTone.Neutral, null);
+        }
+
+        private static string Megabytes(long bytes) => (bytes / 1e6).ToString("F0", CultureInfo.InvariantCulture);
 
         /// <summary>
         /// The rig's storage numbers (native "storage", the figures its require_storage refuses

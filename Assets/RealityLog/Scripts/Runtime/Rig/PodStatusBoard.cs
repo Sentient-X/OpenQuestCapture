@@ -358,24 +358,18 @@ namespace RealityLog.Rig
             return upload.Length > 0 ? line + " · " + upload : line;
         }
 
-        /// <summary>uplink: "upload: starting", its first error, "upload: ok", or "" without an uplink.</summary>
+        /// <summary>
+        /// uplink, as <see cref="PodScreenBoard.UploadState"/> reads it: "upload: sending ... at 1.8 MiB/s · 13 sealed
+        /// waiting (6.8 GB)", "upload failed: ...", "upload: 13 sealed waiting ...", "upload: all delivered",
+        /// "upload: nothing to send", or "" without an uplink.
+        /// </summary>
         public static string UploadSummary(JObject? status)
         {
-            if (status?["uplink"] is not JObject uplink) return "";
-            var state = Str(uplink["state"]);
-            if (state != "idle") return "upload: " + (state.Length > 0 ? state : "unknown");
-            if (uplink["log"] is not JArray log || log.Count == 0) return "upload: nothing to send";
-            foreach (var entry in log.OfType<JObject>())
-            {
-                var error = Str(entry["error"]);
-                if (error.Length == 0)
-                {
-                    var result = entry["result"];
-                    error = result is JObject outcome ? Str(outcome["Err"]) : Str(result);
-                }
-                if (error.Length > 0) return "upload failed: " + Clip(error, 60);
-            }
-            return "upload: ok";
+            var (line, tone, _) = PodScreenBoard.UploadState(status);
+            if (line.Length == 0) return "";
+            return tone == PodTone.Error && line.StartsWith("failed: ", StringComparison.Ordinal)
+                ? "upload " + line
+                : "upload: " + line;
         }
 
         /// <summary>
