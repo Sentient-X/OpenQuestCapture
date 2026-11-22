@@ -11,8 +11,12 @@
 #      file only adb or the app can write): both head cameras record 15 s through OQC's own C# start
 #      and stop; each eye must leave a finished MP4, timestamp rows == encoded frames, no capture_error
 #   5. reads logcat: no crash or fatal signal, no ClassNotFound/NoSuchMethod/NoSuchField/
-#      UnsatisfiedLink, no Unity exception outside device_smoke_known_exceptions.txt, the rig and
-#      gripper status lines, the self-test's cue line
+#      UnsatisfiedLink, no Unity exception outside device_smoke_known_exceptions.txt, none of the
+#      warnings a scene with a lost script reference prints ("is missing or no valid script",
+#      "Missing CaptureTimer reference!", "disabled: no CaptureTimer assigned": builds 81 and 82,
+#      which started with a null CaptureTimer and threw on the first real Start), and the lines a
+#      healthy launch always logs: rig opened, gripper switch status, DepthPointCloudRenderer
+#      started, the self-test's cue line
 # Exit 0 only when every check passed; the verdict and logs land in <out>.
 #
 #   scripts/device_smoke.sh [--no-install] <adb-serial> <apk> [out-dir]
@@ -133,7 +137,17 @@ if unknown="$(python3 "$root/scripts/unity_exceptions.py" "$out/logcat.txt" "${p
 else
     fail "new Unity exceptions:"$'\n'"$unknown"
 fi
-for line in 'RigCoordinator: rig opened' 'RigCoordinator: gripper switch status:' 'cue: Sealed (camera self-test passed)'; do
+# A scene object whose script reference did not resolve (builds 81 and 82, built on a copied
+# Library/) is a warning, not an exception, so the baseline above never sees it; the recording
+# then starts with a null CaptureTimer (RecordingManager.cs:342).
+lost="$(grep -E 'is missing or no valid script|Missing CaptureTimer reference!|disabled: no CaptureTimer assigned' "$out/logcat.txt" || true)"
+if [[ -n "$lost" ]]; then
+    fail "a scene object lost its script reference:"$'\n'"$(cut -c1-300 <<<"$lost" | sort -u | head -n 8)"
+else
+    ok "no missing script or CaptureTimer reference"
+fi
+for line in 'RigCoordinator: rig opened' 'RigCoordinator: gripper switch status:' \
+        'DepthPointCloudRenderer - Started at' 'cue: Sealed (camera self-test passed)'; do
     grep -qF "$line" "$out/logcat.txt" && ok "logged: $line" || fail "never logged: $line"
 done
 
