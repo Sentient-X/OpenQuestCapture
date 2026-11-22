@@ -125,6 +125,14 @@
       "action": "Reseat the {side} gripper sensor's cable at the hub, then press Check.",
       "button": "check"
     },
+    "gripper_sensor_silent": {
+      "support_code": 3198,
+      "who": "collector",
+      "headline": "The {side} gripper sensor keeps stopping",
+      "still_fine": "The cameras and the other gripper are fine.",
+      "action": "Reseat the {side} gripper sensor's cable at the sensor and at the hub, then press Check. If it stops again, call a technician to replace the cable.",
+      "button": "check"
+    },
     "device_disconnected": {
       "support_code": 3113,
       "who": "collector",

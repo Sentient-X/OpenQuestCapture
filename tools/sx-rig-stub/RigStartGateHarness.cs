@@ -100,6 +100,25 @@ static class RigStartGateHarness
         Expect(armedTracking.Code == "controllers_wrong_side" && armedTracking.DetailJson.Contains("\"notice\""),
             "a start the library refused on tracking -> its kind, its notice kept");
 
+        // The rig's encoder liveness law (OQC #44): a gripper sensor its readers saw fall silent
+        // in the last minute refuses before the check, coded by its kind, with the rig's notice.
+        runs = 0;
+        var silentSensor = "{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\",\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s\"," +
+            "\"notice\":{\"code\":\"gripper_sensor_silent\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}}";
+        r = RigStartGate.Evaluate(With(f => f[0].EncoderRefusalJson = silentSensor), passing, _ => { });
+        Expect(r?.Code == "gripper_sensor_silent" && runs == 0 && r.Message.Contains("stopped sending") && r.DetailJson.Contains("\"notice\""),
+            "a silent gripper sensor refuses before the device check, coded by its kind, with the rig's notice");
+        Expect(RigStartGate.Encoders("{\"kind\":\"controllers_not_in_hand\"}") == null && RigStartGate.Encoders(null) == null
+            && RigStartGate.Tracking(silentSensor) == null, "the encoder refusal is its own kind, not a tracking one");
+        runs = 0;
+        r = RigStartGate.Evaluate(With(f => f[0].EncoderRefusalJson = null), passing, _ => { });
+        Expect(r == null && runs == 1, "no encoder refusal (an older library): the check decides");
+        var armedSilent = RigStartGate.FromError(new SxRigException("sx_rig_start_armed", SxRigError.State,
+            "{\"code\":\"state\",\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s\",\"refusal\":{\"kind\":\"gripper_sensor_silent\"}," +
+            "\"notice\":{\"code\":\"gripper_sensor_silent\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}}"), "rig_start_failed");
+        Expect(armedSilent.Code == "gripper_sensor_silent" && armedSilent.DetailJson.Contains("\"notice\""),
+            "a start the library refused on a silent sensor -> its kind, its notice kept");
+
         // No collector is required: with no phone paired the pod records unattributed.
         runs = 0;
         r = RigStartGate.Evaluate(Ready(), passing, _ => { });

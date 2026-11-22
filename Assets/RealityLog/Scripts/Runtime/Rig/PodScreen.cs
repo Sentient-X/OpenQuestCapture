@@ -505,6 +505,9 @@ namespace RealityLog.Rig
             }
             // Exactly what the rig's require_storage refuses on: free below required_bytes.
             if (Storage(status) is { } space && space.Free < space.Needed) return PodBlocker.Of(StorageNotice(space, low: true), PodTone.Error);
+            // A gripper sensor the rig's readers saw fall silent in the last minute: the rig refuses
+            // the start before its check (encoders.start_refusal), so the card says it before Start.
+            if (EncoderRefusal(status) is { } silent) return PodBlocker.Of(silent, PodTone.Error);
             if (Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
             if (OperatorNotice.FromJson(refused["notice"]) is { } notice) return PodBlocker.Of(notice, PodTone.Error);
             // A runtime older than its notices: the reason alone.
@@ -823,6 +826,10 @@ namespace RealityLog.Rig
             if (lower.Contains("sends nothing") || lower.Contains("0 bytes received") || lower.Contains("another app"))
                 return OperatorNotice.Of("usb_other_app", ("side", side), ("part", part));
             if (lower.Contains("os error 12") || lower.Contains("out of memory")) return OperatorNotice.Of("usb_bandwidth");
+            // The rig's encoder liveness law (notice.rs of_problem / of_stop): a sensor that keeps
+            // falling silent, before a start or the cause of a take it stopped.
+            if (lower.Contains("stopped sending") || (lower.Contains("no sample") && part == "gripper_sensor"))
+                return OperatorNotice.Of("gripper_sensor_silent", ("side", side), ("part", part));
             if (lower.Contains("was detached") || lower.Contains("device_disconnected") || lower.Contains("disconnected"))
                 return OperatorNotice.Of("device_disconnected", ("side", side), ("part", part));
             if (lower.Contains("no device fills this role") || lower.Contains("no device on"))
@@ -1176,6 +1183,13 @@ namespace RealityLog.Rig
         }
 
         /// <summary>The first notice of the rig's <c>tracking.controllers_lost</c>; null when none is lost.</summary>
+        /// <summary>
+        /// The rig's <c>encoders.start_refusal</c> notice (sx_pod_runtime::encoder_health, OQC #44):
+        /// a gripper sensor that keeps falling silent, named with its side; null when none stands.
+        /// </summary>
+        public static OperatorNotice? EncoderRefusal(JObject? status) =>
+            OperatorNotice.FromJson(((Lifted(status, "encoders") as JObject)?["start_refusal"] as JObject)?["notice"]);
+
         public static OperatorNotice? ControllerLost(JObject? status) =>
             (Lifted(status, "tracking") as JObject)?["controllers_lost"] is JArray lost
                 ? lost.Select(OperatorNotice.FromJson).FirstOrDefault(notice => notice != null)
