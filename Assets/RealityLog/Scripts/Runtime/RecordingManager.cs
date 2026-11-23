@@ -412,6 +412,12 @@ namespace RealityLog
                 lock (phases) phases.Add($"{phase}={nowMs - phaseStartMs}");
                 phaseStartMs = nowMs;
             }
+            // A phase timed on its own thread, beside others: its own duration, not the gap
+            // since the last phase ended.
+            void AddPhase(string phase, long durationMs)
+            {
+                lock (phases) phases.Add($"{phase}={durationMs}");
+            }
 
             // Store directory name before resetting state
             string savedDirectory = currentSessionDirectory ?? string.Empty;
@@ -488,12 +494,35 @@ namespace RealityLog
 #endif
                 try
                 {
+                    // The eyes are independent encoders with their own threads and files, so
+                    // their finishers run beside each other, each on its own thread with the
+                    // JVM attached (the Java stopRecording joins that eye's encoder output
+                    // thread). In series they cost the sum: 2026-11-22, builds 76/77/84, each
+                    // eye's stop_session median 5.5 s, the stop 11 s (OQC #44).
+                    var finisherThreads = new List<System.Threading.Thread>(finishers.Count);
                     foreach (var (name, finish) in finishers)
                     {
-                        try { finish(); }
-                        catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {name} stop failed: {ex}"); }
-                        EndPhase($"stop_session:{name}");
+                        var finisher = new System.Threading.Thread(() =>
+                        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                            var finisherAttached = AndroidJNI.AttachCurrentThread() == 0;
+#endif
+                            var finisherTimer = System.Diagnostics.Stopwatch.StartNew();
+                            try { finish(); }
+                            catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {name} stop failed: {ex}"); }
+                            finally
+                            {
+                                AddPhase($"stop_session:{name}", finisherTimer.ElapsedMilliseconds);
+#if UNITY_ANDROID && !UNITY_EDITOR
+                                if (finisherAttached) AndroidJNI.DetachCurrentThread();
+#endif
+                            }
+                        }) { IsBackground = true, Name = $"RecordingStop-{name}" };
+                        finisherThreads.Add(finisher);
+                        finisher.Start();
                     }
+                    foreach (var finisher in finisherThreads) finisher.Join();
+                    EndPhase("stop_sessions"); // wall time of all finishers together
                     // Last: the rig's seal reads this session, so every OQC file is final first.
                     receipt = StopRig(dataPath, savedDirectory);
                     EndPhase("rig");
