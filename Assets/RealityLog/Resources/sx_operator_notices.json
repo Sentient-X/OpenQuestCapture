@@ -133,6 +133,14 @@
       "action": "Reseat the {side} gripper sensor's cable at the sensor and at the hub, then press Check. If it stops again, call a technician to replace the cable.",
       "button": "check"
     },
+    "gripper_link_error": {
+      "support_code": 3129,
+      "who": "collector",
+      "headline": "The {side} gripper's USB link failed",
+      "still_fine": "The cameras and the other gripper are fine.",
+      "action": "Reseat the {side} gripper's cable at the hub (and the hub's lead), then press Check. If it fails again, call a technician.",
+      "button": "check"
+    },
     "device_disconnected": {
       "support_code": 3113,
       "who": "collector",
@@ -148,6 +156,13 @@
       "still_fine": "The devices themselves are fine.",
       "action": "Put both wrist cameras on one powered hub, then press Check.",
       "button": "check"
+    },
+    "camera_memory": {
+      "support_code": 3116,
+      "who": "collector",
+      "headline": "Last episode stopped: the headset ran out of memory for the {side} wrist camera",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Record again. If it happens twice in a row, restart the app and call a technician."
     },
     "recording_interrupted": {
       "support_code": 3115,

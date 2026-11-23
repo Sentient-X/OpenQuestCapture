@@ -825,7 +825,12 @@ namespace RealityLog.Rig
             var lower = detail.ToLowerInvariant();
             if (lower.Contains("sends nothing") || lower.Contains("0 bytes received") || lower.Contains("another app"))
                 return OperatorNotice.Of("usb_other_app", ("side", side), ("part", part));
-            if (lower.Contains("os error 12") || lower.Contains("out of memory")) return OperatorNotice.Of("usb_bandwidth");
+            // ENOMEM on a wrist stream is the kernel's per-URB allocation after a seal (embodiments #306
+            // retries it); only a hub's bandwidth refusal is the hub's.
+            if (lower.Contains("os error 12") || lower.Contains("out of memory"))
+                return part == "wrist_camera"
+                    ? OperatorNotice.Of("camera_memory", ("side", side), ("part", part))
+                    : OperatorNotice.Of("usb_bandwidth");
             // The rig's encoder liveness law (notice.rs of_problem / of_stop): a sensor that keeps
             // falling silent, before a start or the cause of a take it stopped.
             if (lower.Contains("stopped sending") || (lower.Contains("no sample") && part == "gripper_sensor"))
