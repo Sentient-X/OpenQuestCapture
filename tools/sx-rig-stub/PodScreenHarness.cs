@@ -267,6 +267,18 @@ static class PodScreenHarness
         Expect(PodScreenBoard.StartBlocker(JObject.Parse("{\"expected\":false,\"enrolled\":false,\"localOnly\":true}")) != null,
             "a status an earlier build wrote with localOnly still refuses the start of a headset not set up");
 
+        // The upload row: an upload to the object store, a handoff to the pod's floor PC over
+        // the LAN (libsx_rig route "holder"), and the backlog beside either.
+        var uploading = PodScreenBoard.UploadState(JObject.Parse("{\"uplink\":{\"state\":\"uploading\",\"upload\":{\"artifact\":\"artifact_1\",\"episode\":\"20261123_201403\",\"size_bytes\":1200000000,\"transferred_bytes\":400000000,\"parts\":25,\"rate_mib_s\":1.2,\"waiting_for\":null,\"queue\":{\"artifacts\":3,\"bytes\":3000000000},\"route\":null,\"holder\":null},\"queue\":{\"artifacts\":3,\"bytes\":3000000000},\"notice\":null}}"));
+        Expect(uploading.line == "sending 20261123_201403: 400 of 1200 MB at 1.2 MiB/s · 3 sealed waiting (3.0 GB)", "upload row: " + uploading.line);
+        var handing = PodScreenBoard.UploadState(JObject.Parse("{\"uplink\":{\"state\":\"uploading\",\"upload\":{\"artifact\":\"artifact_1\",\"episode\":\"20261123_201403\",\"size_bytes\":1200000000,\"transferred_bytes\":800000000,\"parts\":48,\"rate_mib_s\":18.5,\"waiting_for\":null,\"queue\":null,\"route\":\"holder\",\"holder\":\"uploader:thin\"},\"queue\":null,\"notice\":null}}"));
+        Expect(handing.line == "sending 20261123_201403 to the floor PC: 800 of 1200 MB at 18.5 MiB/s", "handoff row: " + handing.line);
+        var pausedHandoff = PodScreenBoard.UploadState(JObject.Parse("{\"uplink\":{\"state\":\"uploading\",\"upload\":{\"artifact\":\"artifact_1\",\"episode\":\"e\",\"size_bytes\":10,\"transferred_bytes\":0,\"parts\":0,\"rate_mib_s\":null,\"waiting_for\":\"capture\",\"queue\":null,\"route\":\"holder\",\"holder\":\"uploader:thin\"},\"queue\":null,\"notice\":null}}"));
+        Expect(pausedHandoff.line == "sending e to the floor PC: 0 of 0 MB · paused while recording", "handoff waits for the take: " + pausedHandoff.line);
+        Expect(PodScreenBoard.UploadState(JObject.Parse("{\"uplink\":{\"state\":\"idle\",\"queue\":{\"artifacts\":0,\"bytes\":0},\"log\":[{\"handoff\":\"artifact_1\",\"holder\":\"uploader:thin\",\"seconds\":61.2,\"result\":{\"Ok\":\"Parts(48)\"}}]}}")).line == "all delivered", "a finished handoff with nothing waiting reads all delivered");
+        var refusedHandoff = PodScreenBoard.UploadState(JObject.Parse("{\"uplink\":{\"state\":\"idle\",\"queue\":null,\"log\":[{\"handoff\":\"artifact_1\",\"holder\":\"uploader:thin\",\"seconds\":2.1,\"result\":{\"Err\":\"the holder refused the bytes (409)\"}}]}}"));
+        Expect(refusedHandoff.line.StartsWith("failed: the holder refused") && refusedHandoff.tone == PodTone.Error, "a refused handoff is the row's error: " + refusedHandoff.line);
+
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures == 0 ? 0 : 1;
     }

@@ -613,7 +613,10 @@ namespace RealityLog.Rig
             if (state == "uploading" && uplink["upload"] is JObject upload)
             {
                 var episode = Str(upload["episode"]);
-                var line = "sending " + (episode.Length > 0 ? episode : "an episode") + ": "
+                // A handoff goes to the pod's floor PC over the LAN (libsx_rig handoff.rs, route
+                // "holder"); the upload goes to the object store over the internet.
+                var destination = Str(upload["route"]) == "holder" ? " to the floor PC" : "";
+                var line = "sending " + (episode.Length > 0 ? episode : "an episode") + destination + ": "
                     + Megabytes(Long(upload["transferred_bytes"])) + " of " + Megabytes(Long(upload["size_bytes"])) + " MB";
                 var rate = upload["rate_mib_s"] is JValue { Type: JTokenType.Float or JTokenType.Integer } value ? (double)value : 0;
                 if (Str(upload["waiting_for"]) == "capture") line += " · paused while recording";
