@@ -169,6 +169,12 @@ bash "$here/test_tracking_readiness.sh"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SelfRelaunch.cs"
 "$mono" "$out/self-relaunch-harness.exe"
 
+# BreakAlarm: a collector signed in and nothing recorded for 30 s sounds the alarm until a take records.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 \
+    -out:"$out/break-alarm-harness.exe" "$here/BreakAlarmHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/BreakAlarmPolicy.cs"
+"$mono" "$out/break-alarm-harness.exe"
+
 # OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
     -out:"$out/os-controller-harness.exe" "$here/OsControllerReportHarness.cs" \
