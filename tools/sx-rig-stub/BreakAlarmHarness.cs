@@ -12,6 +12,11 @@ static class BreakAlarmHarness
     static int Main()
     {
         var p = new BreakAlarmPolicy();
+        Expect(BreakAlarmPolicy.Armed(signedIn: true, worn: true, deviceRefusal: false), "a collector on a worn headset with a working rig arms the alarm");
+        Expect(!BreakAlarmPolicy.Armed(signedIn: false, worn: true, deviceRefusal: false), "no collector: not armed");
+        Expect(!BreakAlarmPolicy.Armed(signedIn: true, worn: false, deviceRefusal: false), "headset off the head: not armed (keep-awake pods stay silent in the rack)");
+        Expect(!BreakAlarmPolicy.Armed(signedIn: true, worn: null, deviceRefusal: false), "worn state unread: not armed");
+        Expect(!BreakAlarmPolicy.Armed(signedIn: true, worn: true, deviceRefusal: true), "the rig refuses Start for a device fault: not armed");
         Expect(p.Observe(0, armed: false, collecting: false) == BreakAlarmVerdict.Off, "no collector signed in: silent");
         Expect(p.Observe(500, armed: false, collecting: false) == BreakAlarmVerdict.Off, "no collector, however long: silent");
         Expect(p.IdleSeconds(500) == null, "no collector: no clock");

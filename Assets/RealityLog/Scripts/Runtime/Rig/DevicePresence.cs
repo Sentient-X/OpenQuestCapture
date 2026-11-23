@@ -31,6 +31,9 @@ namespace RealityLog.Rig
         /// <summary>The runtime's user-present state this frame; null when it could not be read.</summary>
         public void Worn(bool? present) => Volatile.Write(ref worn, present is null ? -1 : present.Value ? 1 : 0);
 
+        /// <summary>Whether the headset is on a head as last read; null while unread.</summary>
+        public bool? IsWorn => Volatile.Read(ref worn) switch { 1 => true, 0 => false, _ => null };
+
         /// <summary>A button went down this frame (any controller button).</summary>
         public void KeyPressed() => Interlocked.Increment(ref keyPresses);
 
