@@ -613,10 +613,16 @@ namespace RealityLog
             var distance = sample.DistanceToHeadM is float d
                 ? d.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
                 : "null";
+            // The rig's stale law (sx-pod-core tracking.rs, POSE_SOURCE_MAX_AGE_MS): an asleep
+            // controller's last pose is refused as "not in hand", never judged for its side.
+            var age = sample.SourceAgeMs is double a
+                ? a.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)
+                : "null";
             return $"{{\"connected\": {Bool(sample.Connected)}, " +
                 $"\"positionTracked\": {Bool(sample.PositionTracked)}, " +
                 $"\"orientationTracked\": {Bool(sample.OrientationTracked)}, " +
                 $"\"pose\": {PoseJson(sample)}, " +
+                $"\"sourceAgeMs\": {age}, " +
                 $"\"distanceToHeadM\": {distance}}}";
         }
 

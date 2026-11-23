@@ -154,7 +154,7 @@ static class PodScreenHarness
         Expect(silent.Blocker.Headline == "Another app holds the left gripper sensor" && silent.Blocker.Action.Contains("choose OpenQuestCapture"), "silent encoder blocks with its fix: " + silent.Blocker.Headline);
         var oom = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + "," + Task + "}",
             new StartRefusal("rig_start_failed", "the rig did not arm: right camera: streaming: Out of memory (os error 12)", T0));
-        Expect(oom.Devices[1].Pill == "Failed" && oom.Devices[1].Hint == "Put both wrist cameras on one powered hub, then press Check." && !oom.Devices[1].Value.Contains("os error"), "OOM camera: one hub, no os error shown");
+        Expect(oom.Devices[1].Pill == "Failed" && oom.Devices[1].Hint == "Record again. If it happens twice in a row, restart the app and call a technician." && !oom.Devices[1].Value.Contains("os error"), "OOM camera: record again (camera_memory), no os error shown");
         Expect(oom.Devices[0].Pill == "Ready", "the other camera stays ready");
         Expect(PodScreenBoard.FailureFor(new[] { "x; right_camera: streaming: Out of memory (os error 12); y" }, "right", "camera") == "right_camera: streaming: Out of memory (os error 12)", "a receipt's clause by stream key");
 
