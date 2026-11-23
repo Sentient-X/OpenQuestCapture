@@ -61,7 +61,9 @@ namespace RealityLog.Rig
             if (recorder == null) recorder = FindFirstObjectByType<RecordingManager>();
             var collecting = recorder != null && recorder.State != RecordingState.Idle;
 
-            var verdict = policy.Observe(now, signedIn != null, collecting);
+            var worn = rig?.HeadsetWorn;
+            var deviceRefusal = PodScreenBoard.EncoderRefusal(RigCoordinator.ParsedStatusOrDefault) != null;
+            var verdict = policy.Observe(now, BreakAlarmPolicy.Armed(signedIn != null, worn, deviceRefusal), collecting);
             if (verdict == BreakAlarmVerdict.Sounding)
             {
                 if (last != BreakAlarmVerdict.Sounding) StartSiren(signedIn!);
@@ -69,7 +71,10 @@ namespace RealityLog.Rig
             }
             else if (last == BreakAlarmVerdict.Sounding)
             {
-                StopSiren(collecting ? "a take started recording" : "the collector signed out of the pod");
+                StopSiren(collecting ? "a take started recording"
+                    : signedIn == null ? "the collector signed out of the pod"
+                    : worn != true ? "the headset came off"
+                    : "the rig refuses to start for a device fault");
             }
             if (signedIn != null) collector = signedIn;
             last = verdict;

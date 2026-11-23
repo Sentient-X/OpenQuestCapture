@@ -110,6 +110,8 @@ namespace RealityLog.Rig
         private long apkVersionCode = -1;
         // What the collector does with the headset (worn, focus, input), for the rig's presence.
         private readonly DevicePresence presence = new();
+        /// <summary>Whether the headset is on a head as the runtime last said; null while unread.</summary>
+        public bool? HeadsetWorn => presence.IsWorn;
         // The app's log lines in <credentials>/logs, which the rig ships as diagnostic files.
         private AppLogFile? appLog;
         // EmbodimentAssets' install of the seal's meshes into filesDir; the rig opens only once

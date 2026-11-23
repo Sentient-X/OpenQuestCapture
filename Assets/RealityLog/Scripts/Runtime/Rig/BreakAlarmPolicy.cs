@@ -26,6 +26,17 @@ namespace RealityLog.Rig
     {
         public const double GraceSeconds = 30.0;
 
+        /// <summary>
+        /// Whether the alarm may run at all: a collector is on this enrolled pod, the headset is on a
+        /// head, and the rig is not refusing Start for a device fault. Off a head (or while the worn
+        /// state is unread) the pod is not inside a shift: the floor's headsets are provisioned
+        /// keep-awake, so an app left running in the rack must stay silent. A Start the rig refuses
+        /// for a faulted device (the encoders' start refusal) is not a break the collector can end;
+        /// the pod's fault card and page carry that.
+        /// </summary>
+        public static bool Armed(bool signedIn, bool? worn, bool deviceRefusal) =>
+            signedIn && worn == true && !deviceRefusal;
+
         private double? idleSince;
 
         /// <summary>
