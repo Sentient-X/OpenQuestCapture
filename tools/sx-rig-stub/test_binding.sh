@@ -110,7 +110,8 @@ MONO_PATH="$unity_managed" "$mono" "$out/episode-length-harness.exe"
 # PodStatusBoard: the recordings menu's Pod status block and the last start's refusal.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/pod-status-harness.exe" "$here/PodStatusBoardHarness.cs" "$notices" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs"
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodStatusBoard.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigStatusJson.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/PodScreen.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/GripperSwitch.cs" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/EpisodeLength.cs"
 "$mono" "$out/pod-status-harness.exe"
 
 # PodScreenBoard: the Pod card's status screen (blocker, devices, collection, episodes).
