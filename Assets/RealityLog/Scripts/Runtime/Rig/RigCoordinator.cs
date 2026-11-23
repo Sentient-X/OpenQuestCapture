@@ -212,6 +212,8 @@ namespace RealityLog.Rig
         private bool sealsObserved;
         // The episode a seal is writing now (a seal state "sealing"), null when none is.
         private volatile string? sealingNow;
+        /// <summary>The transfer the uplink has in flight (an upload or a handoff to the floor PC), as words; null when none.</summary>
+        private volatile string? movingNow;
         private readonly System.Collections.Concurrent.ConcurrentQueue<(RigCues.Cue cue, string reason)> cues = new();
         // The right gripper's start/stop switch: libsx_rig's gripper_switch counters, read on the
         // native-status worker; each new hold is handled on the main thread.
@@ -1700,6 +1702,7 @@ namespace RealityLog.Rig
                         switchPresses.Enqueue(press);
                     }
                     sealingNow = Sealing(status["seals"] as JObject);
+                    movingNow = Moving(status["uplink"] as JObject);
                     var episodeId = activeEpisodeId;
                     if (episodeLength.Observe(status["episode_length"] as JObject, episodeId) is EpisodeLengthAction length && episodeId != null)
                     {
@@ -1739,9 +1742,26 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
+        /// The transfer the uplink has in flight (state "uploading"): the upload of an episode to
+        /// the object store, or its handoff to the pod's floor PC (<c>route</c> "holder"). Null when
+        /// none is. A relaunch that cut one made the headset start the part again; on 2026-11-23
+        /// the handoff reported nothing at all while it ran.
+        /// </summary>
+        internal static string? Moving(JObject? uplink)
+        {
+            if (uplink == null || (string?)(uplink["state"] as JValue) != "uploading") return null;
+            if (uplink["upload"] is not JObject upload) return "a transfer";
+            var episode = (string?)(upload["episode"] as JValue);
+            var what = string.IsNullOrEmpty(episode) ? "an episode" : episode;
+            return (string?)(upload["route"] as JValue) == "holder"
+                ? "the handoff of " + what + " to the floor PC"
+                : "the upload of " + what;
+        }
+
+        /// <summary>
         /// What the rig is doing that a relaunch would cut short (any thread): an episode
         /// recording, a reservation or an arming, the rig held for a check, start, stop or
-        /// command, or a seal being written. Null when nothing is.
+        /// command, a seal being written, or an upload or handoff in flight. Null when nothing is.
         /// </summary>
         public string? BusyForRelaunch()
         {
@@ -1757,7 +1777,8 @@ namespace RealityLog.Rig
             {
                 System.Threading.Monitor.Exit(episodeLock);
             }
-            return sealingNow is string sealing ? "the seal of " + sealing + " is being written" : null;
+            if (sealingNow is string sealing) return "the seal of " + sealing + " is being written";
+            return movingNow is string moving ? moving + " is in flight" : null;
         }
 
         /// <summary>
