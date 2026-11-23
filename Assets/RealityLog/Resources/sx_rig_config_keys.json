@@ -19,7 +19,9 @@
     "quest_apk_build_id",
     "headset_apk_build_id",
     "headset_source",
-    "quest_app_version"
+    "quest_app_version",
+    "gripper_colour_preset_left",
+    "gripper_colour_preset_right"
   ],
   "rig": {
     "bundle_schema_version": "sx.yubi-rig-bundle/v1",
