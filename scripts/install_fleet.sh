@@ -11,7 +11,9 @@
 #                 headset that answers as a target
 #   --jobs N      headsets handled at once (default 4)
 #   --stop        force-stop a running app before installing. Without it a running app is skipped:
-#                 it may be recording.
+#                 it may be recording. An app this script stopped is launched again after the
+#                 install (the pods seal and upload only while the app runs; on 2026-11-24 the
+#                 whole floor was draining its backlog at night), and the result says so.
 #   --keep-awake  after the install, run provision-headset.sh --keep-awake --no-wifi on the target
 #   --dry-run     print the plan per target and install nothing
 # A running app is never killed without --stop and a package is never uninstalled: a signer
@@ -113,7 +115,9 @@ one() {
   if [ "$before" = "$want" ]; then finish "up to date"; return; fi
   pid=$(a shell pidof "$pkg" 2>/dev/null | tr -d '\r' || true)
   if [ "$dry_run" = 1 ]; then
-    if [ -n "$pid" ] && [ "$stop" = 0 ]; then finish "running, would skip (pass --stop)"; else finish "would install $before -> $want"; fi
+    if [ -n "$pid" ] && [ "$stop" = 0 ]; then finish "running, would skip (pass --stop)"
+    elif [ -n "$pid" ]; then finish "would stop, install $before -> $want, relaunch"
+    else finish "would install $before -> $want"; fi
     return
   fi
   if [ -n "$pid" ]; then
@@ -139,7 +143,15 @@ one() {
     "$root/scripts/provision-headset.sh" --keep-awake --no-wifi "$t" >>"$log" 2>&1 \
       || { finish "failed: provision-headset.sh exit $? (see log)"; return; }
   fi
-  finish updated
+  if [ -z "$pid" ]; then finish updated; return; fi
+  # The app was running before: bring it back, so the pod goes on sealing and uploading.
+  a shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >>"$log" 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    newpid=$(a shell pidof "$pkg" 2>/dev/null | tr -d '\r' || true)
+    [ -n "$newpid" ] && break
+  done
+  if [ -n "${newpid:-}" ]; then finish "updated, relaunched (pid $newpid)"; else finish "updated, but the app did not relaunch within 10 s: launch it by hand"; fi
 }
 
 live=0
