@@ -13,8 +13,9 @@ namespace RealityLog.Rig
     /// <see cref="BreakAlarmPolicy.GraceSeconds"/> ago, signed in or not, worn or not (the rule is
     /// <see cref="BreakAlarmPolicy"/>'s), climbing as the idle time grows: a soft beep every
     /// <see cref="SoftBeepEverySeconds"/> s, then a loud beep every <see cref="LoudBeepEverySeconds"/> s,
-    /// then a looping siren. From the loud beep on, the headset's media volume is held at its
-    /// maximum and unmuted every quarter second, so the volume buttons cannot quiet it; the volume
+    /// then a looping siren. From the loud beep on, the headset's media volume is held at
+    /// <see cref="HeldVolumeFraction"/> of its maximum (owner, 2026-11-24: 70 % of build 97's full
+    /// volume) and unmuted every quarter second, so the volume buttons cannot move it; the volume
     /// the collector had is put back the moment it stops. Only a take starting stops it. Sound only: no controller vibration, so the gripper
     /// switch's hold pulse (RigCoordinator) still reads as itself. Every change logs one line,
     /// <c>[RealityLog] break alarm: ...</c>. Auto-bootstraps; no scene wiring.
@@ -28,6 +29,8 @@ namespace RealityLog.Rig
         private const float SoftBeepEverySeconds = 5f;
         private const float LoudBeepEverySeconds = 2f;
         private const float SoftBeepVolume = 0.35f;
+        /// <summary>The share of the media stream's maximum the alarm holds from the loud beep on.</summary>
+        private const float HeldVolumeFraction = 0.7f;
 
         private readonly BreakAlarmPolicy policy = new();
         private BreakAlarmVerdict last = BreakAlarmVerdict.Off;
@@ -93,7 +96,7 @@ namespace RealityLog.Rig
                 $"{idle:F0} s since the last one ended (collector {who})");
         }
 
-        /// <summary>Every look while alarming: the level's sound, and from Loud on the volume held at maximum.</summary>
+        /// <summary>Every look while alarming: the level's sound, and from Loud on the volume held at 70 % of maximum.</summary>
         private void Play(BreakAlarmVerdict level)
         {
             if (level == BreakAlarmVerdict.Siren)
@@ -151,7 +154,7 @@ namespace RealityLog.Rig
 #endif
         }
 
-        /// <summary>Media volume to its maximum and unmuted, every look while the alarm sounds.</summary>
+        /// <summary>Media volume to <see cref="HeldVolumeFraction"/> of its maximum and unmuted, every look while the alarm sounds.</summary>
         private void HoldVolume()
         {
             AudioListener.pause = false;
@@ -162,11 +165,12 @@ namespace RealityLog.Rig
                 var audio = Audio();
                 if (audio.Call<bool>("isStreamMute", StreamMusic)) audio.Call("adjustStreamVolume", StreamMusic, AdjustUnmute, 0);
                 var max = audio.Call<int>("getStreamMaxVolume", StreamMusic);
-                if (audio.Call<int>("getStreamVolume", StreamMusic) < max) audio.Call("setStreamVolume", StreamMusic, max, 0);
+                var held = Mathf.Max(1, Mathf.RoundToInt(max * HeldVolumeFraction));
+                if (audio.Call<int>("getStreamVolume", StreamMusic) != held) audio.Call("setStreamVolume", StreamMusic, held, 0);
             }
             catch (Exception ex)
             {
-                if (!volumeWarned) Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: cannot hold the volume at maximum: {ex.Message}");
+                if (!volumeWarned) Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: cannot hold the volume at 70 %: {ex.Message}");
                 volumeWarned = true;
             }
 #endif
