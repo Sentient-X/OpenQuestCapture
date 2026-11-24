@@ -12,7 +12,8 @@
 # Usage: scripts/provision-headset.sh [--keep-awake] [--no-wifi] [adb-serial]
 #   (connect the headset by USB first)
 #   --keep-awake  keep the screen and headset awake off-head (stay-on, no screen timeout, the
-#                 proximity sensor held closed). Resets on reboot: re-run after a reboot.
+#                 proximity sensor held closed) and double-tap passthrough off (the system
+#                 shell's sensor events held idle). Resets on reboot: re-run after a reboot.
 #   --no-wifi     leave adb on USB (skip `adb tcpip 5555`).
 #
 # Exit status: 0 when everything held; 1 when the headset was not usable or a permission is
@@ -188,7 +189,11 @@ if [ "$keep_awake" = 1 ]; then
   q shell settings put system screen_off_timeout 2147483647
   q shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
   q shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
-  echo "keep-awake on (stay-on, no screen timeout, proximity held closed); a reboot resets it"
+  # Double-tap passthrough: Meta removed its settings toggle, and a tap on the headset during a
+  # take opens passthrough over the app. With the system shell's sensor events held idle it never
+  # sees the tap (owner, 2026-11-25). Undo: cmd sensorservice reset-uid-state com.oculus.vrshell.
+  q shell cmd sensorservice set-uid-state com.oculus.vrshell idle >/dev/null 2>&1 || true
+  echo "keep-awake on (stay-on, no screen timeout, proximity held closed, double-tap passthrough off); a reboot resets it"
 fi
 
 if [ "$wifi" = 1 ]; then
