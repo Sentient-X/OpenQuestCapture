@@ -93,7 +93,11 @@ a logcat -c
 a logcat -v time > "$out/logcat.txt" 2>/dev/null &
 stream=$!
 trap 'kill "$stream" 2>/dev/null || true' EXIT
-a shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+# A direct activity start: on a fresh headset the shell never placed a window for monkey's
+# launcher intent (3487C10J3C07C3, 2026-11-24: "Requesting placement of new volumetric window"
+# and nothing after, the app never started), while `am start -n` brought it up at once.
+a shell am start -n "$pkg/com.unity3d.player.UnityPlayerGameActivity" >/dev/null 2>&1 \
+    || a shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 deadline=$((SECONDS + seconds + 90))
 verdict=""
 while [[ $SECONDS -lt $deadline ]]; do
