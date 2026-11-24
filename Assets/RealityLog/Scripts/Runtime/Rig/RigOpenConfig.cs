@@ -48,7 +48,15 @@ namespace RealityLog.Rig
         /// APK's content identity, which the rig reports as its recorder build, and the app's
         /// version, which the rig's activity names as its Quest app.
         /// </summary>
-        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "quest_app_version" };
+        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "quest_app_version", UmiWristColour001Key };
+
+        /// <summary>
+        /// The rig key that records both wrist cameras with the colour calibration 001 embedded
+        /// in libsx_rig (Pod 13, 2026-11-21): a wrist measured for 001 uses its own table, any
+        /// other wrist its side's 001 table, and each take records which. The app sets it on every
+        /// open when the shipped library offers it; pod_config.json may not set it.
+        /// </summary>
+        public const string UmiWristColour001Key = "umi_wrist_colour_001";
 
         /// <summary>The <c>quest_app_version</c> value: the app's versionName and versionCode.</summary>
         public static JObject QuestAppVersion(string versionName, long versionCode) => new()
@@ -131,6 +139,11 @@ namespace RealityLog.Rig
                 ["credentials_dir"] = credentialsDir,
                 ["rig_config_path"] = podConfigPath,
             };
+            // Every UMI take is recorded with wrist colour 001 when the library has it.
+            if (rigKeys.Contains(UmiWristColour001Key))
+            {
+                config[UmiWristColour001Key] = true;
+            }
             foreach (var key in Settings.Concat(Site))
             {
                 if (podConfig[key] is JToken value && value.Type != JTokenType.Null) config[key] = value.DeepClone();

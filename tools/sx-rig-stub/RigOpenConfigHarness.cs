@@ -53,6 +53,18 @@ static class RigOpenConfigHarness
         Expect((string?)local["factory_url"] == "https://app.sentientx.io/d/factory/" && (string?)local["auth_url"] == "https://app.sentientx.io/d/auth/"
             && (string?)local["rig_type_id"] == "rig_yubi", "the site pod_config.json names is always passed, even beside a stale local_only: true");
 
+        // Wrist colour 001: on for every open when the library offers it; pod_config.json cannot turn it off.
+        var with001 = new System.Collections.Generic.HashSet<string>(rigKeys) { RigOpenConfig.UmiWristColour001Key };
+        var quest001 = RigOpenConfig.Build(new JObject(), with001, "/s", "/c", "/p", null, null, null);
+        Expect((bool?)quest001[RigOpenConfig.UmiWristColour001Key] == true, "an ordinary open enables wrist colour 001 without headset provisioning");
+        Expect(RigOpenConfig.UnknownPodConfigKeys(new JObject { [RigOpenConfig.UmiWristColour001Key] = false }, with001)
+            .Contains(RigOpenConfig.UmiWristColour001Key), "pod_config.json cannot turn wrist colour 001 off");
+        var without001 = new System.Collections.Generic.HashSet<string>(rigKeys);
+        without001.Remove(RigOpenConfig.UmiWristColour001Key);
+        Expect(RigOpenConfig.Build(new JObject(), without001, "/s", "/c", "/p", null, null, null)[RigOpenConfig.UmiWristColour001Key] == null
+            && RigOpenConfig.PolicyKeysUnknownToRig(without001).Length == RigOpenConfig.PolicyKeysUnknownToRig(rigKeys).Length,
+            "an older library without wrist colour 001 still opens, without the key");
+
         // quest_apk_build_id goes only to a rig whose list has it.
         var withId = new System.Collections.Generic.HashSet<string>(rigKeys) { "quest_apk_build_id" };
         var newer = RigOpenConfig.Build(pod, withId, "/s", "/c", "/p", null, null, null, "sha256:abc");
