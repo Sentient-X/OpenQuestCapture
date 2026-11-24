@@ -169,7 +169,7 @@ bash "$here/test_tracking_readiness.sh"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SelfRelaunch.cs"
 "$mono" "$out/self-relaunch-harness.exe"
 
-# BreakAlarm: a collector signed in and nothing recorded for 30 s sounds the alarm until a take records.
+# BreakAlarm: a collector signed in, a worn headset and no take for 45 s since the last one ended: soft beep, loud beep from 60 s, siren from 90 s, until a take records.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 \
     -out:"$out/break-alarm-harness.exe" "$here/BreakAlarmHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/BreakAlarmPolicy.cs"
