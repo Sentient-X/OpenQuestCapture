@@ -71,7 +71,7 @@ namespace RealityLog.Camera
                 ? $"its camera thread was blocked for {FrameCallbackMaxMs / 1000.0:F2} s"
                 : "the camera delivered no frames";
             return string.Format(CultureInfo.InvariantCulture,
-                "the {0} head camera ({1}) skipped {2} frames ({3:F2} s) about {4:F0} s into the take; {5}; the seal refuses any gap over 50 ms",
+                "the {0} head camera ({1}) skipped {2} frames ({3:F2} s) about {4:F0} s into the take; {5}; the seal refuses any gap over 73 ms",
                 Side, Eye, LostFrames, GapMs / 1000.0, AtSeconds, where);
         }
     }

@@ -727,7 +727,9 @@ namespace RealityLog.Camera
             var summary = string.Format(System.Globalization.CultureInfo.InvariantCulture,
                 "selected {0} of {1} source frames, source dropped {2}, longest selected gap {3:F0} ms, longest camera-frame interval {4:F0} ms, longest camera callback {5:F0} ms",
                 selectedFrameCount, sourceFrameCount, sourceDroppedFrameCount, maxGap / 1e6, interval / 1e6, callback / 1e6);
-            var verdict = maxGap > 50_000_000L ? "the seal refuses this eye (gap over 50 ms)" : "within the seal's 50 ms";
+            // The seal's head-video bound: one grid step and two 20 ms source periods (libsx_rig
+            // sx-pod-core HEAD_SELECTED_GAP_BOUND_NS, 73.33 ms); one lost 50 Hz frame passes.
+            var verdict = maxGap > 73_333_333L ? "the seal refuses this eye (gap over 73 ms)" : "within the seal's 73 ms";
             Debug.Log($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider capture report {sessionDirName}/{outputVideoFileName}: {summary}; {verdict}; capture_error={(captureError == null ? "none" : "\"" + captureError + "\"")}; {captureReportJson}");
         }
 
