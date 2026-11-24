@@ -142,6 +142,7 @@ check "options: exit 0" test "$rc" -eq 0
 check "--keep-awake: stayon" called "shell svc power stayon true"
 check "--keep-awake: timeout" called "shell settings put system screen_off_timeout 2147483647"
 check "--keep-awake: prox_close" called "am broadcast -a com.oculus.vrpowermanager.prox_close"
+check "--keep-awake: double-tap passthrough off" called "shell cmd sensorservice set-uid-state com.oculus.vrshell idle"
 check "--no-wifi: no tcpip" not_called "tcpip"
 
 # 8. App not running: launched, never force-stopped.
