@@ -9,9 +9,11 @@ using Debug = UnityEngine.Debug;
 namespace RealityLog.Rig
 {
     /// <summary>
-    /// Sounds a loud, looping siren from a worn headset while a collector is signed into the pod and
-    /// the last take (good or failed) ended more than <see cref="BreakAlarmPolicy.GraceSeconds"/> ago (the rule is
-    /// <see cref="BreakAlarmPolicy"/>'s). While it sounds, the headset's media volume is held at its
+    /// Sounds from a worn headset while a collector is signed into the pod and the last take (good or
+    /// failed) ended more than <see cref="BreakAlarmPolicy.GraceSeconds"/> ago (the rule is
+    /// <see cref="BreakAlarmPolicy"/>'s), climbing as the idle time grows: a soft beep every
+    /// <see cref="SoftBeepEverySeconds"/> s, then a loud beep every <see cref="LoudBeepEverySeconds"/> s,
+    /// then a looping siren. From the loud beep on, the headset's media volume is held at its
     /// maximum and unmuted every quarter second, so the volume buttons cannot quiet it; the volume
     /// the collector had is put back the moment it stops. It stops when a take starts recording or
     /// the collector signs out of the pod. Sound only: no controller vibration, so the gripper
@@ -24,11 +26,16 @@ namespace RealityLog.Rig
         private const int StreamMusic = 3;      // android.media.AudioManager.STREAM_MUSIC (Unity's output)
         private const int AdjustUnmute = 100;   // android.media.AudioManager.ADJUST_UNMUTE
         private const int Rate = 44100;
+        private const float SoftBeepEverySeconds = 5f;
+        private const float LoudBeepEverySeconds = 2f;
+        private const float SoftBeepVolume = 0.35f;
 
         private readonly BreakAlarmPolicy policy = new();
         private BreakAlarmVerdict last = BreakAlarmVerdict.Off;
         private float lastLook = float.NegativeInfinity;
         private AudioSource? siren;
+        private AudioClip? beep;
+        private float nextBeep = float.NegativeInfinity;
         private RecordingManager? recorder;
         private string? collector;
         private int? volumeBefore;
@@ -64,12 +71,13 @@ namespace RealityLog.Rig
             var worn = rig?.HeadsetWorn;
             var deviceRefusal = PodScreenBoard.EncoderRefusal(RigCoordinator.ParsedStatusOrDefault) != null;
             var verdict = policy.Observe(now, signedIn != null, worn, deviceRefusal, collecting);
-            if (verdict == BreakAlarmVerdict.Sounding)
+            var alarming = verdict >= BreakAlarmVerdict.Soft;
+            if (alarming)
             {
-                if (last != BreakAlarmVerdict.Sounding) StartSiren(signedIn!);
-                HoldVolume();
+                if (verdict != last) Escalate(verdict, signedIn!, policy.IdleSeconds(now) ?? 0);
+                Play(verdict);
             }
-            else if (last == BreakAlarmVerdict.Sounding)
+            else if (last >= BreakAlarmVerdict.Soft)
             {
                 StopSiren(collecting ? "a take started recording"
                     : signedIn == null ? "the collector signed out of the pod"
@@ -80,27 +88,56 @@ namespace RealityLog.Rig
             last = verdict;
         }
 
-        private void StartSiren(string who)
+        /// <summary>The alarm starts or climbs a level: one log line, and the collector's volume kept to put back.</summary>
+        private void Escalate(BreakAlarmVerdict level, string who, double idle)
         {
+            // The volume is taken over only from Loud on, so only then is the collector's kept.
+            if (level >= BreakAlarmVerdict.Loud && volumeBefore == null) volumeBefore = ReadVolume();
             Sounding = true;
-            Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: sounding; no take for " +
-                $"{BreakAlarmPolicy.GraceSeconds:F0} s since the last one ended while {who} is signed into the pod");
-            volumeBefore = ReadVolume();
-            if (siren == null)
+            nextBeep = float.NegativeInfinity;
+            if (level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
+            Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: {level.ToString().ToLowerInvariant()}; no take for " +
+                $"{idle:F0} s since the last one ended while {who} is signed into the pod");
+        }
+
+        /// <summary>Every look while alarming: the level's sound, and from Loud on the volume held at maximum.</summary>
+        private void Play(BreakAlarmVerdict level)
+        {
+            if (level == BreakAlarmVerdict.Siren)
             {
-                siren = gameObject.AddComponent<AudioSource>();
-                siren.clip = BuildSiren();
-                siren.loop = true;
-                siren.spatialBlend = 0f;
-                siren.playOnAwake = false;
-                siren.priority = 0;
-                siren.volume = 1f;
-                siren.ignoreListenerPause = true;
-                siren.ignoreListenerVolume = true;
-                siren.bypassEffects = true;
-                siren.bypassListenerEffects = true;
+                StartSiren();
+                HoldVolume();
+                return;
             }
-            siren.Play();
+            if (level == BreakAlarmVerdict.Loud) HoldVolume();
+            if (Time.unscaledTime < nextBeep) return;
+            nextBeep = Time.unscaledTime + (level == BreakAlarmVerdict.Loud ? LoudBeepEverySeconds : SoftBeepEverySeconds);
+            var source = Source();
+            beep ??= BuildBeep();
+            source.PlayOneShot(beep, level == BreakAlarmVerdict.Loud ? 1f : SoftBeepVolume);
+        }
+
+        private AudioSource Source()
+        {
+            if (siren != null) return siren;
+            siren = gameObject.AddComponent<AudioSource>();
+            siren.clip = BuildSiren();
+            siren.loop = true;
+            siren.spatialBlend = 0f;
+            siren.playOnAwake = false;
+            siren.priority = 0;
+            siren.volume = 1f;
+            siren.ignoreListenerPause = true;
+            siren.ignoreListenerVolume = true;
+            siren.bypassEffects = true;
+            siren.bypassListenerEffects = true;
+            return siren;
+        }
+
+        private void StartSiren()
+        {
+            var source = Source();
+            if (!source.isPlaying) source.Play();
         }
 
         private void StopSiren(string why)
@@ -126,7 +163,6 @@ namespace RealityLog.Rig
         {
             AudioListener.pause = false;
             AudioListener.volume = 1f;
-            if (siren != null && !siren.isPlaying) siren.Play();
 #if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
@@ -172,6 +208,29 @@ namespace RealityLog.Rig
             return audioManager;
         }
 #endif
+
+        /// <summary>
+        /// One beep: two short 1200 Hz pips (0.12 s each, 0.08 s apart), softer-edged than the siren and
+        /// unlike any rig cue.
+        /// </summary>
+        private static AudioClip BuildBeep()
+        {
+            var pip = (int)(0.12f * Rate);
+            var gap = (int)(0.08f * Rate);
+            var samples = new float[pip * 2 + gap];
+            for (var k = 0; k < 2; k++)
+            {
+                var at = k * (pip + gap);
+                for (var i = 0; i < pip; i++)
+                {
+                    var envelope = Mathf.Min(1f, Mathf.Min(i, pip - i) / (Rate * 0.005f));
+                    samples[at + i] = 0.9f * envelope * Mathf.Sin(2f * Mathf.PI * 1200f * i / Rate);
+                }
+            }
+            var clip = AudioClip.Create("BreakAlarmBeep", samples.Length, 1, Rate, false);
+            clip.SetData(samples, 0);
+            return clip;
+        }
 
         /// <summary>
         /// One second of siren, looped: a harsh square-wave two-tone (960 Hz / 640 Hz, a quarter
