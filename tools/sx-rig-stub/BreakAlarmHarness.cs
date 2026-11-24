@@ -52,7 +52,7 @@ static class BreakAlarmHarness
         Expect(p.IdleSeconds(3101) == null, "the night keeps no clock");
         Expect(p.Observe(9000, false, quiet: true) == BreakAlarmVerdict.Off, "all night: silent");
         Expect(p.Observe(9001, false, quiet: false) == BreakAlarmVerdict.Counting, "07:00: the clock starts again");
-        Expect(p.Observe(9045, false, quiet: false) == BreakAlarmVerdict.Soft, "07:00:45 with no take: the soft beep");
+        Expect(p.Observe(9046, false, quiet: false) == BreakAlarmVerdict.Soft, "45 s after 07:00 with no take: the soft beep");
 
         Console.WriteLine(failures == 0 ? "ALL PASS break alarm" : failures + " FAILED break alarm");
         return failures == 0 ? 0 : 1;
