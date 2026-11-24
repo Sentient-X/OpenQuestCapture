@@ -9,8 +9,8 @@ using Debug = UnityEngine.Debug;
 namespace RealityLog.Rig
 {
     /// <summary>
-    /// Sounds a loud, looping siren from the headset while a collector is signed into the pod and
-    /// nothing has recorded for <see cref="BreakAlarmPolicy.GraceSeconds"/> (the rule is
+    /// Sounds a loud, looping siren from a worn headset while a collector is signed into the pod and
+    /// the last take (good or failed) ended more than <see cref="BreakAlarmPolicy.GraceSeconds"/> ago (the rule is
     /// <see cref="BreakAlarmPolicy"/>'s). While it sounds, the headset's media volume is held at its
     /// maximum and unmuted every quarter second, so the volume buttons cannot quiet it; the volume
     /// the collector had is put back the moment it stops. It stops when a take starts recording or
@@ -63,7 +63,7 @@ namespace RealityLog.Rig
 
             var worn = rig?.HeadsetWorn;
             var deviceRefusal = PodScreenBoard.EncoderRefusal(RigCoordinator.ParsedStatusOrDefault) != null;
-            var verdict = policy.Observe(now, BreakAlarmPolicy.Armed(signedIn != null, worn, deviceRefusal), collecting);
+            var verdict = policy.Observe(now, signedIn != null, worn, deviceRefusal, collecting);
             if (verdict == BreakAlarmVerdict.Sounding)
             {
                 if (last != BreakAlarmVerdict.Sounding) StartSiren(signedIn!);
@@ -83,8 +83,8 @@ namespace RealityLog.Rig
         private void StartSiren(string who)
         {
             Sounding = true;
-            Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: sounding; nothing recorded for " +
-                $"{BreakAlarmPolicy.GraceSeconds:F0} s while {who} is signed into the pod");
+            Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: sounding; no take for " +
+                $"{BreakAlarmPolicy.GraceSeconds:F0} s since the last one ended while {who} is signed into the pod");
             volumeBefore = ReadVolume();
             if (siren == null)
             {
