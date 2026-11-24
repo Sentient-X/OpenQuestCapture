@@ -43,6 +43,17 @@ static class BreakAlarmHarness
         Expect(Look(2190) == BreakAlarmVerdict.Siren, "90 s: siren");
         Expect(Look(2191, collecting: true) == BreakAlarmVerdict.Off, "only a take silences it");
 
+        // No shift from 01:00 to 07:00 (owner, 2026-11-25): silent, and the clock starts again at 07:00.
+        Expect(!BreakAlarmPolicy.Quiet(0) && BreakAlarmPolicy.Quiet(1) && BreakAlarmPolicy.Quiet(6) && !BreakAlarmPolicy.Quiet(7), "quiet from 01:00 until 07:00");
+        Expect(!BreakAlarmPolicy.Quiet(13) && !BreakAlarmPolicy.Quiet(19) && !BreakAlarmPolicy.Quiet(23), "every shift hour can sound");
+        Expect(p.Observe(3000, false, quiet: false) == BreakAlarmVerdict.Counting, "00:59, idle: counting");
+        Expect(p.Observe(3100, false, quiet: false) == BreakAlarmVerdict.Siren, "idle 100 s at 00:59: siren");
+        Expect(p.Observe(3101, false, quiet: true) == BreakAlarmVerdict.Off, "01:00: silent at once");
+        Expect(p.IdleSeconds(3101) == null, "the night keeps no clock");
+        Expect(p.Observe(9000, false, quiet: true) == BreakAlarmVerdict.Off, "all night: silent");
+        Expect(p.Observe(9001, false, quiet: false) == BreakAlarmVerdict.Counting, "07:00: the clock starts again");
+        Expect(p.Observe(9045, false, quiet: false) == BreakAlarmVerdict.Soft, "07:00:45 with no take: the soft beep");
+
         Console.WriteLine(failures == 0 ? "ALL PASS break alarm" : failures + " FAILED break alarm");
         return failures == 0 ? 0 : 1;
     }
