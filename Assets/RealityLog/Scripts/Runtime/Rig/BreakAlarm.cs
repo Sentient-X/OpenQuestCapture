@@ -9,14 +9,13 @@ using Debug = UnityEngine.Debug;
 namespace RealityLog.Rig
 {
     /// <summary>
-    /// Sounds from a worn headset while a collector is signed into the pod and the last take (good or
-    /// failed) ended more than <see cref="BreakAlarmPolicy.GraceSeconds"/> ago (the rule is
+    /// Sounds from any running headset once the last take (good or failed) ended more than
+    /// <see cref="BreakAlarmPolicy.GraceSeconds"/> ago, signed in or not, worn or not (the rule is
     /// <see cref="BreakAlarmPolicy"/>'s), climbing as the idle time grows: a soft beep every
     /// <see cref="SoftBeepEverySeconds"/> s, then a loud beep every <see cref="LoudBeepEverySeconds"/> s,
     /// then a looping siren. From the loud beep on, the headset's media volume is held at its
     /// maximum and unmuted every quarter second, so the volume buttons cannot quiet it; the volume
-    /// the collector had is put back the moment it stops. It stops when a take starts recording or
-    /// the collector signs out of the pod. Sound only: no controller vibration, so the gripper
+    /// the collector had is put back the moment it stops. Only a take starting stops it. Sound only: no controller vibration, so the gripper
     /// switch's hold pulse (RigCoordinator) still reads as itself. Every change logs one line,
     /// <c>[RealityLog] break alarm: ...</c>. Auto-bootstraps; no scene wiring.
     /// </summary>
@@ -68,21 +67,15 @@ namespace RealityLog.Rig
             if (recorder == null) recorder = FindFirstObjectByType<RecordingManager>();
             var collecting = recorder != null && recorder.State != RecordingState.Idle;
 
-            var worn = rig?.HeadsetWorn;
-            var deviceRefusal = PodScreenBoard.EncoderRefusal(RigCoordinator.ParsedStatusOrDefault) != null;
-            var verdict = policy.Observe(now, signedIn != null, worn, deviceRefusal, collecting);
-            var alarming = verdict >= BreakAlarmVerdict.Soft;
-            if (alarming)
+            var verdict = policy.Observe(now, collecting);
+            if (verdict >= BreakAlarmVerdict.Soft)
             {
-                if (verdict != last) Escalate(verdict, signedIn!, policy.IdleSeconds(now) ?? 0);
+                if (verdict != last) Escalate(verdict, signedIn ?? collector ?? "nobody", policy.IdleSeconds(now) ?? 0);
                 Play(verdict);
             }
             else if (last >= BreakAlarmVerdict.Soft)
             {
-                StopSiren(collecting ? "a take started recording"
-                    : signedIn == null ? "the collector signed out of the pod"
-                    : worn != true ? "the headset came off"
-                    : "the rig refuses to start for a device fault");
+                StopSiren("a take started recording");
             }
             if (signedIn != null) collector = signedIn;
             last = verdict;
@@ -97,7 +90,7 @@ namespace RealityLog.Rig
             nextBeep = float.NegativeInfinity;
             if (level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
             Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: {level.ToString().ToLowerInvariant()}; no take for " +
-                $"{idle:F0} s since the last one ended while {who} is signed into the pod");
+                $"{idle:F0} s since the last one ended (collector {who})");
         }
 
         /// <summary>Every look while alarming: the level's sound, and from Loud on the volume held at maximum.</summary>
