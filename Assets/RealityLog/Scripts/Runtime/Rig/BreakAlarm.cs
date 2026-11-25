@@ -11,12 +11,16 @@ namespace RealityLog.Rig
     /// <summary>
     /// Sounds from any running headset once the last take (good or failed) ended more than
     /// <see cref="BreakAlarmPolicy.GraceSeconds"/> ago, signed in or not, worn or not (the rule is
-    /// <see cref="BreakAlarmPolicy"/>'s), climbing as the idle time grows: a soft beep every
-    /// <see cref="SoftBeepEverySeconds"/> s, then a loud beep every <see cref="LoudBeepEverySeconds"/> s,
-    /// then a looping siren. From the loud beep on, the headset's media volume is held at
+    /// <see cref="BreakAlarmPolicy"/>'s). It speaks (owner, 2026-11-25: a beep is annoying and says
+    /// nothing): "Pod N, start now", the headset's own pod number (<see cref="BreakAlarmVoice"/>),
+    /// over and over, climbing as the idle time grows: quietly every <see cref="SoftBeepEverySeconds"/> s,
+    /// then at full level with a <see cref="LoudPauseSeconds"/> s pause, then back to back. The times
+    /// are the same as when it beeped. From the second level on, the headset's media volume is held at
     /// <see cref="HeldVolumeFraction"/> of its maximum (owner, 2026-11-24: 70 % of build 97's full
     /// volume) and unmuted every quarter second, so the volume buttons cannot move it; the volume
-    /// the collector had is put back the moment it stops. Only a take starting stops it. Sound only: no controller vibration, so the gripper
+    /// the collector had is put back the moment it stops. Only a take starting stops it. If the
+    /// recorded phrases cannot be read, it falls back to what it did before (soft beep, loud beep,
+    /// siren) rather than stay silent. Sound only: no controller vibration, so the gripper
     /// switch's hold pulse (RigCoordinator) still reads as itself. Every change logs one line,
     /// <c>[RealityLog] break alarm: ...</c>. Auto-bootstraps; no scene wiring.
     /// </summary>
@@ -29,6 +33,10 @@ namespace RealityLog.Rig
         private const float SoftBeepEverySeconds = 5f;
         private const float LoudBeepEverySeconds = 2f;
         private const float SoftBeepVolume = 0.35f;
+        /// <summary>The silence between two phrases at the second level.</summary>
+        private const float LoudPauseSeconds = 1f;
+        /// <summary>The silence between two phrases at the top level: back to back.</summary>
+        private const float SirenPauseSeconds = 0.25f;
         /// <summary>The share of the media stream's maximum the alarm holds from the loud beep on.</summary>
         private const float HeldVolumeFraction = 0.7f;
 
@@ -38,6 +46,10 @@ namespace RealityLog.Rig
         private AudioSource? siren;
         private AudioClip? beep;
         private float nextBeep = float.NegativeInfinity;
+        private AudioClip? phrase;
+        private string? phraseFor;
+        private string phraseWords = "";
+        private float phraseEnds = float.NegativeInfinity;
         private RecordingManager? recorder;
         private string? collector;
         private int? volumeBefore;
@@ -90,22 +102,38 @@ namespace RealityLog.Rig
             // The volume is taken over only from Loud on, so only then is the collector's kept.
             if (level >= BreakAlarmVerdict.Loud && volumeBefore == null) volumeBefore = ReadVolume();
             Sounding = true;
-            nextBeep = float.NegativeInfinity;
-            if (level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
+            var speaks = Phrase() != null;
+            // A phrase already in the air finishes; the new level's pace starts after it.
+            nextBeep = phraseEnds;
+            if (!speaks && level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
             Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: {level.ToString().ToLowerInvariant()}; no take for " +
-                $"{idle:F0} s since the last one ended (collector {who})");
+                $"{idle:F0} s since the last one ended (collector {who}); " +
+                (speaks ? $"saying \"{phraseWords}\"" : "beeping, no recorded phrase"));
         }
 
-        /// <summary>Every look while alarming: the level's sound, and from Loud on the volume held at 70 % of maximum.</summary>
+        /// <summary>
+        /// Every look while alarming: the phrase at the level's pace (the level's old sound if there is
+        /// no phrase), and from Loud on the volume held at 70 % of maximum.
+        /// </summary>
         private void Play(BreakAlarmVerdict level)
         {
+            if (level >= BreakAlarmVerdict.Loud) HoldVolume();
+            var said = Phrase();
+            if (said != null)
+            {
+                if (Time.unscaledTime < nextBeep) return;
+                phraseEnds = Time.unscaledTime + said.length;
+                nextBeep = level == BreakAlarmVerdict.Siren ? phraseEnds + SirenPauseSeconds
+                    : level == BreakAlarmVerdict.Loud ? phraseEnds + LoudPauseSeconds
+                    : Mathf.Max(Time.unscaledTime + SoftBeepEverySeconds, phraseEnds + LoudPauseSeconds);
+                Source().PlayOneShot(said, level == BreakAlarmVerdict.Soft ? SoftBeepVolume : 1f);
+                return;
+            }
             if (level == BreakAlarmVerdict.Siren)
             {
                 StartSiren();
-                HoldVolume();
                 return;
             }
-            if (level == BreakAlarmVerdict.Loud) HoldVolume();
             if (Time.unscaledTime < nextBeep) return;
             nextBeep = Time.unscaledTime + (level == BreakAlarmVerdict.Loud ? LoudBeepEverySeconds : SoftBeepEverySeconds);
             var source = Source();
@@ -117,7 +145,6 @@ namespace RealityLog.Rig
         {
             if (siren != null) return siren;
             siren = gameObject.AddComponent<AudioSource>();
-            siren.clip = BuildSiren();
             siren.loop = true;
             siren.spatialBlend = 0f;
             siren.playOnAwake = false;
@@ -133,13 +160,51 @@ namespace RealityLog.Rig
         private void StartSiren()
         {
             var source = Source();
+            if (source.clip == null) source.clip = BuildSiren();
             if (!source.isPlaying) source.Play();
+        }
+
+        /// <summary>
+        /// The recorded phrase for this headset's pod name, read again when the name changes (a headset
+        /// has none until it is enrolled). Null when there is no recorded phrase to say.
+        /// </summary>
+        private AudioClip? Phrase()
+        {
+            var podName = RigCoordinator.Instance?.PodName ?? "";
+            if (phraseFor == podName) return phrase;
+            phraseFor = podName;
+            if (phrase != null) Destroy(phrase);
+            phrase = null;
+            try
+            {
+                var file = Resources.Load<TextAsset>(BreakAlarmVoice.ResourceName);
+                var read = BreakAlarmVoice.Read(file != null ? file.bytes : null, podName);
+                if (file != null) Resources.UnloadAsset(file);
+                if (read is BreakAlarmVoice.Phrase found)
+                {
+                    phrase = AudioClip.Create("BreakAlarmPhrase", found.Samples.Length, 1, found.Rate, false);
+                    phrase.SetData(found.Samples, 0);
+                    phraseWords = found.Words;
+                    Debug.Log($"[{Constants.LOG_TAG}] break alarm: will say \"{phraseWords}\" (pod name \"{podName}\")");
+                }
+                else
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: no recorded phrase in {BreakAlarmVoice.ResourceName}; it will beep");
+                }
+            }
+            catch (Exception ex)
+            {
+                phrase = null;
+                Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: cannot read the recorded phrase, it will beep: {ex.Message}");
+            }
+            return phrase;
         }
 
         private void StopSiren(string why)
         {
             Sounding = false;
             if (siren != null) siren.Stop();
+            phraseEnds = float.NegativeInfinity;
             RestoreVolume();
             Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: off; {why} (collector {collector ?? "unknown"})");
         }

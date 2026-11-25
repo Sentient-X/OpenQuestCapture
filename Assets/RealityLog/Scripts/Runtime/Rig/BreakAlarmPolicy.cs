@@ -9,19 +9,20 @@ namespace RealityLog.Rig
         Off,
         /// <summary>Nothing records, for less than <see cref="BreakAlarmPolicy.GraceSeconds"/>: the clock runs, silent.</summary>
         Counting,
-        /// <summary>From <see cref="BreakAlarmPolicy.GraceSeconds"/>: a soft beep every few seconds.</summary>
+        /// <summary>From <see cref="BreakAlarmPolicy.GraceSeconds"/>: "Pod N, start now", quietly, every few seconds.</summary>
         Soft,
-        /// <summary>From <see cref="BreakAlarmPolicy.LoudAfterSeconds"/>: a loud beep, faster, the volume held at its maximum.</summary>
+        /// <summary>From <see cref="BreakAlarmPolicy.LoudAfterSeconds"/>: the phrase at full level, faster, the volume held.</summary>
         Loud,
-        /// <summary>From <see cref="BreakAlarmPolicy.SirenAfterSeconds"/>: the full siren, looping, the volume held at its maximum.</summary>
+        /// <summary>From <see cref="BreakAlarmPolicy.SirenAfterSeconds"/>: the phrase back to back, the volume held.</summary>
         Siren,
     }
 
     /// <summary>
     /// The floor's rule (owner, 2026-11-24): any running headset with no take for more than
     /// <see cref="GraceSeconds"/> since the last one ended (good or failed) sounds, loud enough to hear
-    /// from the corner of the room, and climbs: a soft beep from 45 s, a loud faster beep from 60 s,
-    /// the full siren from 90 s. Nothing but a take silences it: not signing out, not taking the
+    /// from the corner of the room, and climbs at 45 s, 60 s and 90 s (what it sounds like is
+    /// <see cref="BreakAlarm"/>'s: since 2026-11-25 the spoken "Pod N, start now", not beeps and a
+    /// siren). Nothing but a take silences it: not signing out, not taking the
     /// headset off (the presence sensor is held closed on the floor's keep-awake pods anyway), not a
     /// rig refusing Start (a refusal is still time without recording; builds 90–96 stayed silent for
     /// all three, and Pod 1 on 96 sat 89 s idle without a sound). A Start the rig refuses never left
