@@ -37,6 +37,10 @@ case "$cmd" in
       exit 1
     fi
     [ -f "$d/running" ] && { echo "fake adb: install while $pkg runs on $t" >&2; exit 1; }
+    if [ -f "$d/stream_breaks" ] && [[ " $* " != *" --no-streaming "* ]]; then
+      echo "adb: failed to install ${@: -1}: Performing Streamed Install"; exit 1
+    fi
+    [ -f "$d/install_breaks" ] && { echo "adb: failed to install ${@: -1}: couldn't read from device"; exit 1; }
     echo "$APK_CODE" >"$d/code"; echo "Performing Streamed Install"; echo "Success" ;;
   uninstall) echo "fake adb: uninstall is never allowed" >&2; exit 1 ;;
   shell)
@@ -47,6 +51,8 @@ case "$cmd" in
         [ -f "$d/code" ] && echo "    versionCode=$(cat "$d/code") minSdk=29 targetSdk=34" || true ;;
       "pidof $pkg") [ -f "$d/running" ] && echo 4242 || exit 1 ;;
       "am force-stop $pkg") rm -f "$d/running" ;;
+      "am start -n $pkg/com.unity3d.player.UnityPlayerGameActivity") touch "$d/running"; echo "Starting: Intent" ;;
+      f=*left_camera.mp4*) if [ -f "$d/take_age" ]; then cat "$d/take_age"; else echo none; fi ;;
       "pm grant $pkg android.permission.DUMP") echo DUMP >>"$d/granted" ;;
       *) echo "fake adb: unhandled shell $*" >&2; exit 1 ;;
     esac ;;
@@ -166,6 +172,32 @@ check "stdin: DEAD unreachable" row DEAD '\?' unreachable
 check "stdin: comment not a target" test "$(grep -c "^the\|^bench" <<<"$out")" -eq 0
 check "stdin: one log per target" test -f "$INSTALL_FLEET_RUNS"/*/192.168.31.20:5555.log
 check "stdin: run directory printed" grep -q "^logs: $INSTALL_FLEET_RUNS/" <<<"$out"
+
+# 9. --stop while a take records (head video written 3 s ago): skipped, never stopped or installed.
+fresh recording; headset R1 SER-R1 84 running; echo 3 >"$FAKE/R1/take_age"
+run --stop "$apk" R1
+check "recording: skipped" row R1 SER-R1 "recording a take (head video written 3 s ago), skipped"
+check "recording: no force-stop" not_called "am force-stop"
+check "recording: no install" not_called "install -r"
+check "recording: still on 84" test "$(code_of R1)" = 84
+# ... and a take that ended 40 s ago does not hold the install.
+fresh idle; headset I1 SER-I1 84 running; echo 40 >"$FAKE/I1/take_age"
+run --stop "$apk" I1
+check "idle 40 s: updated and relaunched" grep -qE '^I1 +SER-I1 +84 +85 +updated, relaunched' <<<"$out"
+check "idle 40 s: relaunched with am start -n" called "shell am start -n $pkg/com.unity3d.player.UnityPlayerGameActivity"
+
+# 10. A streamed install that breaks on Wi-Fi: retried once with --no-streaming, which lands.
+fresh stream; headset W1 SER-W1 84 running stream_breaks
+run --stop "$apk" W1
+check "stream breaks: retried --no-streaming" called "install -r --no-streaming $apk"
+check "stream breaks: updated and relaunched" grep -qE '^W1 +SER-W1 +84 +85 +updated, relaunched' <<<"$out"
+
+# 11. An install that fails both ways: the stopped app runs again, and the row says so.
+fresh broken; headset X1 SER-X1 84 running install_breaks
+run --stop "$apk" X1
+check "install fails: exit 1" test "$rc" -eq 1
+check "install fails: app relaunched" grep -qE "^X1 +SER-X1 +84 +84 +failed: install: .*, relaunched" <<<"$out"
+check "install fails: still on 84" test "$(code_of X1)" = 84
 
 # 8. No badging tool (an SDK without build-tools; this assumes no aapt2 on PATH): a clear failure
 #    before any adb call.
