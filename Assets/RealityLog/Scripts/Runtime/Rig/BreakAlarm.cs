@@ -2,6 +2,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Linq;
 using UnityEngine;
 using RealityLog.Common;
 using Debug = UnityEngine.Debug;
@@ -13,10 +14,11 @@ namespace RealityLog.Rig
     /// <see cref="BreakAlarmPolicy.GraceSeconds"/> ago, signed in or not, worn or not (the rule is
     /// <see cref="BreakAlarmPolicy"/>'s), climbing as the idle time grows: a soft beep every
     /// <see cref="SoftBeepEverySeconds"/> s, then a loud beep every <see cref="LoudBeepEverySeconds"/> s,
-    /// then a looping siren. From the loud beep on, the headset's media volume is held at
-    /// <see cref="HeldVolumeFraction"/> of its maximum (owner, 2026-11-24: 70 % of build 97's full
-    /// volume) and unmuted every quarter second, so the volume buttons cannot move it; the volume
-    /// the collector had is put back the moment it stops. Only a take starting stops it, or the night
+    /// then a looping siren. Beside it, the hardware fault alarm (<see cref="HardwareAlarmPolicy"/>):
+    /// a low tone while a rig device stands failed or missing, slowing to once every 5 s. From any
+    /// alarm's first sound the media volume is held at 70 % of its maximum, 50 % after five minutes
+    /// ringing (<see cref="AlarmVolumePolicy"/>, owner 2026-11-26), and unmuted every quarter second, so
+    /// the volume buttons cannot move it; the collector's volume is put back when every alarm stops. Only a take starting stops it, or the night
     /// with no shift (01:00–07:00 local, <see cref="BreakAlarmPolicy.Quiet"/>). Sound only: no controller vibration, so the gripper
     /// switch's hold pulse (RigCoordinator) still reads as itself. Every change logs one line,
     /// <c>[RealityLog] break alarm: ...</c>. Auto-bootstraps; no scene wiring.
@@ -30,10 +32,17 @@ namespace RealityLog.Rig
         private const float SoftBeepEverySeconds = 5f;
         private const float LoudBeepEverySeconds = 2f;
         private const float SoftBeepVolume = 0.35f;
-        /// <summary>The share of the media stream's maximum the alarm holds from the loud beep on.</summary>
-        private const float HeldVolumeFraction = 0.7f;
+        /// <summary>How often the rig's devices are read for a hardware fault.</summary>
+        private const float FaultLookSeconds = 1f;
 
         private readonly BreakAlarmPolicy policy = new();
+        private readonly HardwareAlarmPolicy hardware = new();
+        private readonly AlarmVolumePolicy volume = new();
+        private readonly StreamLiveness liveness = new();
+        private AudioClip? faultTone;
+        private bool faulted;
+        private string faultWhat = "";
+        private float lastFaultLook = float.NegativeInfinity;
         private BreakAlarmVerdict last = BreakAlarmVerdict.Off;
         private float lastLook = float.NegativeInfinity;
         private AudioSource? siren;
@@ -71,7 +80,9 @@ namespace RealityLog.Rig
             if (recorder == null) recorder = FindFirstObjectByType<RecordingManager>();
             var collecting = recorder != null && recorder.State != RecordingState.Idle;
 
-            var verdict = policy.Observe(now, collecting, BreakAlarmPolicy.Quiet(DateTime.Now.Hour));
+            var quiet = BreakAlarmPolicy.Quiet(DateTime.Now.Hour);
+            var verdict = policy.Observe(now, collecting, quiet);
+            LookForFault(rig != null && rig.Enrolled, quiet);
             if (verdict >= BreakAlarmVerdict.Soft)
             {
                 if (verdict != last) Escalate(verdict, signedIn ?? collector ?? "nobody", policy.IdleSeconds(now) ?? 0);
@@ -81,15 +92,56 @@ namespace RealityLog.Rig
             {
                 StopSiren(collecting ? "a take started recording" : "no shift runs now (01:00-07:00)");
             }
+            // The hardware fault alarm fills whatever the break alarm leaves, a take recording included.
+            var faultBeep = hardware.Beep(now, faulted && verdict < BreakAlarmVerdict.Soft);
+            if (faultBeep)
+            {
+                faultTone ??= BuildFaultTone();
+                Source().PlayOneShot(faultTone, 1f);
+            }
+            var sounding = verdict >= BreakAlarmVerdict.Soft || (faulted && verdict < BreakAlarmVerdict.Soft);
+            if (volume.Fraction(now, sounding) is double fraction) HoldVolume((float)fraction);
+            else RestoreVolume();
             if (signedIn != null) collector = signedIn;
             last = verdict;
+        }
+
+        /// <summary>
+        /// Once a second: whether any rig device stands failed or missing on the pod card's own rows
+        /// (a camera, a gripper sensor recording on its wrist tags). Logs each change once.
+        /// </summary>
+        private void LookForFault(bool enrolled, bool quiet)
+        {
+            if (Time.unscaledTime - lastFaultLook < FaultLookSeconds) return;
+            lastFaultLook = Time.unscaledTime;
+            var now = faulted;
+            var what = "";
+            if (enrolled && !quiet)
+            {
+                try
+                {
+                    var screen = PodScreenBoard.Build(RigCoordinator.ParsedStatusOrDefault, null, false, liveness, DateTime.UtcNow);
+                    var failing = screen.Devices.Where(d => d.State is PodDeviceState.Failed or PodDeviceState.Missing).ToList();
+                    now = failing.Count > 0;
+                    what = string.Join(", ", failing.Select(d => d.Name + " " + d.Pill));
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] hardware alarm: cannot read the devices: {ex.Message}");
+                }
+            }
+            else now = false;
+            if (now != faulted || what != faultWhat)
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] hardware alarm: " + (now ? "on; " + what : "off"));
+            }
+            faulted = now;
+            faultWhat = what;
         }
 
         /// <summary>The alarm starts or climbs a level: one log line, and the collector's volume kept to put back.</summary>
         private void Escalate(BreakAlarmVerdict level, string who, double idle)
         {
-            // The volume is taken over only from Loud on, so only then is the collector's kept.
-            if (level >= BreakAlarmVerdict.Loud && volumeBefore == null) volumeBefore = ReadVolume();
             Sounding = true;
             nextBeep = float.NegativeInfinity;
             if (level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
@@ -103,10 +155,8 @@ namespace RealityLog.Rig
             if (level == BreakAlarmVerdict.Siren)
             {
                 StartSiren();
-                HoldVolume();
                 return;
             }
-            if (level == BreakAlarmVerdict.Loud) HoldVolume();
             if (Time.unscaledTime < nextBeep) return;
             nextBeep = Time.unscaledTime + (level == BreakAlarmVerdict.Loud ? LoudBeepEverySeconds : SoftBeepEverySeconds);
             var source = Source();
@@ -141,13 +191,12 @@ namespace RealityLog.Rig
         {
             Sounding = false;
             if (siren != null) siren.Stop();
-            RestoreVolume();
             Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: off; {why} (collector {collector ?? "unknown"})");
         }
 
         private void OnDestroy()
         {
-            if (Sounding) RestoreVolume();
+            RestoreVolume();
             Sounding = false;
 #if UNITY_ANDROID && !UNITY_EDITOR
             audioManager?.Dispose();
@@ -155,9 +204,14 @@ namespace RealityLog.Rig
 #endif
         }
 
-        /// <summary>Media volume to <see cref="HeldVolumeFraction"/> of its maximum and unmuted, every look while the alarm sounds.</summary>
-        private void HoldVolume()
+        /// <summary>
+        /// Media volume to <paramref name="fraction"/> of its maximum and unmuted, every look while any
+        /// alarm sounds (<see cref="AlarmVolumePolicy"/>: 70 %, then 50 % after five minutes); the
+        /// collector's volume is kept at the first sound and put back when every alarm stops.
+        /// </summary>
+        private void HoldVolume(float fraction)
         {
+            if (volumeBefore == null) volumeBefore = ReadVolume();
             AudioListener.pause = false;
             AudioListener.volume = 1f;
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -166,12 +220,12 @@ namespace RealityLog.Rig
                 var audio = Audio();
                 if (audio.Call<bool>("isStreamMute", StreamMusic)) audio.Call("adjustStreamVolume", StreamMusic, AdjustUnmute, 0);
                 var max = audio.Call<int>("getStreamMaxVolume", StreamMusic);
-                var held = Mathf.Max(1, Mathf.RoundToInt(max * HeldVolumeFraction));
+                var held = Mathf.Max(1, Mathf.RoundToInt(max * fraction));
                 if (audio.Call<int>("getStreamVolume", StreamMusic) != held) audio.Call("setStreamVolume", StreamMusic, held, 0);
             }
             catch (Exception ex)
             {
-                if (!volumeWarned) Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: cannot hold the volume at 70 %: {ex.Message}");
+                if (!volumeWarned) Debug.LogWarning($"[{Constants.LOG_TAG}] alarm: cannot hold the volume at {fraction:P0}: {ex.Message}");
                 volumeWarned = true;
             }
 #endif
@@ -226,6 +280,29 @@ namespace RealityLog.Rig
                 }
             }
             var clip = AudioClip.Create("BreakAlarmBeep", samples.Length, 1, Rate, false);
+            clip.SetData(samples, 0);
+            return clip;
+        }
+
+        /// <summary>
+        /// The hardware fault tone: one low 420 Hz note with a soft attack and a long decay (0.45 s),
+        /// a triangle wave, so it reads as "something needs looking at", never as the break alarm's
+        /// high pips or siren.
+        /// </summary>
+        private static AudioClip BuildFaultTone()
+        {
+            var n = (int)(0.45f * Rate);
+            var samples = new float[n];
+            for (var i = 0; i < n; i++)
+            {
+                var t = (float)i / Rate;
+                var attack = Mathf.Min(1f, t / 0.02f);
+                var decay = Mathf.Exp(-t * 5f);
+                var phase = (420f * t) % 1f;
+                var triangle = 4f * Mathf.Abs(phase - 0.5f) - 1f;
+                samples[i] = 0.95f * attack * decay * triangle;
+            }
+            var clip = AudioClip.Create("HardwareAlarmTone", n, 1, Rate, false);
             clip.SetData(samples, 0);
             return clip;
         }

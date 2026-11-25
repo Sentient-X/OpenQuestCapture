@@ -54,6 +54,30 @@ static class BreakAlarmHarness
         Expect(p.Observe(9001, false, quiet: false) == BreakAlarmVerdict.Counting, "07:00: the clock starts again");
         Expect(p.Observe(9046, false, quiet: false) == BreakAlarmVerdict.Soft, "45 s after 07:00 with no take: the soft beep");
 
+        // The hardware fault alarm (owner, 2026-11-26): a middling rate slowing to once every 5 s.
+        var h = new HardwareAlarmPolicy();
+        Expect(!h.Beep(0, faulted: false), "no fault: silent");
+        var beeps = new System.Collections.Generic.List<double>();
+        for (var t = 100.0; t < 160.0; t += 0.25) if (h.Beep(t, faulted: true)) beeps.Add(t);
+        Expect(beeps.Count > 0 && beeps[0] == 100.0, "a fault beeps at once");
+        Expect(Math.Abs(beeps[1] - beeps[0] - HardwareAlarmPolicy.FirstEverySeconds) < 0.26, "first wait about 1 s: " + (beeps[1] - beeps[0]));
+        var gaps = new System.Collections.Generic.List<double>();
+        for (var i = 1; i < beeps.Count; i++) gaps.Add(beeps[i] - beeps[i - 1]);
+        var slowing = true;
+        for (var i = 1; i < gaps.Count; i++) if (gaps[i] < gaps[i - 1] - 1e-9) slowing = false;
+        Expect(slowing, "it only slows down: " + string.Join(", ", gaps));
+        Expect(Math.Abs(gaps[gaps.Count - 1] - 5.0) < 0.26, "it settles at once every 5 s: " + gaps[gaps.Count - 1]);
+        Expect(!h.Beep(160.1, faulted: false), "the fault clears: silent");
+        Expect(h.Beep(170, faulted: true) && !h.Beep(170.5, faulted: true) && h.Beep(171, faulted: true), "a new fault starts again at the middling rate");
+
+        // The volume any alarm holds (owner, 2026-11-26): 70 %, 50 % after five minutes ringing.
+        var v = new AlarmVolumePolicy();
+        Expect(v.Fraction(0, sounding: false) == null, "no alarm: the collector's volume");
+        Expect(v.Fraction(10, sounding: true) == 0.7, "an alarm starts at 70 %");
+        Expect(v.Fraction(309.9, sounding: true) == 0.7, "still 70 % at 4:59");
+        Expect(v.Fraction(310, sounding: true) == 0.5, "50 % from five minutes ringing");
+        Expect(v.Fraction(311, sounding: false) == null && v.Fraction(312, sounding: true) == 0.7, "a break in the ringing starts again at 70 %");
+
         Console.WriteLine(failures == 0 ? "ALL PASS break alarm" : failures + " FAILED break alarm");
         return failures == 0 ? 0 : 1;
     }
