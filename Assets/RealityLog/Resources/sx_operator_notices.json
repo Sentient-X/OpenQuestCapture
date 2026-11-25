@@ -103,6 +103,13 @@
       "still_fine": "Its recorded files are kept, and you can keep recording.",
       "action": "Tell a technician (code {code}). The next app update seals it again."
     },
+    "seal_awaiting_jaw_solve": {
+      "support_code": 3179,
+      "who": "collector",
+      "headline": "A take waits for its grip to be worked out from the wrist camera",
+      "still_fine": "Its files are kept on this headset, and you can keep recording.",
+      "action": "Nothing to do now: it uploads once its grip is worked out."
+    },
     "head_camera_failed": {
       "support_code": 3185,
       "who": "collector",
@@ -534,6 +541,13 @@
       "headline": "This take reached the {minutes}-minute limit and was stopped",
       "still_fine": "It was kept and is sealed as usual.",
       "action": "Start a new one to continue."
+    },
+    "gripper_records_without_sensor": {
+      "support_code": 3178,
+      "who": "collector",
+      "headline": "The {side} gripper is recording without its sensor",
+      "still_fine": "Keep working: the take is kept, and its grip is worked out later from the wrist camera.",
+      "action": "Start and stop with the menu button. Between takes, reseat the {side} gripper sensor's cable at the sensor and at the hub. If it keeps stopping, call a technician to replace the cable."
     },
     "gripper_switch_mismatch": {
       "support_code": 3184,

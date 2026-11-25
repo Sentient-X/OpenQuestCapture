@@ -21,13 +21,6 @@ namespace RealityLog.Rig
         /// a start go ahead or the rig does not judge it (PICO, an older library).
         /// </summary>
         public string? TrackingRefusalJson;
-        /// <summary>
-        /// The rig's <c>encoders.start_refusal</c> (<c>{"kind", "detail", "notice"}</c>): a gripper
-        /// sensor its readers saw fall silent in the last minute, or that says its own sensor is
-        /// unread (OQC #44, Pod 19); null when both encoders have streamed, or the rig does not
-        /// judge them (an older library).
-        /// </summary>
-        public string? EncoderRefusalJson;
     }
 
     /// <summary>
@@ -76,13 +69,9 @@ namespace RealityLog.Rig
             {
                 return tracking;
             }
-            // A gripper sensor that keeps falling silent: refused before the check too, since the
-            // check's two-second probe passes an encoder that streams at that instant (Pod 19,
-            // 2026-11-22: 16 of 18 starts passed it and stopped within 45 s).
-            if (Encoders(facts.EncoderRefusalJson) is { } encoders)
-            {
-                return encoders;
-            }
+            // A gripper sensor is never a reason to refuse a start (owner, 2026-11-25, sx#4998):
+            // a side whose encoder is dead records on, and its jaw is solved from its wrist
+            // camera's tags before the take seals. The card shows it amber ("No sensor").
             string report;
             try
             {
@@ -116,15 +105,11 @@ namespace RealityLog.Rig
         public static RigRefusal? Tracking(string? startRefusalJson) =>
             Typed(startRefusalJson, kind => Array.IndexOf(TrackingKinds, kind) >= 0);
 
-        /// <summary>The refusal kind of the rig's encoder liveness law (sx_pod_runtime::encoder_health), also its notice's code.</summary>
-        public const string EncoderSilentKind = "gripper_sensor_silent";
-
         /// <summary>
-        /// A rig <c>encoders.start_refusal</c> of kind <see cref="EncoderSilentKind"/> as a refusal
-        /// coded by it, carrying the JSON with the rig's notice; null for anything else.
+        /// The refusal kind an older libsx_rig (before sx#4998) armed with for a silent gripper
+        /// sensor; kept so its error still reads in the table's words. libsx_rig now records on.
         /// </summary>
-        public static RigRefusal? Encoders(string? startRefusalJson) =>
-            Typed(startRefusalJson, kind => kind == EncoderSilentKind);
+        public const string EncoderSilentKind = "gripper_sensor_silent";
 
         private static RigRefusal? Typed(string? startRefusalJson, Func<string, bool> known)
         {

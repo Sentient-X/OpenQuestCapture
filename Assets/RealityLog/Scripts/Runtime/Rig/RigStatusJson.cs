@@ -146,8 +146,11 @@ namespace RealityLog.Rig
                 ["roles"] = status["roles"], ["attempts"] = status["attempts"], ["factory"] = status["factory"],
                 // sx_rig_observe_tracking's verdict: {"start_refusal", "controllers_lost"} (sx#4210).
                 ["tracking"] = status["tracking"],
-                // The encoders' recent liveness: {"start_refusal", "sides"} (a gripper sensor that keeps falling silent, OQC #44).
+                // The encoders' recent liveness: {"fault", "sides"}, diagnostics only: it never refuses a start (sx#4998).
                 ["encoders"] = status["encoders"],
+                // Each side recording without its jaw encoder: {"left"|"right": {"source": "encoder"|"wrist_tags",
+                // "detail", "notice"}}; a wrist_tags side's grip is solved from its wrist camera after the take.
+                ["jaw"] = status["jaw"],
                 // The take against its ceiling (30 min unless the Factory set another): {"episode_id", "recording", "phase", "notice"}.
                 ["episode_length"] = status["episode_length"],
             }.ToString(Formatting.None);

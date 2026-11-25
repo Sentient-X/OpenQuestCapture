@@ -242,16 +242,40 @@ static class PodScreenHarness
         Expect(withNotice.Blocker.Headline == "The USB hub ran out of bandwidth" && withNotice.Blocker.Who == "Technician", "last episode failed -> its notice: " + withNotice.Blocker.Headline);
         Expect(withNotice.Episodes[0].Fix == "Put both wrist cameras on one powered hub, then press Check.", "the episode row carries the fix");
 
-        // A gripper sensor the rig's readers saw fall silent in the last minute (OQC #44, Pod 19):
-        // the rig's encoders.start_refusal blocks Start before any check, in the table's words.
-        var silentSensor = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
-            + ",\"encoders\":{\"start_refusal\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\",\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s\","
-            + "\"notice\":{\"code\":\"gripper_sensor_silent\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}},\"sides\":[]}");
-        Expect(silentSensor.StartBlocked && silentSensor.Blocker.Headline == "The right gripper sensor keeps stopping" && silentSensor.Blocker.Who == "Collector"
-            && silentSensor.Blocker.Action.StartsWith("Reseat the right gripper sensor's cable at the sensor and at the hub"),
-            "a silent gripper sensor blocks Start with its cable named: " + silentSensor.Blocker.Headline + " / " + silentSensor.Blocker.Action);
-        Expect(PodScreenBoard.EncoderRefusal(JObject.Parse("{\"native\":{\"encoders\":{\"start_refusal\":null,\"sides\":[]}}}")) == null
-            && PodScreenBoard.EncoderRefusal(JObject.Parse("{\"native\":{}}")) == null, "no encoder refusal, or an older library: nothing");
+        // A dead gripper sensor never blocks a start (sx#4998): libsx_rig records that side on
+        // (jaw.right.source == wrist_tags) and its grip is solved from the wrist tags after the
+        // take. Start stays offered, the encoder row is amber "No sensor", a warning says so, and
+        // while recording the banner says it amber; encoders.fault alone changes nothing.
+        const string RightJawFromTags = ",\"jaw\":{\"left\":{\"source\":\"encoder\"},\"right\":{\"source\":\"wrist_tags\","
+            + "\"detail\":\"right encoder: encoder has emitted no sample for 500 ms\","
+            + "\"notice\":{\"code\":\"gripper_records_without_sensor\",\"who\":\"collector\",\"args\":{\"side\":\"right\"}}}}"
+            + ",\"encoders\":{\"fault\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\",\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s\","
+            + "\"notice\":{\"code\":\"gripper_sensor_silent\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}},\"sides\":[]}";
+        string DeadRight(bool recording) => Pod + "," + Attributed + (recording ? ",\"episodeActive\":true" : "") + ",\"roles\":["
+            + Role("left_hand_camera", "/dev/bus/usb/001/002", true, "1-1.1", "ready") + ","
+            + Role("right_hand_camera", "/dev/bus/usb/001/003", true, "1-1.2", "ready") + ","
+            + Role("left_hand_encoder", "/dev/bus/usb/001/004", true, "1-1.3", "ready") + ","
+            + Role("right_hand_encoder", "/dev/bus/usb/001/005", true, "1-1.4", "unavailable", "right encoder: encoder has emitted no sample for 500 ms")
+            + "],\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}" + RightJawFromTags;
+        var deadIdle = Screen(DeadRight(false));
+        Expect(!deadIdle.StartBlocked && deadIdle.Blocker.Tone != PodTone.Error,
+            "a dead right encoder never blocks Start: " + deadIdle.Blocker.Headline);
+        Expect(deadIdle.Devices[3].Pill == "No sensor" && deadIdle.Devices[3].Tone == PodTone.Warning,
+            "the dead encoder's row is amber: " + deadIdle.Devices[3].Pill + " " + deadIdle.Devices[3].Tone);
+        Expect(deadIdle.Warnings.Exists(w => w.Headline == "The right gripper is recording without its sensor" && w.Tone == PodTone.Warning),
+            "before a start a warning names the side: " + string.Join(" | ", deadIdle.Warnings.ConvertAll(w => w.Headline)));
+        var deadRecording = Screen(DeadRight(true), live: new StreamLiveness());
+        Expect(deadRecording.Recording && deadRecording.Blocker.Tone == PodTone.Warning
+            && deadRecording.Blocker.Headline == "The right gripper is recording without its sensor"
+            && deadRecording.Blocker.Action.StartsWith("Start and stop with the menu button."),
+            "while recording the banner warns and recording goes on: " + deadRecording.Blocker.Headline + " / " + deadRecording.Blocker.Action);
+        var faultOnly = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":true,\"blocking\":[]," + Task + "}"
+            + ",\"encoders\":{\"fault\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\"},\"sides\":[]}");
+        Expect(!faultOnly.StartBlocked && faultOnly.Blocker.Tone == PodTone.Good, "an encoder fault alone never refuses a start: " + faultOnly.Blocker.Headline);
+        Expect(PodScreenBoard.JawFromTags(JObject.Parse("{\"native\":{\"jaw\":{\"left\":{\"source\":\"wrist_tags\"}}}}"))?.Code
+            == "gripper_records_without_sensor", "jaw is read from the native status when not lifted");
+        Expect(PodScreenBoard.JawFromTags(JObject.Parse("{\"jaw\":{\"left\":{\"source\":\"encoder\"},\"right\":{\"source\":\"encoder\"}}}")) == null
+            && PodScreenBoard.JawFromTags(JObject.Parse("{\"native\":{}}")) == null, "both jaws from their encoders, or an older library: nothing");
         var noticeFromWords = PodScreenBoard.FailureNotice("right encoder: the gripper sensor stopped sending 2 times in the last 60 s", "right", "gripper_sensor");
         Expect(noticeFromWords?.Code == "gripper_sensor_silent" && noticeFromWords.Args["side"] == "right", "the check's words name the sensor's notice");
         var noticeMidTake = PodScreenBoard.FailureNotice("right encoder: encoder has emitted no sample for 500 ms [link: 18003 bulk reads]", "right", "gripper_sensor");
