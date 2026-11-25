@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Host-only concurrency regression for the main-thread/USB refresh hand-off.
+# Host-only concurrency regression: USB enumeration, native attach/detach and fd release
+# run on the USB worker, never on Unity's main thread.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
@@ -13,6 +14,7 @@ mkdir -p "$out"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigUsbRefresh.cs"
 "$mono" "$out/harness.exe"
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 \
-    -out:"$out/flow-harness.exe" "$here/RigUsbSnapshotFlowHarness.cs" \
+    -out:"$out/attach-harness.exe" "$here/RigUsbAttachHarness.cs" \
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigUsbRefresh.cs"
-"$mono" "$out/flow-harness.exe" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigCoordinator.cs"
+"$mono" "$out/attach-harness.exe" "$repo/Assets/RealityLog/Scripts/Runtime/Rig/RigCoordinator.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Camera/VideoRecorderSurfaceProvider.cs"

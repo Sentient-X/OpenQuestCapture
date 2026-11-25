@@ -33,7 +33,9 @@ namespace RealityLog.Rig
     /// (<c>sx_rig_start_armed</c>: the rig arms and anchors the episode itself, inside OQC's
     /// recording). <see cref="StopEpisode"/>, after OQC's files are final, returns the receipt.</para>
     ///
-    /// USB results are applied on the main thread, but enumeration never waits there. The episode calls, <see cref="IsExpected"/> and
+    /// The USB worker enumerates, attaches and detaches; nothing on the main thread waits on USB or
+    /// the rig lock for a hotplug (build 105 applied it here, and on 2026-11-26 an encoder replug
+    /// starved the body poll for 822 ms). The episode calls, <see cref="IsExpected"/> and
     /// <see cref="StatusJson"/> are safe from any thread.
     /// </summary>
     public class RigCoordinator : MonoBehaviour
@@ -71,30 +73,8 @@ namespace RealityLog.Rig
 
         public static RigCoordinator? Instance { get; private set; }
 
-        [Serializable]
-        private sealed class UsbEntry
-        {
-            public string key = "";
-            public string deviceName = "";
-            public int vendorId;
-            public int productId;
-            public int fd = -1;
-            public string serial = "";
-        }
-
-        [Serializable]
-        private sealed class UsbSnapshot
-        {
-            public UsbEntry[] devices = Array.Empty<UsbEntry>();
-            public int present;
-            public string[] awaitingPermission = Array.Empty<string>();
-            public string[] pendingRelease = Array.Empty<string>();
-            public string error = "";
-        }
-
         private AndroidJavaObject? bridge;
         private RigUsbRefresh? usbRefresh;
-        private readonly RigUsbSnapshotFlow usbFlow = new();
         private string? usbRefreshError;
         private AndroidJavaObject? activity;
         private string configPath = "";
@@ -144,9 +124,10 @@ namespace RealityLog.Rig
         // What the rig was opened with; a change reopens it before an enrollment.
         private string openedConfigJson = "";
         private string stagingPath = "";
-        private UsbSnapshot snapshot = new();
-        private readonly Dictionary<string, UsbEntry> attached = new();
-        private readonly Dictionary<string, string> attachErrors = new();
+        // The USB worker publishes each snapshot whole (never changed after); the main thread reads it.
+        private volatile RigUsbSnapshot snapshot = new();
+        // Which devices the native rig owns; applied on the USB worker, read here for status.
+        private readonly RigUsbAttachments usb = new();
         private bool configPresent;
         // Read by Arm on a worker thread; written on the main thread.
         private volatile bool expected;
@@ -239,7 +220,7 @@ namespace RealityLog.Rig
         /// True when the rig is configured (rig_config.json), the headset is enrolled as a pod
         /// (it holds a machine credential), or rig devices are present; see the class remarks.
         /// </summary>
-        private bool Expected => configPresent || enrolled || snapshot.present > 0 || attached.Count > 0;
+        private bool Expected => configPresent || enrolled || snapshot.present > 0 || usb.Count > 0;
 
         /// <summary><see cref="Expected"/> as of the last main-thread poll. Any thread.</summary>
         public bool IsExpected => expected;
@@ -753,6 +734,9 @@ namespace RealityLog.Rig
                         CloseRig();
                     }
                 }
+                // An operator's enrollment, never during a take: wait out a USB cycle that began
+                // before the close (one native call) so the reopen below is not deferred.
+                if (!opened) usb.WaitForSync();
             }
             if (!opened)
             {
@@ -1050,9 +1034,9 @@ namespace RealityLog.Rig
                 TryOpen();
             }
             began = System.Diagnostics.Stopwatch.GetTimestamp();
-            usbFlow.ApplyIfNeeded(opened, SyncAttachments);
-            if (usbRefresh != null) usbFlow.Request(usbRefresh);
-            ReportMainThreadTime("attachments", began);
+            // The worker enumerates, attaches and detaches; this thread only asks for a cycle.
+            usbRefresh?.Request();
+            ReportMainThreadTime("usb request", began);
             RefreshStatus();
         }
 
@@ -1086,7 +1070,7 @@ namespace RealityLog.Rig
                 {
                     Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: USB close failed: {ex.Message}");
                 }
-            }, key =>
+            }, ApplyUsbSnapshot, key =>
             {
                 if (AndroidJNI.AttachCurrentThread() != 0)
                     throw new InvalidOperationException("cannot attach USB release thread to the Android VM");
@@ -1102,12 +1086,10 @@ namespace RealityLog.Rig
             try
             {
                 if (result.Error != null) throw result.Error;
-                snapshot = JsonUtility.FromJson<UsbSnapshot>(result.Json!) ?? new UsbSnapshot();
-                usbFlow.SnapshotChanged();
+                // The worker already parsed and applied this snapshot.
                 usbRefreshError = null;
                 awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
                 expected = Expected;
-                usbFlow.ApplyIfNeeded(opened, SyncAttachments);
                 RefreshStatus();
             }
             catch (Exception ex)
@@ -1120,6 +1102,9 @@ namespace RealityLog.Rig
 
         private void TryOpen()
         {
+            // A USB cycle that began before a close may still be inside a native attach; opening
+            // now could land that attach on the new rig unrecorded. It ends within one call.
+            if (usb.SyncInFlight) return;
             lastOpenAttempt = Time.unscaledTime;
             try
             {
@@ -1171,6 +1156,7 @@ namespace RealityLog.Rig
                 Directory.CreateDirectory(credentialsPath);
                 SxRig.Open(config);
                 openedConfigJson = config;
+                usb.Opened();
                 opened = true;
                 openErrorJson = null;
                 nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
@@ -1329,39 +1315,41 @@ namespace RealityLog.Rig
             opened = false;
             InvalidateStatus();
             openedConfigJson = "";
-            attached.Clear();
-            attachErrors.Clear();
-            usbFlow.RigClosed();
+            // The next USB cycle attaches every listed device to the reopened rig.
+            usb.Closed();
             lastOpenAttempt = float.NegativeInfinity;
         }
 
-        /// <summary>Attaches new devices and detaches vanished ones, then releases their fds.</summary>
-        private void SyncAttachments()
+        /// <summary>
+        /// USB worker, never Unity's thread: parses a bridge snapshot, attaches new devices and
+        /// detaches vanished ones on the native rig, and returns the keys whose descriptors the
+        /// worker then releases. Native attach and detach take libsx_rig's rig lock, which a check,
+        /// start or stop holds for seconds, and attach reads the device's identity over USB.
+        /// </summary>
+        private IReadOnlyCollection<string> ApplyUsbSnapshot(string json)
         {
-            var current = new HashSet<string>();
-            foreach (var device in snapshot.devices)
+            // JsonUtility.FromJson may run off the main thread (plain [Serializable] classes).
+            var parsed = JsonUtility.FromJson<RigUsbSnapshot>(json) ?? new RigUsbSnapshot();
+            parsed.devices ??= Array.Empty<RigUsbDevice>();
+            parsed.awaitingPermission ??= Array.Empty<string>();
+            parsed.pendingRelease ??= Array.Empty<string>();
+            snapshot = parsed;
+            return usb.Sync(parsed, device =>
             {
-                current.Add(device.key);
-                if (attached.ContainsKey(device.key) || attachErrors.ContainsKey(device.key)) continue;
                 try
                 {
                     SxRig.AttachUsb(device.fd, (ushort)device.vendorId, (ushort)device.productId, device.deviceName);
-                    attached[device.key] = device;
                     Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: attached {device.vendorId:x4}:{device.productId:x4} {device.deviceName}");
+                    return null;
                 }
                 catch (SxRigException ex)
                 {
                     // Final for this attachment: a replug is a new key and is tried afresh.
-                    attachErrors[device.key] = ex.ErrorJson;
                     Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: attach {device.deviceName}: {ex.Message}");
+                    return ex.ErrorJson;
                 }
-            }
-
-            foreach (var key in new List<string>(attached.Keys))
+            }, device =>
             {
-                if (current.Contains(key)) continue;
-                var device = attached[key];
-                attached.Remove(key);
                 try
                 {
                     SxRig.DetachUsb(device.deviceName);
@@ -1370,25 +1358,9 @@ namespace RealityLog.Rig
                 {
                     Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: detach {device.deviceName}: {ex.Message}");
                 }
-                Release(key);
                 Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: detached {device.deviceName}");
-            }
-
-            // Vanished devices that were never attached (their attach failed) hold an fd too.
-            foreach (var key in snapshot.pendingRelease)
-            {
-                if (!attached.ContainsKey(key))
-                {
-                    attachErrors.Remove(key);
-                    Release(key);
-                }
-            }
-            // The retained snapshot remains useful for status and native reopen, but these
-            // one-shot ownership instructions now belong to the worker request queue.
-            snapshot.pendingRelease = Array.Empty<string>();
+            });
         }
-
-        private void Release(string key) => usbFlow.QueueRelease(key);
 
         private void InvalidateStatus()
         {
@@ -1420,6 +1392,7 @@ namespace RealityLog.Rig
             try { episodeIsActive = episodeActive; }
             finally { System.Threading.Monitor.Exit(episodeLock); }
 
+            var usbSnapshot = snapshot;
             var json = new StringBuilder(512);
             json.Append("{\"expected\":").Append(Expected ? "true" : "false")
                 .Append(",\"configured\":").Append(configPresent ? "true" : "false")
@@ -1431,10 +1404,10 @@ namespace RealityLog.Rig
                 .Append(",\"open\":").Append(opened ? "true" : "false")
                 .Append(",\"openError\":").Append(openErrorJson ?? "null")
                 .Append(",\"episodeActive\":").Append(episodeIsActive ? "true" : "false")
-                .Append(",\"usb\":{\"present\":").Append(snapshot.present.ToString(CultureInfo.InvariantCulture))
+                .Append(",\"usb\":{\"present\":").Append(usbSnapshot.present.ToString(CultureInfo.InvariantCulture))
                 .Append(",\"attached\":[");
             var first = true;
-            foreach (var device in attached.Values)
+            foreach (var device in usb.Attached())
             {
                 if (!first) json.Append(',');
                 first = false;
@@ -1446,16 +1419,16 @@ namespace RealityLog.Rig
                     .Append('}');
             }
             json.Append("],\"awaitingPermission\":[");
-            for (var i = 0; i < snapshot.awaitingPermission.Length; i++)
+            for (var i = 0; i < usbSnapshot.awaitingPermission.Length; i++)
             {
                 if (i > 0) json.Append(',');
-                json.Append('"').Append(RigJson.Escape(snapshot.awaitingPermission[i])).Append('"');
+                json.Append('"').Append(RigJson.Escape(usbSnapshot.awaitingPermission[i])).Append('"');
             }
             json.Append("],\"refresh\":").Append(usbRefresh?.StatsJson() ?? "null")
                 .Append(",\"refreshError\":").Append(usbRefreshError == null ? "null" : JsonString(usbRefreshError))
                 .Append(",\"attachErrors\":{");
             first = true;
-            foreach (var entry in attachErrors)
+            foreach (var entry in usb.AttachErrors())
             {
                 if (!first) json.Append(',');
                 first = false;
@@ -1913,17 +1886,18 @@ namespace RealityLog.Rig
             if (!ReferenceEquals(Instance, this) || shutDown) return;
             shutDown = true;
             StopEpisode();
-            foreach (var entry in attached)
+            // No USB cycle starts or commits after this. Detaching here, at quit, may wait on the
+            // rig lock; the bridge closes the descriptors only after the worker's last cycle.
+            foreach (var device in usb.ShutDown())
             {
                 try
                 {
-                    SxRig.DetachUsb(entry.Value.deviceName);
+                    SxRig.DetachUsb(device.deviceName);
                 }
                 catch (SxRigException)
                 {
                 }
             }
-            attached.Clear();
             nativeStatusTimer?.Dispose();
             nativeStatusTimer = null;
             trackingTimer?.Dispose();
@@ -1943,8 +1917,8 @@ namespace RealityLog.Rig
             if (usbRefresh != null)
             {
                 // Its worker owns close (on its own global reference) after any outstanding
-                // refresh completes. The native owners above have already detached, so no fd is
-                // closed early; the main thread's wrapper is released here.
+                // cycle completes. The native owners above have already detached and the rig is
+                // closed, so no fd is closed early; the main thread's wrapper is released here.
                 usbRefresh.Dispose();
                 usbRefresh = null;
                 bridge?.Dispose();
