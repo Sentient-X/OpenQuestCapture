@@ -272,16 +272,18 @@ public static class PodCardSnapshot
         PodReadiness.Refused, "Refused");
 
     /// <summary>
-    /// (l) The right gripper sensor fell silent twice in the last minute (Pod 19, OQC #44): the
-    /// rig's encoders.start_refusal, so Start is not offered and the card names the cable.
+    /// (l) The right gripper sensor fell silent twice in the last minute (Pod 19, OQC #44). Since
+    /// sx#4998 that side records on (jaw.right.source == wrist_tags): Start stays offered, amber.
     /// </summary>
     private static PodCardState GripperSensorSilent() => Live(LivePod + ",\"factory\":{" + LiveFactory + "}," +
-        "\"encoders\":{\"start_refusal\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\"," +
+        "\"jaw\":{\"left\":{\"source\":\"encoder\"},\"right\":{\"source\":\"wrist_tags\",\"detail\":\"right encoder: the gripper sensor stopped sending\"," +
+        "\"notice\":{\"code\":\"gripper_records_without_sensor\",\"who\":\"collector\",\"args\":{\"side\":\"right\"}}}}," +
+        "\"encoders\":{\"fault\":{\"kind\":\"gripper_sensor_silent\",\"side\":\"right\"," +
         "\"detail\":\"right encoder: the gripper sensor stopped sending 2 times in the last 60 s (last for 1.4 s, 8 s ago); reseat the sensor's cable at the sensor and at the hub\"," +
         "\"notice\":{\"code\":\"gripper_sensor_silent\",\"who\":\"collector\",\"args\":{\"side\":\"right\",\"part\":\"gripper_sensor\"}}}," +
         "\"sides\":[{\"side\":\"left\",\"last_sample_age_ms\":12,\"gaps_recent\":0,\"encoder_ok\":true}," +
         "{\"side\":\"right\",\"last_sample_age_ms\":9,\"gaps_recent\":2,\"last_gap_ms\":1400,\"last_gap_ago_ms\":8000,\"encoder_ok\":false}]}",
-        PodReadiness.Refused, "Refused");
+        PodReadiness.Ready, "Ready");
 
     /// <summary>(k) Recording, the left controller out of hand for 3 s: the banner says so, recording goes on.</summary>
     private static PodCardState RecordingControllerLost() => Recording(Live(LivePod + ",\"episodeActive\":true,\"factory\":{" + LiveFactory + "}," +

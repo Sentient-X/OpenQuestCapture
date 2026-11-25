@@ -546,7 +546,6 @@ namespace RealityLog.Rig
             }
             // Read with the rig claimed and episodeLock released: it waits on the library.
             facts.TrackingRefusalJson = facts.Opened ? TrackingRefusalNow() : null;
-            facts.EncoderRefusalJson = facts.Opened ? EncoderRefusalNow() : null;
             RigRefusal? refusal = null;
             try
             {
@@ -1631,12 +1630,6 @@ namespace RealityLog.Rig
             if (!ObserveTracking()) return null;
             return StartRefusalNow("tracking");
         }
-
-        /// <summary>
-        /// The rig's <c>encoders.start_refusal</c> now, as JSON (a gripper sensor its readers saw
-        /// fall silent in the last minute, OQC #44); null when both stream or the rig cannot say.
-        /// </summary>
-        private string? EncoderRefusalNow() => StartRefusalNow("encoders");
 
         /// <summary>The <c>start_refusal</c> of the status block <paramref name="block"/>, as JSON, or null.</summary>
         private string? StartRefusalNow(string block)

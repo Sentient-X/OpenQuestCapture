@@ -505,9 +505,8 @@ namespace RealityLog.Rig
             }
             // Exactly what the rig's require_storage refuses on: free below required_bytes.
             if (Storage(status) is { } space && space.Free < space.Needed) return PodBlocker.Of(StorageNotice(space, low: true), PodTone.Error);
-            // A gripper sensor the rig's readers saw fall silent in the last minute: the rig refuses
-            // the start before its check (encoders.start_refusal), so the card says it before Start.
-            if (EncoderRefusal(status) is { } silent) return PodBlocker.Of(silent, PodTone.Error);
+            // A dead gripper sensor never blocks a start (sx#4998): its side records on and the
+            // card says so amber (JawFromTags), never here.
             if (Lifted(status, "factory") is not JObject factory || factory["start_refusal"] is not JObject refused) return null;
             if (OperatorNotice.FromJson(refused["notice"]) is { } notice) return PodBlocker.Of(notice, PodTone.Error);
             // A runtime older than its notices: the reason alone.
@@ -561,6 +560,11 @@ namespace RealityLog.Rig
                 {
                     screen.Warnings.Add(PodBlocker.Of("display_rate", PodTone.Warning, ("hz", ((double)hz).ToString("F0", CultureInfo.InvariantCulture))));
                 }
+            }
+            // A side libsx_rig would record without its jaw encoder: the start goes ahead, amber.
+            if (OperatorNotices.Loaded && JawFromTags(status) is { } startsWithout)
+            {
+                screen.Warnings.Add(PodBlocker.Of(startsWithout, PodTone.Warning));
             }
             // The right gripper's sensor names the wrong side: its start/stop switch is refused.
             if (GripperSwitch.Notice(Lifted(status, "gripper_switch") as JObject) is { } mismatch)
@@ -768,6 +772,9 @@ namespace RealityLog.Rig
                 // controller is out of hand its poses freeze, so the collector hears it now, not at
                 // the seal (sx#4210). Recording goes on.
                 if (ControllerLost(status) is { } lost) return PodBlocker.Of(lost, PodTone.Warning);
+                // A side recording without its jaw encoder: recording goes on, amber; its grip is
+                // solved from its wrist camera's tags after the take (sx#4998).
+                if (OperatorNotices.Loaded && JawFromTags(status) is { } recordingWithout) return PodBlocker.Of(recordingWithout, PodTone.Warning);
                 // The take's ceiling (30 min unless the Factory set another): a minute before it, and while it stops itself.
                 if (EpisodeLength.Notice(Lifted(status, "episode_length") as JObject, true) is { } limit) return PodBlocker.Of(limit, PodTone.Warning);
                 return new PodBlocker(OperatorNotices.Phrase("recording"), OperatorNotices.Phrase("recording_action"), PodTone.Good);
@@ -940,6 +947,15 @@ namespace RealityLog.Rig
                 {
                     var entry = roles!.OfType<JObject>().FirstOrDefault(r => Str(r["role"]) == role);
                     var row = DeviceRow(entry, role, name, side, part, recording, FailureFor(failures, side, part), liveness, now);
+                    // A side recording without its encoder (libsx_rig's jaw.{side}): amber, never a
+                    // blocker; its grip is worked out later from the wrist camera (sx#4998).
+                    if (part == "encoder" && JawFromTags(status, side) is { } withoutSensor)
+                    {
+                        var action = OperatorNotices.Loaded ? OperatorNotices.Render(withoutSensor).Action : "";
+                        row = new PodDeviceRow(name, row.Value, "No sensor", PodTone.Warning,
+                            action.Length > 0 ? action : "Recording goes on; its grip is worked out later from the wrist camera",
+                            role, side, row.Port, PodDeviceState.Failed);
+                    }
                     // The last episode failed on it: a warning with the hint, until the next attempt.
                     var earlier = lastFailed.Length > 0 ? FailureFor(new[] { lastFailed }, side, part) : "";
                     if (row.Tone is PodTone.Good or PodTone.Neutral && !recording && earlier.Length > 0)
@@ -1192,11 +1208,21 @@ namespace RealityLog.Rig
 
         /// <summary>The first notice of the rig's <c>tracking.controllers_lost</c>; null when none is lost.</summary>
         /// <summary>
-        /// The rig's <c>encoders.start_refusal</c> notice (sx_pod_runtime::encoder_health, OQC #44):
-        /// a gripper sensor that keeps falling silent, named with its side; null when none stands.
+        /// The notice of a side libsx_rig records without its jaw encoder (status
+        /// <c>jaw.{side}.source == "wrist_tags"</c>, notice <c>gripper_records_without_sensor</c>):
+        /// that side's grip is solved from its wrist camera's tags after the take (sx#4998). With no
+        /// side named, the first such side, left before right; null when both jaws are their encoders'.
         /// </summary>
-        public static OperatorNotice? EncoderRefusal(JObject? status) =>
-            OperatorNotice.FromJson(((Lifted(status, "encoders") as JObject)?["start_refusal"] as JObject)?["notice"]);
+        public static OperatorNotice? JawFromTags(JObject? status, string? side = null)
+        {
+            if (Lifted(status, "jaw") is not JObject jaw) return null;
+            foreach (var name in side != null ? new[] { side } : new[] { "left", "right" })
+            {
+                if (jaw[name] is JObject entry && Str(entry["source"]) == "wrist_tags")
+                    return OperatorNotice.FromJson(entry["notice"]) ?? OperatorNotice.Of("gripper_records_without_sensor");
+            }
+            return null;
+        }
 
         public static OperatorNotice? ControllerLost(JObject? status) =>
             (Lifted(status, "tracking") as JObject)?["controllers_lost"] is JArray lost
