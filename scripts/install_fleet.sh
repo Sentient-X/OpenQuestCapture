@@ -11,7 +11,9 @@
 #                 headset that answers as a target
 #   --jobs N      headsets handled at once (default 4)
 #   --stop        force-stop a running app before installing. Without it a running app is skipped:
-#                 it may be recording. An app this script stopped is launched again after the
+#                 it may be recording. Even with --stop, a headset whose head camera wrote video in
+#                 the last 10 s is recording a take and is skipped (2026-11-24: a stop 4 s into a
+#                 take on pod6 cut it; a heartbeat read is up to a minute old). An app this script stopped is launched again after the
 #                 install (the pods seal and upload only while the app runs; on 2026-11-24 the
 #                 whole floor was draining its backlog at night), and the result says so.
 #   --keep-awake  after the install, run provision-headset.sh --keep-awake --no-wifi on the target
@@ -122,15 +124,32 @@ one() {
   fi
   if [ -n "$pid" ]; then
     if [ "$stop" = 0 ]; then finish "running, skipped (pass --stop)"; return; fi
+    # Looked at the moment before the stop: the newest take's head video written in the last
+    # 10 s means a take records now, whatever the last heartbeat said.
+    age=$(a shell "f=\$(ls -t /sdcard/Android/data/$pkg/files/*/left_camera.mp4 2>/dev/null | head -n 1); \
+if [ -n \"\$f\" ]; then echo \$(( \$(date +%s) - \$(stat -c %Y \"\$f\") )); else echo none; fi" 2>/dev/null | tr -d '\r' || true)
+    if [[ $age =~ ^[0-9]+$ ]] && [ "$age" -le 10 ]; then
+      finish "recording a take (head video written ${age} s ago), skipped"; return
+    fi
     a shell am force-stop "$pkg" >>"$log" 2>&1
     say "force-stopped $pkg (pid $pid)"
   fi
   say "installing $before -> $want"
   if ! out=$(a install -r "$apk" 2>&1) || ! grep -q Success <<<"$out"; then
     echo "$out" >>"$log"
+    # A streamed install over flaky Wi-Fi breaks part way ("Performing Streamed Install" and
+    # nothing more); pushing the whole file first got through on 2026-11-25 (Pods 13, 17).
     case "$out" in
-      *INSTALL_FAILED_UPDATE_INCOMPATIBLE*) finish "failed: signer differs, needs uninstall by a person" ;;
-      *) finish "failed: install: $(tail -n 1 <<<"$out")" ;;
+      *INSTALL_FAILED_UPDATE_INCOMPATIBLE*) ;;
+      *) say "install broke; retrying once with --no-streaming"
+         if out=$(a install -r --no-streaming "$apk" 2>&1) && grep -q Success <<<"$out"; then out=; fi
+         echo "$out" >>"$log" ;;
+    esac
+  fi
+  if [ -n "$out" ] && ! grep -q Success <<<"$out"; then
+    case "$out" in
+      *INSTALL_FAILED_UPDATE_INCOMPATIBLE*) finish "failed: signer differs, needs uninstall by a person$(relaunch)" ;;
+      *) finish "failed: install: $(tail -n 1 <<<"$out")$(relaunch)" ;;
     esac
     return
   fi
@@ -141,17 +160,25 @@ one() {
   a shell pm grant "$pkg" android.permission.DUMP >>"$log" 2>&1 || say "warning: pm grant DUMP refused (see log)"
   if [ "$keep_awake" = 1 ]; then
     "$root/scripts/provision-headset.sh" --keep-awake --no-wifi "$t" >>"$log" 2>&1 \
-      || { finish "failed: provision-headset.sh exit $? (see log)"; return; }
+      || { finish "failed: provision-headset.sh exit $? (see log)$(relaunch)"; return; }
   fi
   if [ -z "$pid" ]; then finish updated; return; fi
-  # The app was running before: bring it back, so the pod goes on sealing and uploading.
-  a shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >>"$log" 2>&1 || true
+  finish "updated$(relaunch)"
+}
+
+# The app this script stopped runs again, whatever happened after the stop (a failed install or
+# provision left it closed on 2026-11-24/25), so the pod goes on sealing and uploading. Prints
+# the outcome as a suffix for the result line; nothing when the app was not running before.
+relaunch() {
+  [ -n "${pid:-}" ] || return 0
+  a shell am start -n "$pkg/com.unity3d.player.UnityPlayerGameActivity" >>"$log" 2>&1 || true
+  local newpid=
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
     newpid=$(a shell pidof "$pkg" 2>/dev/null | tr -d '\r' || true)
     [ -n "$newpid" ] && break
   done
-  if [ -n "${newpid:-}" ]; then finish "updated, relaunched (pid $newpid)"; else finish "updated, but the app did not relaunch within 10 s: launch it by hand"; fi
+  if [ -n "$newpid" ]; then printf ', relaunched (pid %s)' "$newpid"; else printf ', but the app did not relaunch within 10 s: launch it by hand'; fi
 }
 
 live=0
