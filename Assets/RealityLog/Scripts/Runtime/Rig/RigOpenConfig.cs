@@ -37,7 +37,7 @@ namespace RealityLog.Rig
             { "min_free_bytes", "max_episode_seconds", "seal", "headset_serial", "pod_name", "tailscale_ip" };
 
         /// <summary>The site pod_config.json may give, sent when present.</summary>
-        public static readonly string[] Site = { "factory_url", "auth_url", "rig_type_id", "upload_limit_mib_s", "lan_limit_mib_s" };
+        public static readonly string[] Site = { "factory_url", "auth_url", "rig_type_id", "upload_limit_mib_s", "lan_limit_mib_s", "lan_recording_limit_mib_s" };
 
         /// <summary>Rig keys the app sets itself (pod_config.json may not).</summary>
         public static readonly string[] AppSet =
