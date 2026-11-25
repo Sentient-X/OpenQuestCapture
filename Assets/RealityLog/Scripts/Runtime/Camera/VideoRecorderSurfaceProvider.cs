@@ -90,9 +90,11 @@ namespace RealityLog.Camera
         private bool isRecordingSessionActive;
         private bool waitingForCameraReopen;
         private Coroutine? delayedStartCoroutine;
-        private long sourceFrameCount;
-        private long sourceDroppedFrameCount;
-        private long selectedFrameCount;
+        // Null when the recorder's counters could not be read: the metadata then says null,
+        // never a -1 the seal or a reader could take for a count.
+        private long? sourceFrameCount;
+        private long? sourceDroppedFrameCount;
+        private long? selectedFrameCount;
         private string captureReportJson = "{}";
         private string streamGeometryJson = NoStreamGeometryJson;
         private string? captureError;
@@ -668,9 +670,9 @@ namespace RealityLog.Camera
                     $"  \"frame_timestamps_schema\": \"{FrameTimestampsSchema}\",\n" +
                     $"  \"frame_timestamp_semantics\": \"sensor_exposure_start\",\n" +
                     $"  \"sensor_timestamp_source\": \"{EscapeJson(timestampSource)}\",\n" +
-                    $"  \"source_frame_count\": {sourceFrameCount},\n" +
-                    $"  \"source_dropped_frame_count\": {sourceDroppedFrameCount},\n" +
-                    $"  \"selected_frame_count\": {selectedFrameCount},\n" +
+                    $"  \"source_frame_count\": {JsonCount(sourceFrameCount)},\n" +
+                    $"  \"source_dropped_frame_count\": {JsonCount(sourceDroppedFrameCount)},\n" +
+                    $"  \"selected_frame_count\": {JsonCount(selectedFrameCount)},\n" +
                     $"  \"capture_report\": {captureReportJson},\n" +
                     $"  \"capture_error\": {(captureError == null ? "null" : "\"" + EscapeJson(captureError) + "\"")},\n" +
                     $"  \"audio_enabled\": {(enableAudio ? "true" : "false")},\n" +
@@ -701,6 +703,9 @@ namespace RealityLog.Camera
             return trimmed.Substring(1, trimmed.Length - 2);
         }
 
+        private static string JsonCount(long? value) =>
+            value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null";
+
         private static string EscapeJson(string value)
         {
             return value
@@ -726,7 +731,8 @@ namespace RealityLog.Camera
             var callback = CaptureReportJson.StageMaxNs(captureReportJson, "camera_frame_callback");
             var summary = string.Format(System.Globalization.CultureInfo.InvariantCulture,
                 "selected {0} of {1} source frames, source dropped {2}, longest selected gap {3:F0} ms, longest camera-frame interval {4:F0} ms, longest camera callback {5:F0} ms",
-                selectedFrameCount, sourceFrameCount, sourceDroppedFrameCount, maxGap / 1e6, interval / 1e6, callback / 1e6);
+                JsonCount(selectedFrameCount), JsonCount(sourceFrameCount), JsonCount(sourceDroppedFrameCount),
+                maxGap / 1e6, interval / 1e6, callback / 1e6);
             // The seal's head-video bound: one grid step and two 20 ms source periods (libsx_rig
             // sx-pod-core HEAD_SELECTED_GAP_BOUND_NS, 73.33 ms); one lost 50 Hz frame passes.
             var verdict = maxGap > 73_333_333L ? "the seal refuses this eye (gap over 73 ms)" : "within the seal's 73 ms";
@@ -751,9 +757,9 @@ namespace RealityLog.Camera
             catch (Exception ex)
             {
                 Debug.LogError($"[{Constants.LOG_TAG}] VideoRecorderSurfaceProvider: failed to read capture counters: {ex.Message}");
-                sourceFrameCount = -1;
-                sourceDroppedFrameCount = -1;
-                selectedFrameCount = -1;
+                sourceFrameCount = null;
+                sourceDroppedFrameCount = null;
+                selectedFrameCount = null;
                 captureReportJson = "{}";
                 streamGeometryJson = NoStreamGeometryJson;
             }

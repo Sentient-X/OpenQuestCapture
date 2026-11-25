@@ -9,11 +9,16 @@ using System.Threading;
 namespace RealityLog.Rig
 {
     /// <summary>
-    /// Serializes USB release and enumeration off Unity's sampling thread. One refresh may be pending or
-    /// running, and one completed snapshot waits for the main thread; a slow Android binder
-    /// call cannot accumulate work. The caller still applies attachment changes on its thread.
+    /// The whole USB cycle off Unity's sampling thread: enumerate (Kotlin's bridge), apply the
+    /// snapshot to the native rig (attach new devices, detach vanished ones), then release the
+    /// descriptors the rig no longer owns. One cycle may be pending or running, and one completed
+    /// result waits for the main thread; a slow Android binder call or a native attach waiting
+    /// on the rig lock cannot accumulate work, and neither can stall Update or FixedUpdate.
+    /// Before build 107 the apply ran on Unity's thread: on Pod 7 (2026-11-26, build 105) each
+    /// encoder replug blocked it behind libsx_rig's global lock and a USB identity read, and the
+    /// body poll in FixedUpdate went 822 ms without a sample (TrackingLost).
     /// Dispose stops accepting work immediately, discards a late result, and closes the bridge
-    /// on the worker only after an in-flight read returns. It never waits on USB from Unity.
+    /// on the worker only after an in-flight cycle returns. It never waits on USB from Unity.
     /// </summary>
     public sealed class RigUsbRefresh : IDisposable
     {
@@ -27,9 +32,9 @@ namespace RealityLog.Rig
         private readonly object gate = new();
         private readonly AutoResetEvent wake = new(false);
         private readonly Func<string> read;
+        private readonly Func<string, IReadOnlyCollection<string>> apply;
         private readonly Action<string> release;
         private readonly Action close;
-        private string[] pendingReleases = Array.Empty<string>();
         private bool pending;
         private bool running;
         private bool disposed;
@@ -40,23 +45,27 @@ namespace RealityLog.Rig
         private double lastMs;
         private double maxMs;
 
-        public RigUsbRefresh(Func<string> read, Action close, Action<string>? release = null)
+        /// <param name="read">Enumerates the bus (a JSON snapshot).</param>
+        /// <param name="apply">Applies a snapshot to the native rig on this worker and returns
+        /// the keys whose descriptors the rig no longer owns; they are released before the next read.</param>
+        /// <param name="close">Closes the bridge, once, after the last cycle.</param>
+        /// <param name="release">Gives one descriptor back to the bridge.</param>
+        public RigUsbRefresh(Func<string> read, Action close,
+            Func<string, IReadOnlyCollection<string>>? apply = null, Action<string>? release = null)
         {
             this.read = read;
             this.close = close;
+            this.apply = apply ?? (_ => Array.Empty<string>());
             this.release = release ?? (_ => throw new InvalidOperationException("USB release callback is missing"));
             new Thread(Run) { IsBackground = true, Name = "RigUsbRefresh" }.Start();
         }
 
-        /// <summary>Owns the release-key array after success; the caller must not modify it.</summary>
-        public bool Request(string[]? releases = null)
+        public bool Request()
         {
             lock (gate)
             {
-                // Consume the previous snapshot before enumerating again. In particular a
-                // detach must reach the native owner before its fd can be released/reused.
+                // The main thread consumes the previous result before another cycle runs.
                 if (disposed || pending || running || completed != null) return false;
-                pendingReleases = releases ?? Array.Empty<string>();
                 pending = true;
                 wake.Set();
                 return true;
@@ -98,7 +107,7 @@ namespace RealityLog.Rig
             finally
             {
                 // The close callback owns JNI attach/detach and reports its own failure.
-                // No connection can close while read() is still using it.
+                // No connection can close while a read or a native attach is still using it.
                 try { close(); }
                 finally { wake.Dispose(); }
             }
@@ -109,25 +118,23 @@ namespace RealityLog.Rig
             while (true)
             {
                 wake.WaitOne();
-                string[] releases;
                 lock (gate)
                 {
                     if (disposed) return;
                     pending = false;
                     running = true;
-                    releases = pendingReleases;
-                    pendingReleases = Array.Empty<string>();
                 }
 
                 var started = Stopwatch.GetTimestamp();
                 Result result;
                 try
                 {
-                    // The main thread queued these only after native detach. Both JNI
-                    // methods share Kotlin's monitor, including broadcast-triggered reads;
-                    // even a no-op release must never acquire that monitor on Unity.
-                    foreach (var key in releases) release(key);
-                    result = new Result(read(), null);
+                    var json = read();
+                    // Native detach happens inside apply, so every key it returns is released
+                    // only after the rig let its descriptor go. Both JNI methods share Kotlin's
+                    // monitor, including broadcast-triggered reads; none of it runs on Unity.
+                    foreach (var key in apply(json)) release(key);
+                    result = new Result(json, null);
                 }
                 catch (Exception ex) { result = new Result(null, ex); }
                 var elapsedMs = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
@@ -158,36 +165,166 @@ namespace RealityLog.Rig
         }
     }
 
-    /// <summary>
-    /// The coordinator's main-thread snapshot/apply/request protocol. A retained snapshot is
-    /// for status, not another detach instruction. Opening/reopening the native rig explicitly
-    /// marks it for reapplication so live descriptors are attached to the new native owner.
-    /// </summary>
-    public sealed class RigUsbSnapshotFlow
+    /// <summary>One USB device as Kotlin's bridge lists it (RigUsbBridge snapshot JSON).</summary>
+    [Serializable]
+    public sealed class RigUsbDevice
     {
-        private bool needsApply = true;
-        private readonly HashSet<string> releases = new(StringComparer.Ordinal);
+        public string key = "";
+        public string deviceName = "";
+        public int vendorId;
+        public int productId;
+        public int fd = -1;
+        public string serial = "";
+    }
 
-        public void SnapshotChanged() => needsApply = true;
-        public void RigClosed() => needsApply = true;
+    /// <summary>Kotlin's bridge snapshot. Published whole and never changed after.</summary>
+    [Serializable]
+    public sealed class RigUsbSnapshot
+    {
+        public RigUsbDevice[] devices = Array.Empty<RigUsbDevice>();
+        public int present;
+        public string[] awaitingPermission = Array.Empty<string>();
+        // Vanished devices whose descriptors Kotlin still holds; listed until released.
+        public string[] pendingRelease = Array.Empty<string>();
+        public string error = "";
+    }
 
-        public void ApplyIfNeeded(bool opened, Action apply)
+    /// <summary>
+    /// Which devices the native rig owns, applied from a snapshot on the USB worker. The gate is
+    /// held only for dictionary work, never across a native call, so the main thread reading
+    /// status never waits on USB or the rig lock. Invariants:
+    /// a vanished device is detached before its key is returned for release; an attach error
+    /// is final for its key (a replug is a new key); a cycle that overlapped a native close
+    /// (<see cref="Closed"/>) or shutdown commits nothing, and Kotlin lists its vanished keys
+    /// again, so the next cycle releases them.
+    /// </summary>
+    public sealed class RigUsbAttachments
+    {
+        private readonly object gate = new();
+        private readonly Dictionary<string, RigUsbDevice> attached = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> attachErrors = new(StringComparer.Ordinal);
+        private bool open;
+        private bool shutDown;
+        private bool syncing;
+        private long epoch;
+
+        /// <summary>The native rig opened: the next cycle attaches every listed device to it.</summary>
+        public void Opened() { lock (gate) open = true; }
+
+        /// <summary>The native rig closed: it forgot every device, and an in-flight cycle commits nothing.</summary>
+        public void Closed()
         {
-            if (!opened || !needsApply) return;
-            apply();
-            needsApply = false;
+            lock (gate)
+            {
+                open = false;
+                epoch++;
+                attached.Clear();
+                attachErrors.Clear();
+            }
         }
 
-        /// <summary>Called only after native detach, or for a descriptor never attached there.</summary>
-        public void QueueRelease(string key) => releases.Add(key);
+        /// <summary>
+        /// Whether a cycle is between its native calls. The rig must not reopen meanwhile: a late
+        /// attach would land on the new rig without being recorded.
+        /// </summary>
+        public bool SyncInFlight { get { lock (gate) return syncing; } }
 
-        public bool Request(RigUsbRefresh worker)
+        /// <summary>Waits for an in-flight cycle (bounded by one native attach or detach).</summary>
+        public void WaitForSync() { lock (gate) while (syncing) Monitor.Wait(gate); }
+
+        public int Count { get { lock (gate) return attached.Count; } }
+
+        public RigUsbDevice[] Attached() { lock (gate) return new List<RigUsbDevice>(attached.Values).ToArray(); }
+
+        public KeyValuePair<string, string>[] AttachErrors()
         {
-            var keys = releases.Count == 0 ? Array.Empty<string>() : new string[releases.Count];
-            releases.CopyTo(keys);
-            if (!worker.Request(keys)) return false;
-            releases.Clear();
-            return true;
+            lock (gate) return new List<KeyValuePair<string, string>>(attachErrors).ToArray();
+        }
+
+        /// <summary>
+        /// Quit: no cycle starts or commits after this; returns what the caller detaches. A cycle
+        /// already inside a native attach finishes it before the caller's close takes the rig
+        /// lock, and the bridge closes descriptors only after the worker's last cycle.
+        /// </summary>
+        public RigUsbDevice[] ShutDown()
+        {
+            lock (gate)
+            {
+                shutDown = true;
+                var all = new List<RigUsbDevice>(attached.Values).ToArray();
+                attached.Clear();
+                return all;
+            }
+        }
+
+        /// <summary>
+        /// Worker: applies <paramref name="snapshot"/> and returns the keys to release. <paramref name="attach"/>
+        /// returns null or the attach error JSON; <paramref name="detach"/> reports its own failure.
+        /// </summary>
+        public IReadOnlyCollection<string> Sync(RigUsbSnapshot snapshot, Func<RigUsbDevice, string?> attach,
+            Action<RigUsbDevice> detach)
+        {
+            long began;
+            var toAttach = new List<RigUsbDevice>();
+            var toDetach = new List<RigUsbDevice>();
+            lock (gate)
+            {
+                if (!open || shutDown) return Array.Empty<string>();
+                syncing = true;
+                began = epoch;
+                var current = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var device in snapshot.devices)
+                {
+                    current.Add(device.key);
+                    if (!attached.ContainsKey(device.key) && !attachErrors.ContainsKey(device.key)) toAttach.Add(device);
+                }
+                foreach (var entry in attached)
+                {
+                    if (!current.Contains(entry.Key)) toDetach.Add(entry.Value);
+                }
+            }
+
+            var attachedNow = new List<RigUsbDevice>();
+            var failed = new List<KeyValuePair<string, string>>();
+            try
+            {
+                foreach (var device in toAttach)
+                {
+                    if (attach(device) is string error) failed.Add(new KeyValuePair<string, string>(device.key, error));
+                    else attachedNow.Add(device);
+                }
+                foreach (var device in toDetach) detach(device);
+            }
+            finally
+            {
+                lock (gate)
+                {
+                    syncing = false;
+                    Monitor.PulseAll(gate);
+                }
+            }
+
+            lock (gate)
+            {
+                if (began != epoch || shutDown) return Array.Empty<string>();
+                var releases = new List<string>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var device in attachedNow) attached[device.key] = device;
+                foreach (var error in failed) attachErrors[error.Key] = error.Value;
+                foreach (var device in toDetach)
+                {
+                    attached.Remove(device.key);
+                    if (seen.Add(device.key)) releases.Add(device.key);
+                }
+                // Vanished devices that were never attached (their attach failed) hold an fd too.
+                foreach (var key in snapshot.pendingRelease)
+                {
+                    if (attached.ContainsKey(key)) continue;
+                    attachErrors.Remove(key);
+                    if (seen.Add(key)) releases.Add(key);
+                }
+                return releases;
+            }
         }
     }
 }

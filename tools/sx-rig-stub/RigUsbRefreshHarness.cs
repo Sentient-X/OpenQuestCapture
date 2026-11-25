@@ -93,21 +93,32 @@ static class RigUsbRefreshHarness
         // needs the generated C++ scope audit: Mono does not reproduce the IL2CPP
         // cleanup emitted on each iteration of the former try/finally loop.
         closed.Reset(); calls = 0; closes = 0;
-        int releases = 0;
+        int releases = 0, applies = 0;
+        bool releaseAfterApply = true;
         refresh = new RigUsbRefresh(() =>
         {
-            Expect(!closed.IsSet && Volatile.Read(ref releases) == Volatile.Read(ref calls),
-                "connection stays open and queued release precedes refresh");
+            Expect(!closed.IsSet && Volatile.Read(ref releases) == Math.Max(0, Volatile.Read(ref calls) - 1),
+                "connection stays open and the previous cycle's release precedes this read");
             return Interlocked.Increment(ref calls).ToString();
-        }, () => { Interlocked.Increment(ref closes); closed.Set(); }, _ => Interlocked.Increment(ref releases));
+        }, () => { Interlocked.Increment(ref closes); closed.Set(); },
+        json =>
+        {
+            Interlocked.Increment(ref applies);
+            return json == "1" ? Array.Empty<string>() : new[] { "detached-device" };
+        },
+        _ =>
+        {
+            releaseAfterApply &= Volatile.Read(ref applies) == Volatile.Read(ref calls);
+            Interlocked.Increment(ref releases);
+        });
         bool repeated = true;
         for (int i = 1; i <= 100; i++)
         {
-            repeated &= refresh.Request(i == 1 ? null : new[] { "detached-device" });
+            repeated &= refresh.Request();
             repeated &= Await(refresh).Json == i.ToString() && !closed.IsSet;
         }
-        Expect(repeated && calls == 100 && releases == 99 && closes == 0,
-            "100 refreshes retain bridge ownership without premature cleanup");
+        Expect(repeated && calls == 100 && applies == 100 && releases == 99 && closes == 0 && releaseAfterApply,
+            "100 cycles apply then release in order and retain bridge ownership");
         refresh.Dispose();
         Expect(closed.Wait(3000) && closes == 1 && !refresh.Request(),
             "repeated-refresh worker closes exactly once at shutdown");
