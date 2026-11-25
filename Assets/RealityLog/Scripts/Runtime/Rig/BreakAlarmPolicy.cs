@@ -5,7 +5,7 @@ namespace RealityLog.Rig
     /// <summary>Where the break alarm stands after one look; it climbs as the idle time grows.</summary>
     public enum BreakAlarmVerdict
     {
-        /// <summary>A take is recording or stopping: silent, no clock running.</summary>
+        /// <summary>A take is recording or stopping, or it is outside the shifts: silent, no clock running.</summary>
         Off,
         /// <summary>Nothing records, for less than <see cref="BreakAlarmPolicy.GraceSeconds"/>: the clock runs, silent.</summary>
         Counting,
@@ -26,23 +26,32 @@ namespace RealityLog.Rig
     /// rig refusing Start (a refusal is still time without recording; builds 90–96 stayed silent for
     /// all three, and Pod 1 on 96 sat 89 s idle without a sound). A Start the rig refuses never left
     /// idle, so it does not reset the clock. With no take since the app started, the clock runs from
-    /// the start. Pure, no UnityEngine (tools/sx-rig-stub/BreakAlarmHarness.cs). Main thread only.
+    /// the start. No shift runs from <see cref="QuietFromHour"/>:00 to <see cref="QuietUntilHour"/>:00
+    /// headset local time (owner, 2026-11-25: shifts 07–13, 13–19, 19–01), so it stays silent then and
+    /// its clock starts again at 07:00. Pure, no UnityEngine (tools/sx-rig-stub/BreakAlarmHarness.cs). Main thread only.
     /// </summary>
     public sealed class BreakAlarmPolicy
     {
         public const double GraceSeconds = 45.0;
         public const double LoudAfterSeconds = 60.0;
         public const double SirenAfterSeconds = 90.0;
+        /// <summary>The first local hour with no shift (the 19–01 shift's end).</summary>
+        public const int QuietFromHour = 1;
+        /// <summary>The first local hour of the morning shift.</summary>
+        public const int QuietUntilHour = 7;
+
+        /// <summary>Whether <paramref name="localHour"/> (0–23, the headset's clock) falls outside every shift.</summary>
+        public static bool Quiet(int localHour) => localHour >= QuietFromHour && localHour < QuietUntilHour;
 
         private double? idleSince;
 
         /// <summary>
         /// One look. <paramref name="now"/> is a monotonic clock in seconds; <paramref name="collecting"/>
-        /// a take is recording or stopping.
+        /// a take is recording or stopping; <paramref name="quiet"/> it is outside the shifts (<see cref="Quiet"/>).
         /// </summary>
-        public BreakAlarmVerdict Observe(double now, bool collecting)
+        public BreakAlarmVerdict Observe(double now, bool collecting, bool quiet = false)
         {
-            if (collecting)
+            if (collecting || quiet)
             {
                 idleSince = null;
                 return BreakAlarmVerdict.Off;

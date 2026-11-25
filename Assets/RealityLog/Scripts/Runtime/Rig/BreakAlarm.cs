@@ -16,7 +16,8 @@ namespace RealityLog.Rig
     /// then a looping siren. From the loud beep on, the headset's media volume is held at
     /// <see cref="HeldVolumeFraction"/> of its maximum (owner, 2026-11-24: 70 % of build 97's full
     /// volume) and unmuted every quarter second, so the volume buttons cannot move it; the volume
-    /// the collector had is put back the moment it stops. Only a take starting stops it. Sound only: no controller vibration, so the gripper
+    /// the collector had is put back the moment it stops. Only a take starting stops it, or the night
+    /// with no shift (01:00–07:00 local, <see cref="BreakAlarmPolicy.Quiet"/>). Sound only: no controller vibration, so the gripper
     /// switch's hold pulse (RigCoordinator) still reads as itself. Every change logs one line,
     /// <c>[RealityLog] break alarm: ...</c>. Auto-bootstraps; no scene wiring.
     /// </summary>
@@ -70,7 +71,7 @@ namespace RealityLog.Rig
             if (recorder == null) recorder = FindFirstObjectByType<RecordingManager>();
             var collecting = recorder != null && recorder.State != RecordingState.Idle;
 
-            var verdict = policy.Observe(now, collecting);
+            var verdict = policy.Observe(now, collecting, BreakAlarmPolicy.Quiet(DateTime.Now.Hour));
             if (verdict >= BreakAlarmVerdict.Soft)
             {
                 if (verdict != last) Escalate(verdict, signedIn ?? collector ?? "nobody", policy.IdleSeconds(now) ?? 0);
@@ -78,7 +79,7 @@ namespace RealityLog.Rig
             }
             else if (last >= BreakAlarmVerdict.Soft)
             {
-                StopSiren("a take started recording");
+                StopSiren(collecting ? "a take started recording" : "no shift runs now (01:00-07:00)");
             }
             if (signedIn != null) collector = signedIn;
             last = verdict;
