@@ -52,7 +52,7 @@ namespace RealityLog.Rig
         /// Optional site keys merged into the sx_rig_open config (factory_url, auth_url,
         /// pod_name, rig_type_id, upload_limit_mib_s, lan_limit_mib_s, seal, min_free_bytes,
         /// tailscale_ip), and headset_serial, which provisioning writes over adb (apps cannot
-        /// read ro.serialno on the Quest 3S); the rig also reads it through pod_config_path. POST /api/enroll with
+        /// read ro.serialno on the Quest 3S); the rig also reads it through rig_config_path. POST /api/enroll with
         /// a base_url writes factory_url and auth_url here.
         /// </summary>
         public const string PodConfigFileName = "pod_config.json";
@@ -739,7 +739,7 @@ namespace RealityLog.Rig
         /// Main thread, before <see cref="Enroll"/>: opens the rig (even when no rig is expected
         /// yet) or reopens it when its config changed and no episode is active, so the open
         /// config carries what sx_rig_enroll_site needs (credentials_dir, quest_apk_build_id,
-        /// the serial through pod_config_path). The site travels in the enroll request, so
+        /// the serial through rig_config_path). The site travels in the enroll request, so
         /// nothing is written to pod_config.json. The close and open run on the rig lane; the
         /// task completes on the main thread with a refusal or null. Never waits.
         /// </summary>
@@ -1301,7 +1301,7 @@ namespace RealityLog.Rig
             // pod_config.json may still carry the retired operator_id and local_only, never read or
             // sent: an enrolled headset always has its site (no Local only mode). Apps cannot read
             // ro.serialno on the 3S: provisioning writes headset_serial into pod_config.json,
-            // which the rig also reads through pod_config_path. The seal's meshes are passed
+            // which the rig also reads through rig_config_path. The seal's meshes are passed
             // when installed, and when the install failed (the rig's readiness then names what
             // is missing); omitted when this APK carries none.
             var meshes = embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed" ? embodimentDir : null;

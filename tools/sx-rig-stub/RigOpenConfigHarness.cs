@@ -48,8 +48,8 @@ static class RigOpenConfigHarness
         Expect((string?)local["headset_serial"] == "3487C10H9W0C59" && (int)local["max_episode_seconds"]! == 300 && local["pod_name"] == null,
             "rig settings are kept, a null one is not passed");
         Expect((string?)local["rig"]!["rig_id"] == "yubi-06" && (string?)local["embodiment_assets_dir"] == "/m"
-            && (string?)local["pod_config_path"] == "/p/pod_config.json" && (string?)local["tailscale_ip"] == "100.64.0.9",
-            "rig, meshes, pod_config_path and the tailnet address are passed");
+            && (string?)local["rig_config_path"] == "/p/pod_config.json" && (string?)local["tailscale_ip"] == "100.64.0.9",
+            "rig, meshes, rig_config_path and the tailnet address are passed");
         Expect((string?)local["factory_url"] == "https://app.sentientx.io/d/factory/" && (string?)local["auth_url"] == "https://app.sentientx.io/d/auth/"
             && (string?)local["rig_type_id"] == "rig_yubi", "the site pod_config.json names is always passed, even beside a stale local_only: true");
 

@@ -12,7 +12,7 @@
     "headset_serial",
     "tailscale_ip",
     "pod_name",
-    "pod_config_path",
+    "rig_config_path",
     "rig_type_id",
     "upload_limit_mib_s",
     "lan_limit_mib_s",

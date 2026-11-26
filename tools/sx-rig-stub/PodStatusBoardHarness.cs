@@ -61,7 +61,7 @@ static class PodStatusBoardHarness
         Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_422 required readiness checks are not passing") == "A Factory check is failing: Call a technician. The Console names the check.", "readiness refusal");
         Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: {\"code\":\"http_409\",\"message\":\"no assigned episodes remain available; unfinished attempts reserve demand\"}")
             == "No episodes left in this task: The floor manager adds episodes or assigns a new task in the Console.", "no-episodes refusal, never its JSON");
-        Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_404 pod has no assigned task") == "No task is assigned to this pod: The floor manager assigns a task to this pod in the Console.", "no task refusal");
+        Expect(PodStatusBoard.Explain("rig_start_failed", "start_session: http_404 pod has no assigned task") == "No task is assigned to this rig: The floor manager assigns a task to this rig in the Console.", "no task refusal");
         Expect(!PodStatusBoard.Explain("collector_signed_out", "x").Contains("signed in"), "the retired collector_signed_out has no sign-in words");
         Expect(PodStatusBoard.Explain("rig_check_failed", "left camera missing") == "The rig's devices did not pass the check: Press Check and fix the device it names.", "check refusal");
         Expect(PodStatusBoard.Explain("storage_full", "Insufficient storage") == "Not enough space: GB free, GB needed for the next episode: Keep the headset on Wi-Fi so uploads finish, or delete exported recordings.", "storage refusal");
