@@ -22,7 +22,8 @@
     "headset_source",
     "quest_app_version",
     "gripper_colour_preset_left",
-    "gripper_colour_preset_right"
+    "gripper_colour_preset_right",
+    "umi_wrist_colour_001"
   ],
   "rig": {
     "bundle_schema_version": "sx.yubi-rig-bundle/v1",
