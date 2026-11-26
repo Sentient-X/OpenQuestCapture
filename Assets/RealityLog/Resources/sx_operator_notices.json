@@ -259,13 +259,6 @@
       "still_fine": "Everything recorded so far counts.",
       "action": "The floor manager adds episodes or assigns a new task in the Console."
     },
-    "no_episodes_held": {
-      "support_code": 3136,
-      "who": "floor_manager",
-      "headline": "No episodes free: {held} held by attempts awaiting review",
-      "still_fine": "They count once reviewed.",
-      "action": "The floor manager reviews them in the Console, or adds episodes."
-    },
     "build_not_accepted": {
       "support_code": 3137,
       "who": "floor_manager",

@@ -227,10 +227,10 @@ public static class PodCardSnapshot
         "{\"id\":\"20261029_133012\",\"stage\":\"registered\",\"outcome\":\"complete\",\"seal\":\"sealed\"}]",
         PodReadiness.Ready, "Ready");
 
-    /// <summary>(g) No episodes free: four held by attempts awaiting review; Start is not offered.</summary>
+    /// <summary>(g) No episodes left: four held by attempts awaiting review read as over (E3135); Start is not offered.</summary>
     private static PodCardState NoEpisodesHeld() => Live(LivePod + ",\"factory\":{" + LiveFactory + ",\"admissible\":0," +
         "\"start_refusal\":{\"reason\":\"no_episodes\",\"checks\":[],\"held\":4," +
-        "\"notice\":{\"code\":\"no_episodes_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"4\"}}}}," +
+        "\"notice\":{\"code\":\"no_episodes\",\"who\":\"floor_manager\",\"args\":{}}}}," +
         "\"attempts\":[{\"id\":\"20261029_141502\",\"stage\":\"sealing\",\"outcome\":\"complete\",\"seal\":\"pending\",\"sealing_seconds\":190}," +
         "{\"id\":\"20261029_140911\",\"stage\":\"reported\",\"outcome\":\"complete\",\"seal\":\"sealed\",\"integrity\":\"pending\"}]",
         PodReadiness.Refused, "Refused");
