@@ -88,13 +88,12 @@ namespace RealityLog.Rig
         private string podConfigPath = "";
         private string credentialsPath = "";
         private volatile bool enrolled;
-        private float lastIdentityPoll = float.NegativeInfinity;
         private volatile string headsetSerial = "";
         private volatile string podName = "";
         private volatile string tailscaleIp = "";
         private volatile string apkBuildId = "";
         // The installed APK's versionCode (PackageManager), for the rig's quest_app_version; -1 unread.
-        private long apkVersionCode = -1;
+        private long apkVersionCode = -1; // Interlocked: written by the identity thread
         // What the collector does with the headset (worn, focus, input), for the rig's presence.
         private readonly DevicePresence presence = new();
         /// <summary>Whether the headset is on a head as the runtime last said; null while unread.</summary>
@@ -145,8 +144,8 @@ namespace RealityLog.Rig
         private TaskCompletionSource<RigRefusal?>? opening;
         private int tokenPending;
         // At quit, the main thread waits at most this long for the rig's stop, detaches and close.
-        private static readonly TimeSpan ShutDownBound = TimeSpan.FromSeconds(10);
-        private bool configPresent;
+        private static readonly TimeSpan ShutDownBound = TimeSpan.FromSeconds(1);
+        private volatile bool configPresent;
         // Read by Arm on a worker thread; written on the main thread.
         private volatile bool expected;
         private volatile bool opened;
@@ -750,7 +749,19 @@ namespace RealityLog.Rig
         /// </summary>
         public Task<RigRefusal?> BeginEnrollmentAsync()
         {
-            PollIdentity(force: true);
+            // A fresh read (pod setup may have just written pod_config.json), off this thread;
+            // the rest runs back on Unity's thread, from Update's laneResults.
+            var read = new TaskCompletionSource<Task<RigRefusal?>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            RefreshIdentityAsync().ContinueWith(_ => laneResults.Enqueue(() =>
+            {
+                try { read.TrySetResult(BeginEnrollmentRead()); }
+                catch (Exception ex) { read.TrySetException(ex); }
+            }), TaskContinuationOptions.ExecuteSynchronously);
+            return read.Task.Unwrap();
+        }
+
+        private Task<RigRefusal?> BeginEnrollmentRead()
+        {
             if (libraryMissing)
             {
                 return Task.FromResult<RigRefusal?>(new RigRefusal("rig_library_missing", "this build has no libsx_rig.so", openErrorJson));
@@ -1078,10 +1089,10 @@ namespace RealityLog.Rig
             using var trace = RigTrace.Enter("OQC.Rig.Poll");
             var began = System.Diagnostics.Stopwatch.GetTimestamp();
             lastPoll = Time.unscaledTime;
-            configPresent = File.Exists(configPath);
-            enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
+            // The files and the pod identity are read on the RigIdentity thread; this reads
+            // what it last found.
+            StartIdentityPoll();
             if (opened && enrolled && apiToken == null) RequestApiToken();
-            PollIdentity(force: false);
             ReportMainThreadTime("identity", began);
 
             awaitingPermission = snapshot.awaitingPermission ?? Array.Empty<string>();
@@ -1311,7 +1322,8 @@ namespace RealityLog.Rig
             // is missing); omitted when this APK carries none.
             var meshes = embodimentDir.Length > 0 && EmbodimentState is "ready" or "failed" ? embodimentDir : null;
             JToken? rig = File.Exists(configPath) ? JObject.Parse(File.ReadAllText(configPath)) : null;
-            var questApp = apkVersionCode >= 0 ? RigOpenConfig.QuestAppVersion(appVersion, apkVersionCode) : null;
+            var versionCode = System.Threading.Interlocked.Read(ref apkVersionCode);
+            var questApp = versionCode >= 0 ? RigOpenConfig.QuestAppVersion(appVersion, versionCode) : null;
             return RigOpenConfig.Build(ReadPodConfig(), rigKeys ?? new HashSet<string>(), stagingPath, credentialsPath, podConfigPath,
                 meshes, tailscaleIp, rig, apkBuildId, questApp).ToString(Formatting.None);
         }
@@ -1383,14 +1395,91 @@ namespace RealityLog.Rig
             }
         }
 
-        /// <summary>Serial, tailnet address and APK build id from PodIdentity (main thread).</summary>
-        private void PollIdentity(bool force)
+        // The RigIdentity thread: the config and credential files every poll, and PodIdentity's
+        // serial, tailnet address and APK build id (pod_config.json read twice, three JNI calls,
+        // one an interface listing) every 5 s, or each poll until the build id and the meshes
+        // settle. On Unity's thread these held a frame 5-30 ms every 0.5 s (2026-11-26 audit).
+        private readonly System.Threading.AutoResetEvent identityWake = new(false);
+        private readonly System.Threading.ManualResetEvent identityStop = new(false);
+        private readonly object identityGate = new();
+        private TaskCompletionSource<bool>? identityForced;
+        private System.Threading.Thread? identityThread;
+
+        private void StartIdentityPoll()
+        {
+            if (identityThread != null) return;
+            identityThread = new System.Threading.Thread(IdentityLoop) { IsBackground = true, Name = "RigIdentity" };
+            identityThread.Start();
+        }
+
+        /// <summary>A fresh read of the files and the identity; completes once the thread made it.</summary>
+        private Task RefreshIdentityAsync()
+        {
+            StartIdentityPoll();
+            Task task;
+            lock (identityGate)
+            {
+                identityForced ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                task = identityForced.Task;
+            }
+            identityWake.Set();
+            return task;
+        }
+
+        private void IdentityLoop()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            var attached = AndroidJNI.AttachCurrentThread() == 0;
+#endif
+            var lastIdentity = DateTime.MinValue;
+            try
+            {
+                while (true)
+                {
+                    TaskCompletionSource<bool>? forced;
+                    lock (identityGate)
+                    {
+                        forced = identityForced;
+                        identityForced = null;
+                    }
+                    try
+                    {
+                        configPresent = File.Exists(configPath);
+                        enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
+                        var now = DateTime.UtcNow;
+                        if (forced != null || now - lastIdentity >= TimeSpan.FromSeconds(IdentityPollSeconds)
+                            || apkBuildId.Length == 0 || !EmbodimentSettled)
+                        {
+                            lastIdentity = now;
+                            ReadIdentity();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: identity poll: {ex.Message}");
+                    }
+                    finally
+                    {
+                        forced?.TrySetResult(true);
+                    }
+                    if (System.Threading.WaitHandle.WaitAny(new System.Threading.WaitHandle[] { identityStop, identityWake },
+                            TimeSpan.FromSeconds(PollIntervalSeconds)) == 0) return;
+                }
+            }
+            finally
+            {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                if (attached) AndroidJNI.DetachCurrentThread();
+#endif
+                lock (identityGate) identityForced?.TrySetResult(true);
+            }
+        }
+
+        /// <summary>Serial, tailnet address and APK build id from PodIdentity (the RigIdentity thread).</summary>
+        private void ReadIdentity()
         {
             if (activity == null) return;
-            if (!force && Time.unscaledTime - lastIdentityPoll < IdentityPollSeconds
-                && apkBuildId.Length > 0 && EmbodimentSettled) return;
             using var trace = RigTrace.Enter("OQC.Rig.PollIdentity");
-            lastIdentityPoll = Time.unscaledTime;
             try
             {
                 using var identity = new AndroidJavaClass(PodIdentityClassName);
@@ -1402,12 +1491,12 @@ namespace RealityLog.Rig
                 }
                 tailscaleIp = identity.CallStatic<string>("tailscaleIp") ?? "";
                 apkBuildId = identity.CallStatic<string>("apkBuildId", activity) ?? "";
-                if (apkVersionCode < 0)
+                if (System.Threading.Interlocked.Read(ref apkVersionCode) < 0)
                 {
                     using var packages = activity.Call<AndroidJavaObject>("getPackageManager");
                     using var info = packages.Call<AndroidJavaObject>("getPackageInfo",
                         activity.Call<string>("getPackageName"), 0);
-                    apkVersionCode = info.Call<long>("getLongVersionCode");
+                    System.Threading.Interlocked.Exchange(ref apkVersionCode, info.Call<long>("getLongVersionCode"));
                 }
             }
             catch (Exception ex)
@@ -1519,6 +1608,9 @@ namespace RealityLog.Rig
                 .Append(",\"apkBuildId\":").Append(JsonString(apkBuildId))
                 .Append(",\"library\":\"").Append(libraryMissing ? "missing" : opened ? "present" : "unknown").Append('"')
                 .Append(",\"open\":").Append(opened ? "true" : "false")
+                // The lane is opening the rig now (sx_rig_open verifies the meshes and starts
+                // the floor and the uplink: seconds); the card says so instead of "not open".
+                .Append(",\"opening\":").Append(opening != null ? "true" : "false")
                 .Append(",\"openError\":").Append(openErrorJson ?? "null")
                 .Append(",\"episodeActive\":").Append(episodeIsActive ? "true" : "false")
                 .Append(",\"usb\":{\"present\":").Append(usbSnapshot.present.ToString(CultureInfo.InvariantCulture))
@@ -2040,7 +2132,9 @@ namespace RealityLog.Rig
             trackingTimer?.Dispose();
             trackingTimer = null;
             deviceReportStop.Set();
-            deviceReportThread?.Join(1000);
+            deviceReportThread?.Join(250);
+            identityStop.Set();
+            identityThread?.Join(250);
             InvalidateStatus();
             parsedStatus.Dispose();
             Application.logMessageReceivedThreaded -= OnLogLine;

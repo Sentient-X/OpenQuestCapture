@@ -54,9 +54,27 @@ namespace RealityLog.Rig
         private VideoRecorderSurfaceProvider? scanCamera;
         private bool wasConnected;
         private readonly StreamLiveness liveness = new();
-        private string lastStatusPrint = "";
-        private float lastStatusSent = float.NegativeInfinity;
+        // The status screen to the phone is built, fingerprinted and sent on its own thread
+        // (PhoneStatus, JVM attached): the build allocates a screen and two status maps every
+        // 0.5 s, and a send is 20-40 JNI calls into the companion library, whose locks are its
+        // own. Unity's thread only hands over the latest inputs, never waiting.
+        private readonly object statusGate = new();
+        private StatusInputs? statusPending;
+        private bool statusStop;
+        private System.Threading.Thread? statusThread;
+        // Set on the main thread when the phone must get the screen at once (a new session, a control's result).
+        private volatile bool statusForce;
         private float lastStatusCheck = float.NegativeInfinity;
+
+        private sealed class StatusInputs
+        {
+            public JObject? Status;
+            public StartRefusal? LastStart;
+            public bool Succeeded;
+            public string PodName = "";
+            public ControllerCharge Controllers;
+            public DateTime Now;
+        }
         private bool asking; // waiting for a Bluetooth permission answer
         // The rig status as last parsed, and the text it was parsed from: parsed again only
         // when the text changes, never every frame (main thread only).
@@ -84,6 +102,14 @@ namespace RealityLog.Rig
         {
             StopScan();
             if (PodControls.Instance is { } controls) controls.Finished -= OnControlFinished;
+            lock (statusGate)
+            {
+                statusStop = true;
+                System.Threading.Monitor.Pulse(statusGate);
+            }
+            // A send in flight finishes in milliseconds; the link closes after it.
+            statusThread?.Join(250);
+            statusThread = null;
             link?.Dispose();
             link = null;
         }
@@ -185,7 +211,7 @@ namespace RealityLog.Rig
             {
                 // A new session: the phone gets the status at once.
                 wasConnected = true;
-                lastStatusPrint = "";
+                statusForce = true;
             }
             PushStatus();
         }
@@ -275,7 +301,7 @@ namespace RealityLog.Rig
         {
             if (link == null || tracker.Phase != CompanionPhase.Connected) return;
             Safe(() => link.SendCommandResult(result), false);
-            lastStatusPrint = ""; // a check or a start changes the screen: push it now
+            statusForce = true; // a check or a start changes the screen: push it now
             lastStatusCheck = float.NegativeInfinity;
         }
 
@@ -285,18 +311,78 @@ namespace RealityLog.Rig
             var now = Time.unscaledTime;
             if (now - lastStatusCheck < StatusCheckSeconds) return;
             lastStatusCheck = now;
-            var status = Status();
-            var screen = PodScreenBoard.Build(status, PodStartLog.Shared.Last, PodStartLog.Shared.Succeeded, liveness, DateTime.UtcNow);
-            var print = new HeadsetStatusFingerprint();
-            var podName = PodName();
-            var controllers = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown;
-            HeadsetStatusMap.Write(screen, status, podName, controllers, print);
-            if (print.Text == lastStatusPrint && now - lastStatusSent < StatusEverySeconds) return;
-            // The library keeps the latest and repeats it every 5 s; this side resends at 5 s too so
-            // the link's age is fresh. A send with no session open is still the one sent on reconnect.
-            Safe(() => link!.SendStatus(writer => HeadsetStatusMap.Write(screen, status, podName, controllers, writer)), false);
-            lastStatusPrint = print.Text;
-            lastStatusSent = now;
+            var inputs = new StatusInputs
+            {
+                Status = Status(),
+                LastStart = PodStartLog.Shared.Last,
+                Succeeded = PodStartLog.Shared.Succeeded,
+                PodName = PodName(),
+                Controllers = PodControls.Instance?.Controllers ?? ControllerCharge.Unknown,
+                Now = DateTime.UtcNow,
+            };
+            lock (statusGate)
+            {
+                statusPending = inputs;
+                System.Threading.Monitor.Pulse(statusGate);
+            }
+            if (statusThread == null)
+            {
+                statusThread = new System.Threading.Thread(StatusLoop) { IsBackground = true, Name = "PhoneStatus" };
+                statusThread.Start();
+            }
+        }
+
+        /// <summary>
+        /// PhoneStatus thread: builds the screen from the latest inputs, and sends it when it
+        /// changed, or 5 s after the last send (the library keeps the latest and repeats it every
+        /// 5 s; this side resends at 5 s too so the link's age is fresh).
+        /// </summary>
+        private void StatusLoop()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            var attached = AndroidJNI.AttachCurrentThread() == 0;
+#endif
+            var lastPrint = "";
+            var lastSent = DateTime.MinValue;
+            try
+            {
+                while (true)
+                {
+                    StatusInputs inputs;
+                    lock (statusGate)
+                    {
+                        while (statusPending == null && !statusStop) System.Threading.Monitor.Wait(statusGate);
+                        if (statusStop) return;
+                        inputs = statusPending!;
+                        statusPending = null;
+                    }
+                    try
+                    {
+                        var screen = PodScreenBoard.Build(inputs.Status, inputs.LastStart, inputs.Succeeded, liveness, inputs.Now);
+                        var print = new HeadsetStatusFingerprint();
+                        HeadsetStatusMap.Write(screen, inputs.Status, inputs.PodName, inputs.Controllers, print);
+                        var force = statusForce;
+                        if (!force && print.Text == lastPrint && inputs.Now - lastSent < TimeSpan.FromSeconds(StatusEverySeconds)) continue;
+                        statusForce = false;
+                        // A send with no session open is still the one sent on reconnect.
+                        var sending = link;
+                        if (sending == null) continue;
+                        Safe(() => sending.SendStatus(writer => HeadsetStatusMap.Write(screen, inputs.Status, inputs.PodName, inputs.Controllers, writer)), false);
+                        lastPrint = print.Text;
+                        lastSent = inputs.Now;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"[{Constants.LOG_TAG}] PhoneCompanion: the status to the phone failed: {ex.Message}");
+                    }
+                }
+            }
+            finally
+            {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                if (attached) AndroidJNI.DetachCurrentThread();
+#endif
+            }
         }
 
         // ---- Permissions ----

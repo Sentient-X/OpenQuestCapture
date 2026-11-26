@@ -152,11 +152,20 @@ namespace RealityLog.IO
             writer.WriteLine();
         }
 
+        /// <summary>
+        /// Take no more rows and let the writer drain, without waiting for it; <see cref="Dispose"/>
+        /// then waits. Closing every writer before disposing any lets their drains overlap.
+        /// </summary>
+        public void Close()
+        {
+            if (!_queue.IsAddingCompleted) _queue.CompleteAdding();
+        }
+
         public void Dispose()
         {
             if (_disposed) return;
 
-            _queue.CompleteAdding();
+            Close();
             _writerTask.Wait();
             _disposed = true;
         }

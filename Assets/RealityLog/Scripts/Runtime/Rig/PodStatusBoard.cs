@@ -264,6 +264,11 @@ namespace RealityLog.Rig
             if (Str(status["library"]) == "missing") return "Rig: the rig library is missing from this build";
             var devices = DeviceCount(status);
             var count = devices == 1 ? "1 device" : devices + " devices";
+            if (Bool(status, "open") != true && Bool(status, "opening") == true)
+            {
+                // The rig lane is opening it (seconds: the meshes are verified, the floor starts).
+                return "Rig: opening · " + count;
+            }
             if (Bool(status, "open") != true)
             {
                 var error = status["openError"] is JObject openError ? Str(openError["detail"]) : "";

@@ -19,14 +19,21 @@ namespace RealityLog
         /// Writes device_info.json to the given session directory.
         /// Should be called once at the start of each recording session.
         /// </summary>
+        // Read once: none of them change while the app runs, and the serial is a JNI read.
+        private static string? headsetType;
+        private static string? deviceSerial;
+
+        /// <summary>
+        /// Main thread (SystemInfo, OVRPlugin and the serial's JNI read are read here); the file
+        /// is written on the pool: this runs right after the capture starts, and a main thread
+        /// held then stalls the first camera and body frames.
+        /// </summary>
         public static void WriteToSession(string sessionDirPath)
         {
             try
             {
-                Directory.CreateDirectory(sessionDirPath);
-
-                var headsetType = GetHeadsetType();
-                var deviceSerial = GetDeviceSerial();
+                headsetType ??= GetHeadsetType();
+                deviceSerial ??= GetDeviceSerial();
                 var json = $"{{\n" +
                     $"  \"device_unique_id\": \"{EscapeJson(SystemInfo.deviceUniqueIdentifier)}\",\n" +
                     $"  \"device_name\": \"{EscapeJson(SystemInfo.deviceName)}\",\n" +
@@ -41,8 +48,19 @@ namespace RealityLog
                     $"}}";
 
                 var path = Path.Combine(sessionDirPath, FileName);
-                File.WriteAllText(path, json);
-                Debug.Log($"[{Constants.LOG_TAG}] DeviceInfo: Wrote {path}");
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(sessionDirPath);
+                        File.WriteAllText(path, json);
+                        Debug.Log($"[{Constants.LOG_TAG}] DeviceInfo: Wrote {path}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{Constants.LOG_TAG}] DeviceInfo: Failed to write: {ex.Message}");
+                    }
+                });
             }
             catch (Exception ex)
             {

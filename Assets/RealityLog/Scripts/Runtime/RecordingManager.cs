@@ -344,6 +344,7 @@ namespace RealityLog
                 isRecording = true;
                 System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
                 recordingStartTime = Time.time;
+                Frames.Begin(MonotonicClock.Nanos(), GC.CollectionCount(0));
                 StartTrackingOriginRecord();
                 HeadTrackingMonitor.BeginRecording();
 
@@ -470,6 +471,12 @@ namespace RealityLog
                         EndPhase($"begin_stop:{provider.name}");
                     }
 
+                    // Every CSV writer is closed first, then each is waited for: their drains run
+                    // beside each other, so this thread waits for the slowest, not the sum.
+                    if (recordDepthMaps && depthMapExporter != null) depthMapExporter.CloseWriters();
+                    foreach (var logger in poseLoggers) logger.CloseWriter();
+                    foreach (var logger in bodyTrackingLoggers) logger.CloseWriter();
+                    EndPhase("close_writers");
                     if (recordDepthMaps && depthMapExporter != null)
                     {
                         depthMapExporter.StopExport();
@@ -491,7 +498,7 @@ namespace RealityLog
                         EndPhase($"stop_logging:{logger.name}");
                     }
 
-                    WriteStreamManifest(savedDirectory);
+                    WriteStreamManifest(savedDirectory, Frames.End(GC.CollectionCount(0)));
                     EndPhase("stream_manifest");
                     WriteTrackingOriginRecord(savedDirectory);
                     EndPhase("tracking_origin");
@@ -745,7 +752,12 @@ namespace RealityLog
             }
             PollCaptureWatch();
             MainThreadFrames.Frame(Time.unscaledDeltaTime);
+            if (Frames.Frame(MonotonicClock.Nanos(), GC.CollectionCount(0)) is string slow)
+                Debug.LogWarning($"[{Constants.LOG_TAG}] {slow}");
         }
+
+        /// <summary>The take's main-thread watchdog (every frame over 100 ms, into the stream manifest).</summary>
+        public static readonly FrameWatchdog Frames = new();
 
         private IEnumerator WaitForFinalizationThenNotify(string savedDirectory)
         {
@@ -842,68 +854,49 @@ namespace RealityLog
             }
         }
 
+        /// <summary>
+        /// The longest Unity's thread waits for a stop at quit or destroy. Android counts a main
+        /// thread held 5 s as an ANR; the waits here were 3 s, 22 s and 8 s in series, and the
+        /// camera's Java stop ran on this thread too. The stop runs as a press's does (the
+        /// cutoff and the encoder drains and the rig's stop on workers, which go on after this
+        /// returns while the process lives); a rig stop that never lands is settled as an
+        /// interrupted attempt when the rig next opens.
+        /// </summary>
+        internal static readonly TimeSpan TeardownBound = TimeSpan.FromSeconds(1);
+
         private void StopForTeardown(string reason)
         {
-            if (stopInFlight != null)
+            var until = DateTime.UtcNow + TeardownBound;
+            TimeSpan Left()
             {
-                // A stop already runs on its worker: let it finish (the camera's Java stop is
-                // bounded 15 s, the rig's 5 s), then apply its completion here, since Update
-                // will not run again.
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while a stop runs; waiting for it.");
-                // A stop still waiting for the rig's cutoff gets it (a worker's call, bounded
-                // here), then its main-thread half runs below and starts its worker.
-                pendingStopCutoff?.Wait(TimeSpan.FromSeconds(3));
-                DrainTeardownWork();
-                stopWorker?.Join(TimeSpan.FromSeconds(22));
-                DrainTeardownWork();
+                var left = until - DateTime.UtcNow;
+                return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+            }
+            if (stopInFlight == null && isRecording)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; stopping as a press does, waiting at most {TeardownBound.TotalSeconds:F0} s.");
+                // The same stop as a press: the rig's cutoff on its worker, then this thread's
+                // part (capture timer, exposure freeze, loggers, manifest, tracking origin),
+                // then the encoder drains and the rig's stop on a worker.
+                StopRecordingAsync();
+            }
+            else if (stopInFlight != null)
+            {
+                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while a stop runs; waiting at most {TeardownBound.TotalSeconds:F0} s.");
+            }
+            else
+            {
                 return;
             }
-            if (isRecording)
+            // Update will not run again: apply what is queued here. A cutoff still waiting
+            // gets the bound, then the main-thread half runs and starts its worker.
+            pendingStopCutoff?.Wait(Left());
+            DrainTeardownWork();
+            if (stopWorker is { } worker && !worker.Join(Left()))
             {
-                Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; performing synchronous stop.");
-
-                // The rig's cutoff on a worker, waited for here at most 3 s: no sx_rig call runs on
-                // Unity's thread, even at teardown.
-                RigCoordinator.Instance?.RequestStopEpisodeBounded(TimeSpan.FromSeconds(3));
-                captureTimer.StopCapture();
-                HeadTrackingMonitor.EndRecording();
-
-                foreach (var provider in cameraProviders)
-                    provider.RequestStopRecordingSession();
-                foreach (var provider in cameraProviders)
-                    provider.StopRecordingSession();
-
-                if (recordDepthMaps && depthMapExporter != null)
-                    depthMapExporter.StopExport();
-                foreach (var logger in poseLoggers)
-                    logger.StopLogging();
-                foreach (var logger in imuLoggers)
-                    logger.StopLogging();
-                foreach (var logger in bodyTrackingLoggers)
-                    logger.StopLogging();
-
-                string savedDirectory = currentSessionDirectory ?? string.Empty;
-                WriteStreamManifest(savedDirectory);
-                WriteTrackingOriginRecord(savedDirectory);
-                // Last: the rig's seal reads this session. On a worker (sx_rig_stop is bounded 5 s,
-                // after any arming), waited for here at most 8 s.
-                var dataPathForRig = Application.persistentDataPath;
-                string? teardownReceipt = null;
-                RigLane.RunBounded("RecordingStopRig", () => teardownReceipt = StopRig(dataPathForRig, savedDirectory),
-                    TimeSpan.FromSeconds(8));
-                LastRigStopReceiptJson = teardownReceipt;
-                isRecording = false;
-                System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
-                recordingStartTime = 0f;
-                currentSessionDirectory = null;
-                infoCanvasAnimator?.SetBool(IsRunningParam, false);
-
-                if (!string.IsNullOrEmpty(savedDirectory))
-                {
-                    onRecordingSaved?.Invoke(savedDirectory);
-                    ValidateSavedSession(savedDirectory);
-                }
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: {reason}: the stop's worker still drains the encoders and stops the rig after {TeardownBound.TotalSeconds:F0} s; quitting on");
             }
+            DrainTeardownWork();
         }
 
         private void OnApplicationPause(bool pauseStatus)
@@ -1014,20 +1007,25 @@ namespace RealityLog
                 return;
             }
 
-            try
+            var filePath = Path.Combine(
+                Application.persistentDataPath,
+                currentSessionDirectory ?? "",
+                "video_start_time.txt"
+            );
+            // On the pool: this runs right after the capture starts, and a main thread held on
+            // the disk then stalls the first camera and body frames.
+            System.Threading.Tasks.Task.Run(() =>
             {
-                var filePath = Path.Combine(
-                    Application.persistentDataPath,
-                    currentSessionDirectory ?? "",
-                    "video_start_time.txt"
-                );
-                File.WriteAllText(filePath, videoStartMs.ToString());
-                Debug.Log($"[{Constants.LOG_TAG}] Wrote video_start_time.txt: {videoStartMs}ms");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[{Constants.LOG_TAG}] Failed to write video_start_time.txt: {ex.Message}");
-            }
+                try
+                {
+                    File.WriteAllText(filePath, videoStartMs.ToString());
+                    Debug.Log($"[{Constants.LOG_TAG}] Wrote video_start_time.txt: {videoStartMs}ms");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{Constants.LOG_TAG}] Failed to write video_start_time.txt: {ex.Message}");
+                }
+            });
         }
 
         private void ValidateSavedSession(string sessionDirectoryName)
@@ -1168,7 +1166,7 @@ namespace RealityLog
         /// to null although its stopped row count and stats are still readable — which is
         /// how imu.csv went missing from the manifest.
         /// </summary>
-        private void WriteStreamManifest(string sessionDirectoryName)
+        private void WriteStreamManifest(string sessionDirectoryName, string? mainThreadJson)
         {
             LastStreamManifestJson = null;
             try
@@ -1195,7 +1193,7 @@ namespace RealityLog
                 Directory.CreateDirectory(sessionDir);
                 File.WriteAllText(
                     Path.Join(sessionDir, StreamManifestFileName),
-                    StreamManifest.Document(streamsJson)
+                    StreamManifest.Document(streamsJson, null, mainThreadJson)
                 );
             }
             catch (Exception ex)
