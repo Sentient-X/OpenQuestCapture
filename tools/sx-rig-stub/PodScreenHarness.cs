@@ -126,7 +126,7 @@ static class PodScreenHarness
 
         // No task.
         var noTask = Screen(Pod + "," + Attributed + ",\"roles\":" + ReadyRoles + ",\"factory\":{" + Heard + ",\"ready\":false,\"blocking\":[{\"id\":\"task_contract\",\"state\":\"fail\",\"summary\":\"no task\"}],\"task\":null,\"progress\":null,\"collection\":null}");
-        Expect(noTask.Blocker.Headline == "No task is assigned to this pod" && noTask.Blocker.Who == "Floor manager", "no task -> the floor manager assigns one");
+        Expect(noTask.Blocker.Headline == "No task is assigned to this rig" && noTask.Blocker.Who == "Floor manager", "no task -> the floor manager assigns one");
         Expect(noTask.Task == "none assigned" && noTask.Next == "a task assigned to this pod in the Console", "no task: collection says so");
 
         // Any build records (2026-11-22); a failing recorder_build check carries the Factory's own remediation, never a build approval.
@@ -284,10 +284,10 @@ static class PodScreenHarness
 
         // Not set up: there is no Local only mode, so nothing records until it is (not_enrolled).
         var unenrolled = Screen("\"expected\":true,\"enrolled\":false,\"library\":\"present\",\"open\":true,\"roles\":" + ReadyRoles);
-        Expect(unenrolled.StartBlocked && unenrolled.Blocker.Headline == "This headset is not set up as a pod"
+        Expect(unenrolled.StartBlocked && unenrolled.Blocker.Headline == "This headset is not set up as a rig"
             && unenrolled.Link == "not enrolled", "not set up: Start blocked with not_enrolled, no Factory link: " + unenrolled.Blocker.Headline);
         Expect(PodScreenBoard.StartBlocker(JObject.Parse("{\"expected\":false,\"enrolled\":false}")) is { } bare
-            && bare.Headline == "This headset is not set up as a pod", "no rig and not set up: a start is refused too");
+            && bare.Headline == "This headset is not set up as a rig", "no rig and not set up: a start is refused too");
         Expect(PodScreenBoard.StartBlocker(JObject.Parse("{\"expected\":false,\"enrolled\":false,\"localOnly\":true}")) != null,
             "a status an earlier build wrote with localOnly still refuses the start of a headset not set up");
 
