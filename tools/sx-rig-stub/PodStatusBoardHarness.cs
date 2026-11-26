@@ -52,6 +52,9 @@ static class PodStatusBoardHarness
 
         // Rig.
         Expect(Lines(Base + ",\"lastCheck\":{\"ready\":true,\"problems\":[],\"devices\":[{},{},{},{}]}").Rig == "Rig: ready · 4 devices", "ready rig with its devices");
+        const string Closed = "\"expected\":true,\"enrolled\":true,\"library\":\"unknown\",\"open\":false,\"podId\":\"pod_q1\"";
+        Expect(Lines(Closed + ",\"opening\":true").Rig == "Rig: opening · 0 devices", "an open in flight on the lane reads opening: " + Lines(Closed + ",\"opening\":true").Rig);
+        Expect(Lines(Closed + ",\"opening\":false").Rig.StartsWith("Rig: not open"), "no open in flight still reads not open");
         var notReady = Lines(Base + ",\"lastCheck\":{\"ready\":false,\"problems\":[\"left_camera: no device on usb-port:1-1.1\"]},\"native\":{\"devices\":[{},{},{}]}");
         Expect(notReady.Rig == "Rig: not ready: left_camera: no device on usb-port:1-1.1 · 3 devices", "not ready with problems: " + notReady.Rig);
         Expect(Lines(Base + ",\"lastCheck\":null").Rig.StartsWith("Rig: not checked yet"), "unchecked rig");

@@ -83,6 +83,13 @@ namespace RealityLog.Depth
             Directory.CreateDirectory(Path.Join(Application.persistentDataPath, DirectoryName, rightDepthMapDirectoryName));
         }
 
+        /// <summary>Take no more rows; the writers drain while the others do (StopExport waits).</summary>
+        public void CloseWriters()
+        {
+            leftDepthCsvWriter?.Close();
+            rightDepthCsvWriter?.Close();
+        }
+
         public void StopExport()
         {
             // Note: Timer stop is handled by RecordingManager

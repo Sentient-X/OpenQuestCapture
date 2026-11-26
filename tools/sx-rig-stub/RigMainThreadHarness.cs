@@ -167,12 +167,29 @@ static class RigMainThreadHarness
         }
         // The main-thread entry points use only the forms that never wait on the rig.
         Expect(!recording.Contains("TryRequestStopEpisode") && !Regex.IsMatch(recording, @"\.RequestStopEpisode\(\)")
-            && recording.Contains("rig.RequestStopCutoff()") && recording.Contains("RequestStopEpisodeBounded("),
+            && recording.Contains("rig.RequestStopCutoff()"),
             "RecordingManager takes the cutoff through the worker forms only");
         var stopRig = Regex.Matches(recording, @"\bStopRig\(").Count;
-        Expect(stopRig == 3 && recording.Contains("RigLane.RunBounded(\"RecordingStopRig\", () => teardownReceipt = StopRig(")
-            && Body(recording, "void FinishStop(bool cutoff)").Contains("receipt = StopRig(dataPath, savedDirectory);"),
-            "StopRig (sx_rig_stop) runs on the stop worker or a bounded teardown thread");
+        Expect(stopRig == 2 && Body(recording, "void FinishStop(bool cutoff)").Contains("receipt = StopRig(dataPath, savedDirectory);"),
+            "StopRig (sx_rig_stop) runs on the stop worker only");
+        // Quit and destroy: the same stop as a press, Unity's thread waiting at most about 1 s
+        // (Android counts 5 s held as an ANR; #79 left 3 s + 22 s + 8 s here and 10 s at ShutDown).
+        var teardown = Body(recording, "private void StopForTeardown(string reason)");
+        double Bound(string text, string name)
+        {
+            var m = Regex.Match(text, name + @"\s*=\s*TimeSpan\.From(Seconds|Milliseconds)\(([0-9.]+)\)");
+            if (!m.Success) return double.PositiveInfinity;
+            var v = double.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+            return m.Groups[1].Value == "Seconds" ? v : v / 1000;
+        }
+        var waits = Regex.Matches(teardown, @"\.(Wait|Join)\(((?:[^()]|\(\))*)\)").Cast<Match>().Select(m => m.Groups[2].Value).ToList();
+        Expect(teardown.Contains("StopRecordingAsync();") && Bound(recording, "TeardownBound") <= 1.0
+            && waits.Count > 0 && waits.All(w => w == "Left()") && !teardown.Contains("StopRecordingSession()"),
+            $"teardown stops as a press does and waits only within TeardownBound ({Bound(recording, "TeardownBound")} s): waits [{string.Join(", ", waits)}]");
+        var shutWaits = Regex.Matches(Body(coordinator, "public void ShutDown()"), @"\.(Wait|Join)\(((?:[^()]|\(\))*)\)").Cast<Match>().Select(m => m.Groups[2].Value).ToList();
+        Expect(Bound(coordinator, "ShutDownBound") <= 1.0
+            && shutWaits.All(w => w == "ShutDownBound" || (int.TryParse(w, out var ms) && ms <= 250)),
+            $"quit waits at most ShutDownBound ({Bound(coordinator, "ShutDownBound")} s) for the rig and 250 ms per thread: [{string.Join(", ", shutWaits)}]");
         var finish = Body(recording, "void FinishStop(bool cutoff)");
         Expect(finish.IndexOf("EndPhase(cutoff ?", StringComparison.Ordinal) >= 0
             && finish.IndexOf("EndPhase(cutoff ?", StringComparison.Ordinal) < finish.IndexOf("captureTimer.StopCapture()", StringComparison.Ordinal)
@@ -195,6 +212,111 @@ static class RigMainThreadHarness
             "quit: detach, then close, then the bridge closes the fds; Unity waits at most the bound");
         Expect(Body(coordinator, "private void Awake()").Contains("SxRig.MarkMainThread();"),
             "the coordinator marks Unity's main thread at Awake");
+
+        // ── 3. Entry points ──
+        // Unity's frame callbacks, the coordinator's Poll and the UI callbacks never reach an
+        // SxRig call, through any chain of methods in the app's runtime sources: a call inside a
+        // hand-off (a lane post, a Task.Run, a thread or timer, a continuation) runs elsewhere
+        // and is cut out before the walk. An unqualified call is followed into its own file's
+        // declaration (else every file's); a call on another object (x.Name) is followed when
+        // Name is declared in one file only and is not a common verb (Start, Read, Play...):
+        // one shared by several classes cannot be told apart by name here.
+        var runtime = Path.Combine(root, "Assets/RealityLog/Scripts/Runtime");
+        var sources = Directory.GetFiles(runtime, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith("SxRig.cs")).ToDictionary(f => f.Substring(runtime.Length + 1), File.ReadAllText);
+        string[] handOffs = { "lane.Post(", "Task.Run(", "Task.Factory.StartNew(", "new System.Threading.Thread(", "new Thread(",
+            "new System.Threading.Timer(", "RunBounded(", "ContinueWith(", "ThreadPool.QueueUserWorkItem(" };
+        string Strip(string body)
+        {
+            var text = Regex.Replace(body, @"//[^\n]*", "");
+            foreach (var marker in handOffs)
+            {
+                int at;
+                while ((at = text.IndexOf(marker, StringComparison.Ordinal)) >= 0)
+                {
+                    int open = at + marker.Length - 1, depth = 0, end = open;
+                    for (; end < text.Length; end++)
+                    {
+                        if (text[end] == '(') depth++;
+                        else if (text[end] == ')' && --depth == 0) break;
+                    }
+                    text = text.Substring(0, at) + text.Substring(Math.Min(end + 1, text.Length));
+                }
+            }
+            return text;
+        }
+        var bodies = new Dictionary<string, List<(string file, string body)>>();
+        foreach (var (file, text) in sources)
+        {
+            foreach (Match m in decl.Matches(text))
+            {
+                // A block body, or an expression body (=> ...;); a declaration without one is skipped.
+                int close = m.Index + m.Length - 1, depth = 0;
+                for (; close < text.Length; close++)
+                {
+                    if (text[close] == '(') depth++;
+                    else if (text[close] == ')' && --depth == 0) break;
+                }
+                int brace = text.IndexOf('{', close), semi = text.IndexOf(';', close), arrow = text.IndexOf("=>", close, StringComparison.Ordinal);
+                string body;
+                if (arrow >= 0 && (brace < 0 || arrow < brace) && (semi < 0 || arrow < semi))
+                    body = text.Substring(m.Index, (semi < 0 ? text.Length : semi + 1) - m.Index);
+                else if (brace >= 0 && (semi < 0 || brace < semi))
+                    body = Body(text.Substring(m.Index), text.Substring(m.Index, m.Length));
+                else continue;
+                if (body.Length == 0) continue;
+                if (!bodies.TryGetValue(m.Groups[1].Value, out var list)) bodies[m.Groups[1].Value] = list = new();
+                list.Add((file, Strip(body)));
+            }
+        }
+        // UI callbacks: what a button, toggle or event subscribes, and the On* handlers.
+        var subscribed = sources.Values.SelectMany(t => Regex.Matches(t, @"(?:AddListener\(|\+=\s*)([A-Z][A-Za-z0-9]*)\b(?!\s*\()").Cast<Match>())
+            .Select(m => m.Groups[1].Value);
+        var entries = new[] { "Update", "LateUpdate", "FixedUpdate", "OnGUI", "Poll", "OnApplicationPause", "OnApplicationFocus" }
+            .Concat(subscribed).Concat(bodies.Keys.Where(k => Regex.IsMatch(k, @"^On[A-Z]\w*(Click|Clicked|Press|Pressed|Button|Toggle|Toggled|Changed|Selected)$")))
+            .Where(bodies.ContainsKey).Distinct().ToList();
+        var reached = new Dictionary<string, string>(); // method -> the entry chain that reached it
+        var queue = new Queue<string>();
+        foreach (var entry in entries) { reached[entry] = entry; queue.Enqueue(entry); }
+        var callee = new Regex(@"(\.)?\b([A-Z][A-Za-z0-9]*)\s*\(");
+        var common = new HashSet<string> { "Start", "Stop", "Read", "Write", "Play", "Build", "Run", "Close", "Dispose", "Add", "Remove",
+            "Clear", "Set", "Get", "Update", "Open", "Reset", "Refresh", "Begin", "End", "Frame", "Parse", "Join", "Wait", "Post", "Request", "Take" };
+        var reachesRig = new List<string>();
+        while (queue.Count > 0)
+        {
+            var method = queue.Dequeue();
+            foreach (var (file, body) in bodies[method])
+            {
+                foreach (Match rigCall in call.Matches(body))
+                {
+                    if (!guardApi.Contains(rigCall.Groups[1].Value)) reachesRig.Add($"{reached[method]} -> SxRig.{rigCall.Groups[1].Value} ({file})");
+                }
+                // The body after its own signature: a declaration's name is not a call.
+                var calls = Regex.Replace(body.Substring(Math.Min(body.Length, body.IndexOf('{') + 1)), @"\bSxRig\.\w+\s*\(", "(");
+                foreach (Match next in callee.Matches(calls))
+                {
+                    var name = next.Groups[2].Value;
+                    if (!bodies.TryGetValue(name, out var declared)) continue;
+                    var key = name;
+                    if (next.Groups[1].Success)
+                    {
+                        // x.Name(...): only a name one file declares.
+                        if (common.Contains(name) || declared.Select(d => d.file).Distinct().Count() != 1) continue;
+                    }
+                    else if (declared.Any(d => d.file == file))
+                    {
+                        key = file + "#" + name;
+                        if (!bodies.ContainsKey(key)) bodies[key] = declared.Where(d => d.file == file).ToList();
+                    }
+                    if (reached.ContainsKey(key)) continue;
+                    reached[key] = reached[method] + " -> " + name;
+                    queue.Enqueue(key);
+                }
+            }
+        }
+        Expect(entries.Contains("Update") && entries.Contains("FixedUpdate") && entries.Contains("Poll") && reached.Count > 50 && reachesRig.Count == 0,
+            $"no SxRig call is reached from {entries.Count} main-thread entry points ({reached.Count} methods walked)"
+            + (reachesRig.Count > 0 ? ": " + string.Join("; ", reachesRig.Distinct().Take(12)) : ""));
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures;

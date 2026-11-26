@@ -231,6 +231,9 @@ namespace RealityLog.OVR
             }
         }
 
+        /// <summary>Take no more rows; the writer drains while the other writers do (StopLogging waits).</summary>
+        public void CloseWriter() => writer?.Close();
+
         public void StopLogging()
         {
             try

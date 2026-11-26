@@ -61,6 +61,12 @@ cp "$newtonsoft" "$out/"
     "$repo/Assets/RealityLog/Scripts/Runtime/SessionRecovery.cs" "$repo/Assets/RealityLog/Scripts/Runtime/StreamManifest.cs"
 "$mono" "$out/recovery-harness.exe"
 
+# FrameWatchdog: the take's slow main-thread frames, logged and counted into the stream manifest.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
+    -out:"$out/frame-watchdog-harness.exe" "$here/FrameWatchdogHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/StreamManifest.cs"
+"$mono" "$out/frame-watchdog-harness.exe"
+
 # RecordingDeletePolicy: what a delete may touch.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/delete-harness.exe" "$here/DeletePolicyHarness.cs" \
