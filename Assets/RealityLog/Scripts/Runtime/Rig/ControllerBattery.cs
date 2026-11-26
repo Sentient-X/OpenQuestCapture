@@ -14,8 +14,8 @@ namespace RealityLog.Rig
     /// API answers nothing, so each read takes (f) the OS remote-service report first
     /// (<see cref="OsRemoteServiceBattery"/>: <c>dumpsys OVRRemoteService</c>'s text, read off the
     /// main thread once a minute and on a wake, needing the DUMP grant), then Unity XR's
-    /// <c>CommonUsages.batteryLevel</c>, then OVRInput. Once at startup and each time a controller
-    /// wakes, every app-level source this build can reach is also probed and its answer logged once
+    /// <c>CommonUsages.batteryLevel</c>, then OVRInput. Once at startup (never on a wake: that
+    /// ran on the main thread mid-take), every app-level source this build can reach is also probed and its answer logged once
     /// under <c>[RealityLog] ControllerBattery:</c>: (e) Unity XR batteryLevel and the device's
     /// feature usages, (a) Android's InputDevice.getBatteryState (API 31+), (b) OVRInput and
     /// OVRPlugin's controller state for each mask, and (c) the OpenXR runtime's extensions naming
@@ -32,7 +32,7 @@ namespace RealityLog.Rig
         private bool leftAwake;
         private bool rightAwake;
 
-        /// <summary>Reads both controllers now; probes and logs every source at startup and on a wake.</summary>
+        /// <summary>Reads both controllers now; probes and logs every source once at startup.</summary>
         public ControllerCharge Read()
         {
             using var trace = RigTrace.Enter("OQC.ControllerBattery.Read");
@@ -61,8 +61,10 @@ namespace RealityLog.Rig
             }
             else if ((leftNow && !leftAwake) || (rightNow && !rightAwake))
             {
+                // A wake re-reads the OS report off the main thread. The full probe stays at
+                // startup: on a wake it made a binder call per input device and a dozen log lines
+                // on the main thread, and controllers wake dozens of times a shift, mid-take too.
                 os.Wake();
-                Probe(leftNow && !leftAwake ? "left controller woke" : "right controller woke");
             }
             leftAwake = leftNow;
             rightAwake = rightNow;

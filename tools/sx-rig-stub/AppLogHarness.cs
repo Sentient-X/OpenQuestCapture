@@ -36,8 +36,28 @@ internal static class AppLogHarness
                     "a start closes the last run's file, and writes a fresh one");
                 var big = new string('x', 300 * 1024);
                 for (var i = 0; i < 4; i++) log.Write(DateTime.UtcNow, "LOG", big);
+                Expect(log.Drain(TimeSpan.FromSeconds(10)), "the writer thread drains the queued lines");
                 Expect(Directory.GetFiles(directory, "app-*.log").Length == 2, "the active file rolls past its bound");
                 Expect(new FileInfo(log.ActivePath).Length < AppLogFile.RollBytes, "the active file stays under its bound");
+            }
+            // Write never waits on the disk: lines from many threads are queued and one writer
+            // thread lands every one, in each thread's order.
+            using (var log = new AppLogFile(directory))
+            {
+                var threads = Enumerable.Range(0, 4).Select(t => new System.Threading.Thread(() =>
+                {
+                    for (var i = 0; i < 500; i++) log.Write(DateTime.UtcNow, "LOG", "t" + t + " " + i);
+                })).ToList();
+                threads.ForEach(t => t.Start());
+                threads.ForEach(t => t.Join());
+                Expect(log.Drain(TimeSpan.FromSeconds(10)), "2000 lines from 4 threads drain");
+                var lines = File.ReadAllLines(log.ActivePath);
+                var ordered = Enumerable.Range(0, 4).All(t =>
+                {
+                    var mine = lines.Where(l => l.Contains(" LOG t" + t + " ")).Select(l => int.Parse(l.Substring(l.LastIndexOf(' ') + 1))).ToList();
+                    return mine.Count == 500 && mine.SequenceEqual(Enumerable.Range(0, 500));
+                });
+                Expect(ordered && log.Dropped == 0, $"every line lands, in its thread's order (dropped {log.Dropped})");
             }
             for (var i = 0; i < AppLogFile.MaxClosedFiles + 4; i++)
             {

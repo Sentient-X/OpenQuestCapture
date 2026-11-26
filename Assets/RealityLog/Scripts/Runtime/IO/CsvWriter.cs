@@ -25,6 +25,13 @@ namespace RealityLog.IO
         // (LocaleFixer pins DefaultThreadCurrentCulture to en-US for all threads).
         private readonly CultureInfo _culture;
         private readonly Task _writerTask;
+        // Rows handed out by RentRow come back here once written: the body logger writes a
+        // 598-value row per poll, and a fresh array each time (with a string per value on the
+        // writer) was a steady garbage stream whose collections pause Unity's main thread too.
+        private const int PooledRows = 64;
+        private readonly ConcurrentBag<double[]> _rowPool = new();
+        private int _pooledLength;
+        private readonly char[] _number = new char[64];
         private long _rowsWritten;
         private bool _disposed = false;
 
@@ -33,7 +40,10 @@ namespace RealityLog.IO
             _filePath = filePath;
             _header = header ?? Array.Empty<string>();
             _culture = CultureInfo.CurrentCulture;
-            _writerTask = Task.Run(WriteLoop);
+            // Its own thread, not a pool one: the loop blocks for the writer's life, and five of
+            // them held pool threads the rig's tracking feed and the HTTP handlers wait for.
+            _writerTask = Task.Factory.StartNew(WriteLoop, CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         /// <summary>Rows written to the file so far (excludes the header). Safe from any thread.</summary>
@@ -43,6 +53,19 @@ namespace RealityLog.IO
         /// Enqueues a numeric row. The array is formatted later on the writer thread,
         /// so callers must not modify it after this call.
         /// </summary>
+        /// <summary>
+        /// A row of <paramref name="length"/> values to fill and hand to <see cref="EnqueueRow(double[])"/>;
+        /// once written it returns here for a later row. Every value must be set: a rented row
+        /// holds an earlier row's values. One length per writer.
+        /// </summary>
+        public double[] RentRow(int length)
+        {
+            Interlocked.CompareExchange(ref _pooledLength, length, 0);
+            if (length == Volatile.Read(ref _pooledLength) && _rowPool.TryTake(out var row))
+                return row;
+            return new double[length];
+        }
+
         public void EnqueueRow(params double[] columns)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(CsvWriter));
@@ -92,6 +115,9 @@ namespace RealityLog.IO
                 if (item is double[] numbers)
                 {
                     WriteNumberRow(writer, numbers);
+                    var pooled = Volatile.Read(ref _pooledLength);
+                    if (pooled != 0 && numbers.Length == pooled && _rowPool.Count < PooledRows)
+                        _rowPool.Add(numbers);
                 }
                 else
                 {
@@ -111,13 +137,17 @@ namespace RealityLog.IO
         }
 
         // Same text as string.Join(",", numbers.Select(f => f.ToString())) on a thread
-        // whose CurrentCulture is _culture.
+        // whose CurrentCulture is _culture: TryFormat is ToString's own formatter, into a
+        // buffer instead of a string per value.
         private void WriteNumberRow(StreamWriter writer, double[] numbers)
         {
             for (int i = 0; i < numbers.Length; i++)
             {
                 if (i > 0) writer.Write(',');
-                writer.Write(numbers[i].ToString(_culture));
+                if (numbers[i].TryFormat(_number, out var written, default, _culture))
+                    writer.Write(_number, 0, written);
+                else
+                    writer.Write(numbers[i].ToString(_culture));
             }
             writer.WriteLine();
         }

@@ -169,23 +169,31 @@ namespace RealityLog.Network
             // Heartbeat log every 60 seconds — confirms server is alive and shows IP info
             if (Time.realtimeSinceStartup - lastHeartbeat > 60f)
             {
-                using var heartbeatTrace = RigTrace.Enter("OQC.Http.Heartbeat");
                 lastHeartbeat = Time.realtimeSinceStartup;
-                try
+                // The address lookup is a resolver call that can wait seconds with no DNS; on the
+                // main thread it held the frame, and a frame held past 500 ms is a body-tracking
+                // gap that fails the take. It runs on the pool, with what this frame read.
+                var heartbeatPort = port;
+                var battery = cachedBattery;
+                var recording = cachedIsRecording;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    var ips = new List<string>();
-                    var hostName = System.Net.Dns.GetHostName();
-                    foreach (var addr in System.Net.Dns.GetHostAddresses(hostName))
+                    try
                     {
-                        if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                            ips.Add(addr.ToString());
+                        var ips = new List<string>();
+                        var hostName = System.Net.Dns.GetHostName();
+                        foreach (var addr in System.Net.Dns.GetHostAddresses(hostName))
+                        {
+                            if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                                ips.Add(addr.ToString());
+                        }
+                        Debug.Log($"[{Constants.LOG_TAG}] HEARTBEAT: Server alive on port {heartbeatPort} | IPs: {string.Join(", ", ips)} | Battery: {battery}% | Recording: {recording}");
                     }
-                    Debug.Log($"[{Constants.LOG_TAG}] HEARTBEAT: Server alive on port {port} | IPs: {string.Join(", ", ips)} | Battery: {cachedBattery}% | Recording: {cachedIsRecording}");
-                }
-                catch (Exception ex)
-                {
-                    Debug.Log($"[{Constants.LOG_TAG}] HEARTBEAT: Server alive on port {port} | IP lookup failed: {ex.Message}");
-                }
+                    catch (Exception ex)
+                    {
+                        Debug.Log($"[{Constants.LOG_TAG}] HEARTBEAT: Server alive on port {heartbeatPort} | IP lookup failed: {ex.Message}");
+                    }
+                });
             }
         }
 
