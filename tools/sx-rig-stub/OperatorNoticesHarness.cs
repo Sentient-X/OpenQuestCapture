@@ -95,9 +95,9 @@ static class OperatorNoticesHarness
 
         // Start blocks, each with its owner.
         var held = Screen(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":true,\"heard_seconds_ago\":3},\"ready\":true,\"blocking\":[],\"task\":{\"name\":\"t\"},"
-            + "\"start_refusal\":{\"reason\":\"no_episodes\",\"held\":4,\"notice\":{\"code\":\"no_episodes_held\",\"who\":\"floor_manager\",\"args\":{\"held\":\"4\"}}}}");
-        Expect(held.StartBlocked && held.Blocker.Headline == "No episodes free: 4 held by attempts awaiting review" && held.Blocker.Who == "Floor manager",
-            "no episodes, held by review: " + held.Blocker.Headline);
+            + "\"start_refusal\":{\"reason\":\"no_episodes\",\"held\":4,\"notice\":{\"code\":\"no_episodes\",\"who\":\"floor_manager\",\"args\":{}}}}");
+        Expect(held.StartBlocked && held.Blocker.Headline == "No episodes left in this task" && held.Blocker.Who == "Floor manager",
+            "no episodes, held by review, reads as over (E3135): " + held.Blocker.Headline);
         var build = Screen(Pod + "," + Attributed + ",\"factory\":{\"link\":{\"ok\":true},\"ready\":false,\"blocking\":[{\"id\":\"recorder_build\",\"state\":\"fail\",\"category\":\"build\"}],\"task\":{\"name\":\"t\"},"
             + "\"start_refusal\":{\"reason\":\"readiness\",\"notice\":{\"code\":\"build_not_accepted\",\"args\":{}}}}");
         Expect(build.Blocker.Headline == "App version not approved" && build.Blocker.Action.Contains("approves the trial in the Console"), "build not accepted: " + build.Blocker.Action);
