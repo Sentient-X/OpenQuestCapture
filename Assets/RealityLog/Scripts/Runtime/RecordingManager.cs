@@ -371,8 +371,8 @@ namespace RealityLog
 
         /// <summary>
         /// Stops recording from all subsystems in the proper order, without blocking Unity's
-        /// main thread on the parts that wait (sx#4210): on the main thread the rig's cutoff
-        /// (only when the rig is free; never waiting on an arming), the capture timer, both
+        /// main thread on the parts that wait (sx#4210): the rig's cutoff on its own worker (never
+        /// waiting on an arming; no sx_rig call runs on Unity's thread), then on the main thread the capture timer, both
         /// eyes' exposure freeze, the CSV loggers, the stream manifest and the tracking origin;
         /// then on a worker thread with the JVM attached each eye's encoder drain and file
         /// close (7.5 s for the right eye on pod5 2026-11-15, which froze every pose, controller
@@ -421,127 +421,150 @@ namespace RealityLog
 
             // Store directory name before resetting state
             string savedDirectory = currentSessionDirectory ?? string.Empty;
-            var finishers = new List<(string name, Action finish)>();
-            try
-            {
-                // The actual end of acquisition, before any drain or flush. A rig still arming
-                // (sx_rig_start_armed, seconds) is never waited on here: the worker's stop waits
-                // for it, and sx_rig_stop then ends its capture.
-                var rig = RigCoordinator.Instance;
-                var cutoff = rig is null || rig.TryRequestStopEpisode();
-                EndPhase(cutoff ? "rig_cutoff" : "rig_cutoff_deferred");
-                captureTimer.StopCapture();
-                EndPhase("capture_timer");
-
-                // Freeze both camera exposure timelines before either encoder drains, so the
-                // second eye never records on while the first finalizes.
-                foreach (var provider in cameraProviders)
-                {
-                    provider.RequestStopRecordingSession();
-                    EndPhase($"request_stop:{provider.name}");
-                }
-                foreach (var provider in cameraProviders)
-                {
-                    if (provider.BeginStopRecordingSession() is { } finish) finishers.Add((provider.name, finish));
-                    EndPhase($"begin_stop:{provider.name}");
-                }
-
-                if (recordDepthMaps && depthMapExporter != null)
-                {
-                    depthMapExporter.StopExport();
-                    EndPhase("depth");
-                }
-                foreach (var logger in poseLoggers)
-                {
-                    logger.StopLogging();
-                    EndPhase($"stop_logging:{logger.name}");
-                }
-                foreach (var logger in imuLoggers)
-                {
-                    logger.StopLogging();
-                    EndPhase($"stop_logging:{logger.name}");
-                }
-                foreach (var logger in bodyTrackingLoggers)
-                {
-                    logger.StopLogging();
-                    EndPhase($"stop_logging:{logger.name}");
-                }
-
-                WriteStreamManifest(savedDirectory);
-                EndPhase("stream_manifest");
-                WriteTrackingOriginRecord(savedDirectory);
-                EndPhase("tracking_origin");
-            }
-            catch
-            {
-                // A throw above leaves isRecording true; report "recording", not a stop that
-                // never finishes, so a retried stop is not mistaken for one in progress.
-                System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
-                throw;
-            }
-            var mainMs = stopTimer.ElapsedMilliseconds;
-            EndPhase("main_thread");
-
             var completion = new System.Threading.Tasks.TaskCompletionSource<bool>(
                 System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
             stopInFlight = completion;
-            var dataPath = Application.persistentDataPath;
-            var worker = new System.Threading.Thread(() =>
+
+            // The actual end of acquisition, before any drain or flush: the rig's cutoff first,
+            // taken on its own worker, since sx_rig_request_stop waits on the rig lock (a detach
+            // joining an encoder stream or a check holds it) and this thread pumps every pose,
+            // body and head-camera frame. OQC's capture ends right after it, on this thread, so
+            // the rig's window still ends first, as when the cutoff ran here. A rig still arming
+            // (sx_rig_start_armed, seconds) is never waited on: the worker's stop waits for it,
+            // and sx_rig_stop then ends its capture.
+            var rig = RigCoordinator.Instance;
+            var cutoffTask = rig is null ? System.Threading.Tasks.Task.FromResult(true) : rig.RequestStopCutoff();
+            if (cutoffTask.IsCompleted)
             {
-                string? receipt = null;
-#if UNITY_ANDROID && !UNITY_EDITOR
-                var attached = AndroidJNI.AttachCurrentThread() == 0;
-#endif
+                FinishStop(cutoffTask.Result);
+            }
+            else
+            {
+                pendingStopCutoff = cutoffTask.ContinueWith(
+                    taken => mainThreadWork.Enqueue(() => FinishStop(taken.Result)),
+                    System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously);
+            }
+            return completion.Task;
+
+            // Main thread, once the rig's cutoff is taken: the rest of the stop.
+            void FinishStop(bool cutoff)
+            {
+                pendingStopCutoff = null;
+                var finishers = new List<(string name, Action finish)>();
                 try
                 {
-                    // The eyes are independent encoders with their own threads and files, so
-                    // their finishers run beside each other, each on its own thread with the
-                    // JVM attached (the Java stopRecording joins that eye's encoder output
-                    // thread). In series they cost the sum: 2026-11-22, builds 76/77/84, each
-                    // eye's stop_session median 5.5 s, the stop 11 s (OQC #44).
-                    var finisherThreads = new List<System.Threading.Thread>(finishers.Count);
-                    foreach (var (name, finish) in finishers)
+                    EndPhase(cutoff ? "rig_cutoff" : "rig_cutoff_deferred");
+                    captureTimer.StopCapture();
+                    EndPhase("capture_timer");
+
+                    // Freeze both camera exposure timelines before either encoder drains, so the
+                    // second eye never records on while the first finalizes.
+                    foreach (var provider in cameraProviders)
                     {
-                        var finisher = new System.Threading.Thread(() =>
-                        {
-#if UNITY_ANDROID && !UNITY_EDITOR
-                            var finisherAttached = AndroidJNI.AttachCurrentThread() == 0;
-#endif
-                            var finisherTimer = System.Diagnostics.Stopwatch.StartNew();
-                            try { finish(); }
-                            catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {name} stop failed: {ex}"); }
-                            finally
-                            {
-                                AddPhase($"stop_session:{name}", finisherTimer.ElapsedMilliseconds);
-#if UNITY_ANDROID && !UNITY_EDITOR
-                                if (finisherAttached) AndroidJNI.DetachCurrentThread();
-#endif
-                            }
-                        }) { IsBackground = true, Name = $"RecordingStop-{name}" };
-                        finisherThreads.Add(finisher);
-                        finisher.Start();
+                        provider.RequestStopRecordingSession();
+                        EndPhase($"request_stop:{provider.name}");
                     }
-                    foreach (var finisher in finisherThreads) finisher.Join();
-                    EndPhase("stop_sessions"); // wall time of all finishers together
-                    // Last: the rig's seal reads this session, so every OQC file is final first.
-                    receipt = StopRig(dataPath, savedDirectory);
-                    EndPhase("rig");
+                    foreach (var provider in cameraProviders)
+                    {
+                        if (provider.BeginStopRecordingSession() is { } finish) finishers.Add((provider.name, finish));
+                        EndPhase($"begin_stop:{provider.name}");
+                    }
+
+                    if (recordDepthMaps && depthMapExporter != null)
+                    {
+                        depthMapExporter.StopExport();
+                        EndPhase("depth");
+                    }
+                    foreach (var logger in poseLoggers)
+                    {
+                        logger.StopLogging();
+                        EndPhase($"stop_logging:{logger.name}");
+                    }
+                    foreach (var logger in imuLoggers)
+                    {
+                        logger.StopLogging();
+                        EndPhase($"stop_logging:{logger.name}");
+                    }
+                    foreach (var logger in bodyTrackingLoggers)
+                    {
+                        logger.StopLogging();
+                        EndPhase($"stop_logging:{logger.name}");
+                    }
+
+                    WriteStreamManifest(savedDirectory);
+                    EndPhase("stream_manifest");
+                    WriteTrackingOriginRecord(savedDirectory);
+                    EndPhase("tracking_origin");
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: stop worker failed: {ex}");
+                    // A throw above leaves isRecording true; report "recording", not a stop that
+                    // never finishes, so a retried stop is not mistaken for one in progress.
+                    System.Threading.Volatile.Write(ref state, (int)RecordingState.Recording);
+                    stopInFlight = null;
+                    completion.TrySetException(ex);
+                    throw;
                 }
-                finally
+                var mainMs = stopTimer.ElapsedMilliseconds;
+                EndPhase("main_thread");
+
+                var dataPath = Application.persistentDataPath;
+                var worker = new System.Threading.Thread(() =>
                 {
-#if UNITY_ANDROID && !UNITY_EDITOR
-                    if (attached) AndroidJNI.DetachCurrentThread();
-#endif
-                    mainThreadWork.Enqueue(() => CompleteStop(savedDirectory, receipt, stopTimer, mainMs, phases, completion));
-                }
-            }) { IsBackground = true, Name = "RecordingStop" };
-            stopWorker = worker;
-            worker.Start();
-            return completion.Task;
+                    string? receipt = null;
+    #if UNITY_ANDROID && !UNITY_EDITOR
+                    var attached = AndroidJNI.AttachCurrentThread() == 0;
+    #endif
+                    try
+                    {
+                        // The eyes are independent encoders with their own threads and files, so
+                        // their finishers run beside each other, each on its own thread with the
+                        // JVM attached (the Java stopRecording joins that eye's encoder output
+                        // thread). In series they cost the sum: 2026-11-22, builds 76/77/84, each
+                        // eye's stop_session median 5.5 s, the stop 11 s (OQC #44).
+                        var finisherThreads = new List<System.Threading.Thread>(finishers.Count);
+                        foreach (var (name, finish) in finishers)
+                        {
+                            var finisher = new System.Threading.Thread(() =>
+                            {
+    #if UNITY_ANDROID && !UNITY_EDITOR
+                                var finisherAttached = AndroidJNI.AttachCurrentThread() == 0;
+    #endif
+                                var finisherTimer = System.Diagnostics.Stopwatch.StartNew();
+                                try { finish(); }
+                                catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: {name} stop failed: {ex}"); }
+                                finally
+                                {
+                                    AddPhase($"stop_session:{name}", finisherTimer.ElapsedMilliseconds);
+    #if UNITY_ANDROID && !UNITY_EDITOR
+                                    if (finisherAttached) AndroidJNI.DetachCurrentThread();
+    #endif
+                                }
+                            }) { IsBackground = true, Name = $"RecordingStop-{name}" };
+                            finisherThreads.Add(finisher);
+                            finisher.Start();
+                        }
+                        foreach (var finisher in finisherThreads) finisher.Join();
+                        EndPhase("stop_sessions"); // wall time of all finishers together
+                        // Last: the rig's seal reads this session, so every OQC file is final first.
+                        receipt = StopRig(dataPath, savedDirectory);
+                        EndPhase("rig");
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: stop worker failed: {ex}");
+                    }
+                    finally
+                    {
+    #if UNITY_ANDROID && !UNITY_EDITOR
+                        if (attached) AndroidJNI.DetachCurrentThread();
+    #endif
+                        mainThreadWork.Enqueue(() => CompleteStop(savedDirectory, receipt, stopTimer, mainMs, phases, completion));
+                    }
+                }) { IsBackground = true, Name = "RecordingStop" };
+                stopWorker = worker;
+                worker.Start();
+            }
         }
 
         /// <summary>Main thread, once the stop worker is done: the recording reads Idle.</summary>
@@ -708,6 +731,8 @@ namespace RealityLog
         // The stop that runs (worker started, completion not yet applied); null otherwise.
         private System.Threading.Tasks.TaskCompletionSource<bool>? stopInFlight;
         private System.Threading.Thread? stopWorker;
+        // The stop waiting for the rig's cutoff (its main-thread half queued once taken), or null.
+        private System.Threading.Tasks.Task? pendingStopCutoff;
         // Work a worker hands back to Unity's main thread, run in Update.
         private readonly System.Collections.Concurrent.ConcurrentQueue<Action> mainThreadWork = new();
 
@@ -808,6 +833,15 @@ namespace RealityLog
         /// encoder stop/finalization is synchronous, and the bg poll is just a verification
         /// safety net, so skipping it here is fine.
         /// </summary>
+        private void DrainTeardownWork()
+        {
+            while (mainThreadWork.TryDequeue(out var work))
+            {
+                try { work(); }
+                catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: teardown work failed: {ex}"); }
+            }
+        }
+
         private void StopForTeardown(string reason)
         {
             if (stopInFlight != null)
@@ -816,19 +850,21 @@ namespace RealityLog
                 // bounded 15 s, the rig's 5 s), then apply its completion here, since Update
                 // will not run again.
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while a stop runs; waiting for it.");
+                // A stop still waiting for the rig's cutoff gets it (a worker's call, bounded
+                // here), then its main-thread half runs below and starts its worker.
+                pendingStopCutoff?.Wait(TimeSpan.FromSeconds(3));
+                DrainTeardownWork();
                 stopWorker?.Join(TimeSpan.FromSeconds(22));
-                while (mainThreadWork.TryDequeue(out var work))
-                {
-                    try { work(); }
-                    catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: teardown work failed: {ex}"); }
-                }
+                DrainTeardownWork();
                 return;
             }
             if (isRecording)
             {
                 Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: {reason} while recording; performing synchronous stop.");
 
-                RigCoordinator.Instance?.RequestStopEpisode();
+                // The rig's cutoff on a worker, waited for here at most 3 s: no sx_rig call runs on
+                // Unity's thread, even at teardown.
+                RigCoordinator.Instance?.RequestStopEpisodeBounded(TimeSpan.FromSeconds(3));
                 captureTimer.StopCapture();
                 HeadTrackingMonitor.EndRecording();
 
@@ -849,7 +885,13 @@ namespace RealityLog
                 string savedDirectory = currentSessionDirectory ?? string.Empty;
                 WriteStreamManifest(savedDirectory);
                 WriteTrackingOriginRecord(savedDirectory);
-                LastRigStopReceiptJson = StopRig(Application.persistentDataPath, savedDirectory); // last: the rig's seal reads this session
+                // Last: the rig's seal reads this session. On a worker (sx_rig_stop is bounded 5 s,
+                // after any arming), waited for here at most 8 s.
+                var dataPathForRig = Application.persistentDataPath;
+                string? teardownReceipt = null;
+                RigLane.RunBounded("RecordingStopRig", () => teardownReceipt = StopRig(dataPathForRig, savedDirectory),
+                    TimeSpan.FromSeconds(8));
+                LastRigStopReceiptJson = teardownReceipt;
                 isRecording = false;
                 System.Threading.Volatile.Write(ref state, (int)RecordingState.Idle);
                 recordingStartTime = 0f;

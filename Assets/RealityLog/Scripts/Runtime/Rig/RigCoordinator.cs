@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -33,9 +34,15 @@ namespace RealityLog.Rig
     /// (<c>sx_rig_start_armed</c>: the rig arms and anchors the episode itself, inside OQC's
     /// recording). <see cref="StopEpisode"/>, after OQC's files are final, returns the receipt.</para>
     ///
-    /// The USB worker enumerates, attaches and detaches; nothing on the main thread waits on USB or
-    /// the rig lock for a hotplug (build 105 applied it here, and on 2026-11-26 an encoder replug
-    /// starved the body poll for 822 ms). The episode calls, <see cref="IsExpected"/> and
+    /// <para><b>Threads.</b> No sx_rig call runs on Unity's main thread (<see cref="SxRig.MarkMainThread"/>
+    /// counts and logs one that does): every call takes the library's rig lock, which a check,
+    /// start, stop or a detach joining an encoder stream holds for seconds, and the main thread
+    /// pumps FixedUpdate's body poll and the head-camera frames (build 105 attached USB here, and
+    /// on 2026-11-26 an encoder replug starved the body poll for 822 ms). The USB worker
+    /// enumerates, attaches and detaches; the rig lane opens, closes and reads the API token; the
+    /// stop cutoff and the quit run on their own workers.</para>
+    ///
+    /// The episode calls, <see cref="IsExpected"/> and
     /// <see cref="StatusJson"/> are safe from any thread.
     /// </summary>
     public class RigCoordinator : MonoBehaviour
@@ -128,6 +135,17 @@ namespace RealityLog.Rig
         private volatile RigUsbSnapshot snapshot = new();
         // Which devices the native rig owns; applied on the USB worker, read here for status.
         private readonly RigUsbAttachments usb = new();
+        // sx_rig_open, sx_rig_close and sx_rig_api_token, in order, never on Unity's thread
+        // (every sx_rig call may wait seconds on the rig lock). Results come back through
+        // laneResults, which Update applies.
+        private readonly RigLane lane = new("RigLifecycle", ex =>
+            Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: rig lifecycle work failed: {ex}"));
+        private readonly System.Collections.Concurrent.ConcurrentQueue<Action> laneResults = new();
+        // The open in flight on the lane, null when none is. Main thread only.
+        private TaskCompletionSource<RigRefusal?>? opening;
+        private int tokenPending;
+        // At quit, the main thread waits at most this long for the rig's stop, detaches and close.
+        private static readonly TimeSpan ShutDownBound = TimeSpan.FromSeconds(10);
         private bool configPresent;
         // Read by Arm on a worker thread; written on the main thread.
         private volatile bool expected;
@@ -251,6 +269,9 @@ namespace RealityLog.Rig
                 return;
             }
             Instance = this;
+            // No sx_rig call runs on this thread; one that does is counted and logged once.
+            SxRig.MarkMainThread();
+            SxRig.CalledOnMainThread += ReportNativeCallOnMainThread;
             dataPath = Application.persistentDataPath;
             appVersion = Application.version;
             configPath = Path.Combine(Application.persistentDataPath, ConfigFileName);
@@ -392,6 +413,13 @@ namespace RealityLog.Rig
             }
         }
 
+        private readonly HashSet<string> nativeOnMainReported = new();
+        private void ReportNativeCallOnMainThread(string function)
+        {
+            if (nativeOnMainReported.Add(function))
+                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {function} ran on Unity's main thread (it waits on the rig lock); this is a bug");
+        }
+
         private void OnApplicationFocus(bool hasFocus) => presence.Focus(hasFocus);
 
         private void OnApplicationPause(bool pauseStatus) => presence.Pause(pauseStatus);
@@ -457,6 +485,7 @@ namespace RealityLog.Rig
         private void Update()
         {
             using var trace = RigTrace.Enter("OQC.Rig.Update");
+            while (laneResults.TryDequeue(out var result)) result();
             ConsumeUsbRefresh();
             if (Time.unscaledTime - lastHeadsetRead >= 1f)
             {
@@ -711,19 +740,20 @@ namespace RealityLog.Rig
         /// yet) or reopens it when its config changed and no episode is active, so the open
         /// config carries what sx_rig_enroll_site needs (credentials_dir, quest_apk_build_id,
         /// the serial through pod_config_path). The site travels in the enroll request, so
-        /// nothing is written to pod_config.json. Returns a refusal or null.
+        /// nothing is written to pod_config.json. The close and open run on the rig lane; the
+        /// task completes on the main thread with a refusal or null. Never waits.
         /// </summary>
-        public RigRefusal? BeginEnrollment()
+        public Task<RigRefusal?> BeginEnrollmentAsync()
         {
             PollIdentity(force: true);
             if (libraryMissing)
             {
-                return new RigRefusal("rig_library_missing", "this build has no libsx_rig.so", openErrorJson);
+                return Task.FromResult<RigRefusal?>(new RigRefusal("rig_library_missing", "this build has no libsx_rig.so", openErrorJson));
             }
             if (apkBuildId.Length == 0)
             {
-                return new RigRefusal("rig_identity_pending",
-                    "the installed APK's build id is still being computed; retry in a few seconds");
+                return Task.FromResult<RigRefusal?>(new RigRefusal("rig_identity_pending",
+                    "the installed APK's build id is still being computed; retry in a few seconds"));
             }
             if (opened && BuildConfig() is string config && config != openedConfigJson)
             {
@@ -734,16 +764,10 @@ namespace RealityLog.Rig
                         CloseRig();
                     }
                 }
-                // An operator's enrollment, never during a take: wait out a USB cycle that began
-                // before the close (one native call) so the reopen below is not deferred.
-                if (!opened) usb.WaitForSync();
             }
-            if (!opened)
-            {
-                TryOpen();
-            }
+            var open = opened ? Task.FromResult<RigRefusal?>(null) : StartOpen();
             RefreshStatus();
-            return opened ? null : new RigRefusal("rig_open_failed", "sx_rig_open failed", openErrorJson);
+            return open;
         }
 
         /// <summary>
@@ -753,7 +777,7 @@ namespace RealityLog.Rig
         public void FinishEnrollment(bool enrolledNow)
         {
             if (!enrolledNow) return;
-            RefreshApiToken();
+            RequestApiToken();
         }
 
         /// <summary>
@@ -785,20 +809,36 @@ namespace RealityLog.Rig
         public string? ApiToken => apiToken;
         private volatile string? apiToken;
 
-        private void RefreshApiToken()
+        /// <summary>Reads the API token on the rig lane (sx_rig_api_token waits on the rig lock). Any thread; never waits.</summary>
+        private void RequestApiToken()
         {
             if (!opened || !enrolled)
             {
                 apiToken = null;
                 return;
             }
+            if (System.Threading.Interlocked.Exchange(ref tokenPending, 1) == 1) return;
+            if (!lane.Post(ReadApiTokenOnLane)) System.Threading.Volatile.Write(ref tokenPending, 0);
+        }
+
+        private void ReadApiTokenOnLane()
+        {
             try
             {
+                if (!opened || !enrolled)
+                {
+                    apiToken = null;
+                    return;
+                }
                 apiToken = JToken.Parse(SxRig.ApiToken())["token"] is JValue { Type: JTokenType.String } t ? (string?)t : null;
             }
             catch (Exception ex) when (ex is SxRigException || ex is JsonException)
             {
                 apiToken = null;
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref tokenPending, 0);
             }
         }
 
@@ -931,23 +971,38 @@ namespace RealityLog.Rig
         }
 
         /// <summary>
-        /// <see cref="RequestStopEpisode"/> for Unity's main thread: never waits on a check or a
-        /// start holding the rig (seconds), and answers false then; that stop's
-        /// <see cref="StopEpisode"/> waits for the arming and its sx_rig_stop ends capture.
-        /// True when the cutoff was taken or nothing needed one. Never throws.
+        /// The stop cutoff for Unity's main thread, which never waits on the rig: the call runs
+        /// on its own worker (sx_rig_request_stop waits on the rig lock, which a detach joining an
+        /// encoder stream holds), and the task completes once the cutoff is taken. The library
+        /// keeps the first cutoff; the caller ends its own capture only after this task, so the
+        /// rig's window still ends before OQC's, as when the call ran on the main thread. False
+        /// when a check or an arming holds the rig: that stop's <see cref="StopEpisode"/> waits
+        /// for it and its sx_rig_stop ends capture. Never throws.
         /// </summary>
-        public bool TryRequestStopEpisode()
+        public Task<bool> RequestStopCutoff()
         {
-            if (noEarlyStop) return true;
+            if (noEarlyStop) return Task.FromResult(true);
             lock (episodeLock)
             {
-                if (rigWork != null) return false;
-                if (!episodeActive) return true;
+                if (rigWork != null) return Task.FromResult(false);
+                if (!episodeActive) return Task.FromResult(true);
                 ClaimRigLocked("request_stop");
             }
-            RequestStopClaimed();
-            return true;
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            new System.Threading.Thread(() =>
+            {
+                try { RequestStopClaimed(); }
+                finally { done.TrySetResult(true); }
+            }) { IsBackground = true, Name = "RigStopCutoff" }.Start();
+            return done.Task;
         }
+
+        /// <summary>
+        /// Teardown (Unity's thread, quitting or pausing): <see cref="RequestStopEpisode"/> on a
+        /// worker, waited for at most <paramref name="timeout"/>. True when it finished.
+        /// </summary>
+        public bool RequestStopEpisodeBounded(TimeSpan timeout) =>
+            RigLane.RunBounded("RigStopCutoff", RequestStopEpisode, timeout);
 
         private void RequestStopClaimed()
         {
@@ -1020,7 +1075,7 @@ namespace RealityLog.Rig
             lastPoll = Time.unscaledTime;
             configPresent = File.Exists(configPath);
             enrolled = File.Exists(Path.Combine(credentialsPath, CredentialFileName));
-            if (opened && enrolled && apiToken == null) RefreshApiToken();
+            if (opened && enrolled && apiToken == null) RequestApiToken();
             PollIdentity(force: false);
             ReportMainThreadTime("identity", began);
 
@@ -1028,10 +1083,10 @@ namespace RealityLog.Rig
             expected = Expected;
             // A rig that takes the APK's identity (quest_apk_build_id) opens once it is hashed.
             var identityReady = rigKeys == null || !rigKeys.Contains("quest_apk_build_id") || apkBuildId.Length > 0 || activity == null;
-            if (Expected && !opened && !libraryMissing && EmbodimentSettled && identityReady
+            if (Expected && !opened && opening == null && !libraryMissing && EmbodimentSettled && identityReady
                 && Time.unscaledTime - lastOpenAttempt >= OpenRetrySeconds)
             {
-                TryOpen();
+                StartOpen();
             }
             began = System.Diagnostics.Stopwatch.GetTimestamp();
             // The worker enumerates, attaches and detaches; this thread only asks for a cycle.
@@ -1100,12 +1155,22 @@ namespace RealityLog.Rig
             }
         }
 
-        private void TryOpen()
+        private RigRefusal OpenRefusal() => new("rig_open_failed", "sx_rig_open failed", openErrorJson);
+
+        /// <summary>
+        /// Main thread: validates and builds the open config here, then opens the rig on the
+        /// rig lane (sx_rig_open waits on the rig lock and opens the rig's parts), after any USB
+        /// cycle that began before a close: a late attach must never land on the new rig
+        /// unrecorded. The task completes on the main thread with a refusal or null; an open
+        /// already in flight is returned, never started twice. Never waits.
+        /// </summary>
+        private Task<RigRefusal?> StartOpen()
         {
-            // A USB cycle that began before a close may still be inside a native attach; opening
-            // now could land that attach on the new rig unrecorded. It ends within one call.
-            if (usb.SyncInFlight) return;
+            if (shutDown) return Task.FromResult<RigRefusal?>(OpenRefusal());
+            if (opening != null) return opening.Task;
+            if (opened) return Task.FromResult<RigRefusal?>(null);
             lastOpenAttempt = Time.unscaledTime;
+            string config;
             try
             {
                 if (rigKeys == null)
@@ -1115,7 +1180,7 @@ namespace RealityLog.Rig
                         ["code"] = "rig_config_keys_missing",
                         ["detail"] = "the rig's open-config key set did not load (see startupErrors.rig_config_keys)",
                     }.ToString(Formatting.None);
-                    return;
+                    return Task.FromResult<RigRefusal?>(OpenRefusal());
                 }
                 // pod_config.json is validated, never partly ignored: a misspelled or foreign key
                 // refuses the open, with the keys, until the file is fixed.
@@ -1137,11 +1202,10 @@ namespace RealityLog.Rig
                         QueueCue(RigCues.Cue.Refused, "pod_config.json has unknown keys");
                         Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {problem["detail"]}");
                     }
-                    return;
+                    return Task.FromResult<RigRefusal?>(OpenRefusal());
                 }
                 startupErrors.Remove("pod_config");
                 podConfigProblem = null;
-                string config;
                 try
                 {
                     config = BuildConfig();
@@ -1150,37 +1214,79 @@ namespace RealityLog.Rig
                     || ex is InvalidOperationException)
                 {
                     openErrorJson = new JObject { ["code"] = "argument", ["detail"] = ex.Message }.ToString(Formatting.None);
-                    return;
+                    return Task.FromResult<RigRefusal?>(OpenRefusal());
                 }
                 Directory.CreateDirectory(stagingPath);
                 Directory.CreateDirectory(credentialsPath);
-                SxRig.Open(config);
-                openedConfigJson = config;
-                usb.Opened();
-                opened = true;
-                openErrorJson = null;
-                nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
-                trackingTimer ??= new System.Threading.Timer(_ => ObserveTrackingTick(), null, 0, TrackingIntervalMs);
-                RefreshApiToken();
-                StartDeviceReports();
-                Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
-            }
-            catch (SxRigLibraryMissingException ex)
-            {
-                libraryMissing = true;
-                openErrorJson = ex.ErrorJson;
-                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: rig expected but libsx_rig.so is missing: {ex.Message}");
-            }
-            catch (SxRigException ex)
-            {
-                openErrorJson = ex.ErrorJson;
-                Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {ex.Message}");
             }
             catch (Exception ex)
             {
                 openErrorJson = "{\"code\":\"internal\",\"detail\":\"" + RigJson.Escape(ex.Message) + "\"}";
                 Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: open failed: {ex.Message}");
+                return Task.FromResult<RigRefusal?>(OpenRefusal());
             }
+            var done = new TaskCompletionSource<RigRefusal?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            opening = done;
+            if (!lane.Post(() =>
+            {
+                Exception? failure = null;
+                try
+                {
+                    usb.WaitForSync();
+                    SxRig.Open(config);
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+                laneResults.Enqueue(() => OpenFinished(config, failure, done));
+            }))
+            {
+                opening = null;
+                done.TrySetResult(OpenRefusal());
+            }
+            return done.Task;
+        }
+
+        /// <summary>Main thread: what an open on the lane came to.</summary>
+        private void OpenFinished(string config, Exception? failure, TaskCompletionSource<RigRefusal?> done)
+        {
+            opening = null;
+            if (shutDown)
+            {
+                // The quit's close is queued behind this open on the lane and closes it.
+                done.TrySetResult(OpenRefusal());
+                return;
+            }
+            switch (failure)
+            {
+                case null:
+                    openedConfigJson = config;
+                    usb.Opened();
+                    opened = true;
+                    openErrorJson = null;
+                    nativeStatusTimer ??= new System.Threading.Timer(_ => PollNativeStatus(), null, 0, 1000);
+                    trackingTimer ??= new System.Threading.Timer(_ => ObserveTrackingTick(), null, 0, TrackingIntervalMs);
+                    RequestApiToken();
+                    StartDeviceReports();
+                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: rig opened (config={(configPresent ? ConfigFileName : "none")})");
+                    break;
+                case SxRigLibraryMissingException ex:
+                    libraryMissing = true;
+                    openErrorJson = ex.ErrorJson;
+                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: rig expected but libsx_rig.so is missing: {ex.Message}");
+                    break;
+                case SxRigException ex:
+                    openErrorJson = ex.ErrorJson;
+                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: {ex.Message}");
+                    break;
+                default:
+                    openErrorJson = "{\"code\":\"internal\",\"detail\":\"" + RigJson.Escape(failure.Message) + "\"}";
+                    Debug.LogError($"[{Constants.LOG_TAG}] RigCoordinator: open failed: {failure.Message}");
+                    break;
+            }
+            RefreshStatus();
+            done.TrySetResult(opened ? null : OpenRefusal());
         }
 
         /// <summary>
@@ -1311,12 +1417,18 @@ namespace RealityLog.Rig
         /// </summary>
         private void CloseRig()
         {
-            SxRig.Close();
+            // Closed for everyone at once (timers and workers check opened); the native close
+            // runs on the lane, after any USB cycle in flight, and before the next open there.
             opened = false;
             InvalidateStatus();
             openedConfigJson = "";
             // The next USB cycle attaches every listed device to the reopened rig.
             usb.Closed();
+            lane.Post(() =>
+            {
+                usb.WaitForSync();
+                SxRig.Close();
+            });
             lastOpenAttempt = float.NegativeInfinity;
         }
 
@@ -1855,20 +1967,6 @@ namespace RealityLog.Rig
             hapticUntil = Time.unscaledTime + seconds;
         }
 
-        /// <summary>sx_rig_status parsed, or null (busy, failed, unparsable). Any thread.</summary>
-        private static JObject? SafeStatus()
-        {
-            try
-            {
-                var status = JToken.Parse(SxRig.Status()) as JObject;
-                return (string?)status?["state"] == "busy" ? null : status;
-            }
-            catch (Exception ex) when (ex is SxRigException || ex is JsonException)
-            {
-                return null;
-            }
-        }
-
         private static string JsonString(string value) =>
             value.Length == 0 ? "null" : "\"" + RigJson.Escape(value) + "\"";
 
@@ -1879,24 +1977,58 @@ namespace RealityLog.Rig
         /// <summary>
         /// Main thread: what a quit does to the rig (the episode stopped, USB detached, the rig
         /// closed, logs flushed), once. A self relaunch (FrozenHeadRecovery) calls it before the
-        /// process ends, since OnDestroy never runs then.
+        /// process ends, since OnDestroy never runs then. The rig's part runs off this thread (the
+        /// stop on its own worker, then the detaches and the close on the lane, after any open or
+        /// close queued there) and is waited for at most <see cref="ShutDownBound"/>; the USB
+        /// bridge closes its descriptors only after the close, so a device is always detached
+        /// first, however long that takes.
         /// </summary>
         public void ShutDown()
         {
             if (!ReferenceEquals(Instance, this) || shutDown) return;
             shutDown = true;
-            StopEpisode();
-            // No USB cycle starts or commits after this. Detaching here, at quit, may wait on the
-            // rig lock; the bridge closes the descriptors only after the worker's last cycle.
-            foreach (var device in usb.ShutDown())
+            // No USB cycle starts or commits after this.
+            var devices = usb.ShutDown();
+            var refresh = usbRefresh;
+            usbRefresh = null;
+            // Not disposed: a close that outlives the bound still sets it.
+            var finished = new System.Threading.ManualResetEventSlim(false);
+            var closeRig = new System.Threading.Thread(() =>
             {
                 try
                 {
-                    SxRig.DetachUsb(device.deviceName);
+                    StopEpisode();
                 }
-                catch (SxRigException)
+                finally
                 {
+                    var posted = lane.Post(() =>
+                    {
+                        try
+                        {
+                            foreach (var device in devices)
+                            {
+                                try { SxRig.DetachUsb(device.deviceName); }
+                                catch (SxRigException) { }
+                            }
+                            SxRig.Close();
+                            opened = false;
+                        }
+                        finally
+                        {
+                            // Its worker closes the bridge after its last cycle: the rig no
+                            // longer holds any descriptor.
+                            refresh?.Dispose();
+                            finished.Set();
+                        }
+                    });
+                    lane.Dispose();
+                    if (!posted) refresh?.Dispose();
                 }
+            }) { IsBackground = true, Name = "RigShutDown" };
+            closeRig.Start();
+            if (!finished.Wait(ShutDownBound))
+            {
+                Debug.LogWarning($"[{Constants.LOG_TAG}] RigCoordinator: the rig's stop and close are still running after {ShutDownBound.TotalSeconds:F0} s; quitting on");
             }
             nativeStatusTimer?.Dispose();
             nativeStatusTimer = null;
@@ -1904,23 +2036,15 @@ namespace RealityLog.Rig
             trackingTimer = null;
             deviceReportStop.Set();
             deviceReportThread?.Join(1000);
-            if (opened)
-            {
-                SxRig.Close();
-                opened = false;
-            }
             InvalidateStatus();
             parsedStatus.Dispose();
             Application.logMessageReceivedThreaded -= OnLogLine;
             appLog?.Dispose();
             appLog = null;
-            if (usbRefresh != null)
+            if (refresh != null)
             {
-                // Its worker owns close (on its own global reference) after any outstanding
-                // cycle completes. The native owners above have already detached and the rig is
-                // closed, so no fd is closed early; the main thread's wrapper is released here.
-                usbRefresh.Dispose();
-                usbRefresh = null;
+                // Its worker owns close (on its own global reference) after the rig closed; the
+                // main thread's wrapper is released here.
                 bridge?.Dispose();
             }
             else
