@@ -41,7 +41,7 @@ namespace RealityLog.Rig
 
         /// <summary>Rig keys the app sets itself (pod_config.json may not).</summary>
         public static readonly string[] AppSet =
-            { "staging_dir", "credentials_dir", "pod_config_path", "embodiment_assets_dir", "rig" };
+            { "staging_dir", "credentials_dir", "rig_config_path", "embodiment_assets_dir", "rig" };
 
         /// <summary>
         /// Rig keys the app sets when the shipped rig list has them (a newer rig): the installed
@@ -129,7 +129,7 @@ namespace RealityLog.Rig
             {
                 ["staging_dir"] = stagingDir,
                 ["credentials_dir"] = credentialsDir,
-                ["pod_config_path"] = podConfigPath,
+                ["rig_config_path"] = podConfigPath,
             };
             foreach (var key in Settings.Concat(Site))
             {
