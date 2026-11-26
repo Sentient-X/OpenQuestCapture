@@ -385,6 +385,11 @@ namespace RealityLog.Rig
             }
 #endif
             // After credentialsPath is the app-private one: the rig ships closed files from there.
+            // A stack trace is gathered for every log line of a type set to carry one, on the
+            // thread that logs (Unity's main thread among them), whether anything reads it or
+            // not: the app log keeps only an error's, so a plain line or a warning gathers none.
+            Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None);
+            Application.SetStackTraceLogType(LogType.Warning, StackTraceLogType.None);
             try
             {
                 appLog = new AppLogFile(Path.Combine(credentialsPath, AppLogDirectoryName));

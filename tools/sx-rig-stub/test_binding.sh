@@ -157,6 +157,13 @@ bash "$here/test_tracking_readiness.sh"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/AppLogFile.cs"
 "$mono" "$out/app-log-harness.exe"
 
+# CsvWriter: numbers formatted without a string per value read exactly as ToString(), and a
+# rented row returns to the pool once written.
+"$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
+    -out:"$out/csv-number-harness.exe" "$here/CsvNumberHarness.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/IO/CsvWriter.cs"
+"$mono" "$out/csv-number-harness.exe"
+
 # DevicePresence: worn, focus and input added to the device report.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$newtonsoft" -r:"$facades/netstandard.dll" \
     -out:"$out/device-presence-harness.exe" "$here/DevicePresenceHarness.cs" "$notices" \

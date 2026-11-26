@@ -392,8 +392,9 @@ namespace RealityLog.OVR
             // Build row: unix_time, ovr_timestamp, mono_time_ns, confidence,
             // calibration_status, fidelity, per-joint data, then skeleton_changed_count
             // and joint_valid_mask_0..2. Fixed length so the trailing columns never shift.
-            // A fresh array per row: the writer may format it later on its own thread.
-            var row = new double[ROW_LENGTH];
+            // A row the writer hands back once written (it formats it later on its own thread):
+            // every value below is set, so an earlier row's values never leak into this one.
+            var row = writer.RentRow(ROW_LENGTH);
             var monoNs = MonotonicClock.Nanos();
             row[0] = ConvertOvrSecToUnixTimeMs(timestamp);
             row[1] = timestamp;
