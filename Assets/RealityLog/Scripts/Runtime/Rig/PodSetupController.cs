@@ -141,16 +141,26 @@ namespace RealityLog.Rig
                 Fail("Stop the recording before setting up the pod.");
                 return;
             }
-            if (rig.BeginEnrollment() is RigRefusal refusal)
-            {
-                Fail($"Cannot enroll: {refusal.Message}");
-                return;
-            }
+            // The rig opens on its own lane (sx_rig_open waits on the rig lock); never on this thread.
+            var prepare = rig.BeginEnrollmentAsync();
             enrolling = true;
-            Status = $"Enrolling at {factory}...";
+            Status = "Opening the rig...";
             var code = JoinCode;
             Task.Run(() =>
             {
+                RigRefusal? refusal;
+                try { refusal = prepare.GetAwaiter().GetResult(); }
+                catch (Exception ex) { refusal = new RigRefusal("rig_open_failed", ex.Message); }
+                if (refusal != null)
+                {
+                    mainThread.Enqueue(() =>
+                    {
+                        enrolling = false;
+                        Fail($"Cannot enroll: {refusal.Message}");
+                    });
+                    return;
+                }
+                mainThread.Enqueue(() => Status = $"Enrolling at {factory}...");
                 try
                 {
                     var answer = rig.Enroll(factory!, auth!, code);

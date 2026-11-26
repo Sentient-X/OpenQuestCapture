@@ -145,6 +145,9 @@ MONO_PATH="$unity_managed" "$mono" "$out/episode-length-harness.exe"
 # RigUsbRefresh: slow Android USB reads never hold the sampling thread or close an in-flight fd.
 bash "$here/test_usb_refresh.sh"
 
+# No sx_rig call on Unity's main thread: the guard, the rig lane and the call-site wiring.
+bash "$here/test_main_thread.sh"
+
 # HeadTrackingMonitor: reject stale or incompletely tracked sources before capture starts.
 bash "$here/test_tracking_readiness.sh"
 

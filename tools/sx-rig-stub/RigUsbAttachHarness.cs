@@ -201,9 +201,9 @@ static class RigUsbAttachHarness
         Expect(!Body("private void Poll()").Contains("ApplyUsbSnapshot") && !Body("private void ConsumeUsbRefresh()").Contains("ApplyUsbSnapshot")
             && !Body("private void Update()").Contains("ApplyUsbSnapshot"),
             "Update, Poll and ConsumeUsbRefresh never apply a snapshot");
-        Expect(Body("private void TryOpen()").Contains("if (usb.SyncInFlight) return;")
+        Expect(Body("private Task<RigRefusal?> StartOpen()").Contains("usb.WaitForSync();")
             && Body("private void CloseRig()").Contains("usb.Closed();") && shutDown.Contains("usb.ShutDown()"),
-            "open defers behind an in-flight cycle; close and quit go through the ledger");
+            "open waits out an in-flight cycle; close and quit go through the ledger");
 
         // 8. No -1 stands in for a capture counter the app could not read (item 3).
         if (args.Length > 1)

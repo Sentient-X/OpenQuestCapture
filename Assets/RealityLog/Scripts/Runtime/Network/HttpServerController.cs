@@ -1787,12 +1787,18 @@ namespace RealityLog.Network
                 return TypedError(503, "enroll_failed", "the rig coordinator is not running", "rig_unavailable");
             }
 
-            RigRefusal? prepareRefusal = null;
-            var signal = server!.EnqueueOnMainThread(() => prepareRefusal = rig.BeginEnrollment());
-            if (!signal.Wait(5000))
+            System.Threading.Tasks.Task<RigRefusal?>? prepare = null;
+            var signal = server!.EnqueueOnMainThread(() => prepare = rig.BeginEnrollmentAsync());
+            if (!signal.Wait(5000) || prepare == null)
             {
                 return MainThreadTimeoutResponse("Main thread did not prepare the enrollment within 5 s; nothing was enrolled");
             }
+            // The rig opens on its own lane (it may wait on the rig lock); this request thread waits.
+            if (!prepare.Wait(TimeSpan.FromSeconds(30)))
+            {
+                return TypedError(503, "enroll_failed", "the rig did not open within 30 s; nothing was enrolled", "rig_open_failed");
+            }
+            var prepareRefusal = prepare.Result;
             if (prepareRefusal != null)
             {
                 return TypedError(503,

@@ -3,6 +3,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace RealityLog.Rig
 {
@@ -214,6 +215,32 @@ namespace RealityLog.Rig
 
         private delegate int JsonOut(byte[]? outJson, UIntPtr cap, out UIntPtr needed);
 
+        // Unity's main thread, once marked; 0 = unmarked (a managed thread id is never 0).
+        private static int mainThreadId;
+        private static long mainThreadCalls;
+
+        /// <summary>
+        /// Marks the calling thread as Unity's main thread. No sx_rig call may run on it: each one
+        /// takes the library's rig lock, which a check, start, stop or detach holds for seconds,
+        /// and that wait starves FixedUpdate and the head-camera frame pump (OQC build 107).
+        /// </summary>
+        public static void MarkMainThread() => Volatile.Write(ref mainThreadId, Thread.CurrentThread.ManagedThreadId);
+
+        /// <summary>How many sx_rig calls ran on the marked main thread; 0 is the law.</summary>
+        public static long MainThreadCalls => Interlocked.Read(ref mainThreadCalls);
+
+        /// <summary>Raised (on the main thread) with the function name for each such call.</summary>
+        public static event Action<string>? CalledOnMainThread;
+
+        private static void OffMain(string function)
+        {
+            var main = Volatile.Read(ref mainThreadId);
+            if (main == 0 || Thread.CurrentThread.ManagedThreadId != main) return;
+            Interlocked.Increment(ref mainThreadCalls);
+            try { CalledOnMainThread?.Invoke(function); }
+            catch (Exception) { }
+        }
+
         /// <summary><c>sx_rig_open</c>: <c>{"staging_dir": "...", "rig": {...}}</c>.</summary>
         public static void Open(string configJson) =>
             Check("sx_rig_open", () => NativeOpen(Utf8(configJson)));
@@ -342,6 +369,7 @@ namespace RealityLog.Rig
         /// <summary><c>sx_rig_close</c>. Never throws; a missing library is already closed.</summary>
         public static void Close()
         {
+            OffMain("sx_rig_close");
             try
             {
                 NativeClose();
@@ -365,6 +393,7 @@ namespace RealityLog.Rig
 
         private static void Check(string function, Func<int> call)
         {
+            OffMain(function);
             int code;
             try
             {
@@ -382,6 +411,7 @@ namespace RealityLog.Rig
 
         private static string CallJson(string function, JsonOut call, int initialBytes = InitialBufferBytes)
         {
+            OffMain(function);
             try
             {
                 var buffer = new byte[initialBytes];
