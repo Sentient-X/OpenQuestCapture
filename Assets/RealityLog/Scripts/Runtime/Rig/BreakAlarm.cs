@@ -12,9 +12,12 @@ namespace RealityLog.Rig
     /// <summary>
     /// Sounds from any running headset once the last take (good or failed) ended more than
     /// <see cref="BreakAlarmPolicy.GraceSeconds"/> ago, signed in or not, worn or not (the rule is
-    /// <see cref="BreakAlarmPolicy"/>'s), climbing as the idle time grows: a soft beep every
-    /// <see cref="SoftBeepEverySeconds"/> s, then a loud beep every <see cref="LoudBeepEverySeconds"/> s,
-    /// then a looping siren. Beside it, the hardware fault alarm (<see cref="HardwareAlarmPolicy"/>):
+    /// <see cref="BreakAlarmPolicy"/>'s). It speaks (owner, 2026-11-25: a beep is annoying and says
+    /// nothing): "Pod N, start now", the headset's own pod number (<see cref="BreakAlarmVoice"/>),
+    /// over and over, climbing as the idle time grows: quietly every <see cref="SoftBeepEverySeconds"/> s,
+    /// then at full level with a <see cref="LoudPauseSeconds"/> s pause, then back to back. The times
+    /// are the same as when it beeped. If the recorded phrases cannot be read, it falls back to a soft
+    /// beep, a loud beep every <see cref="LoudBeepEverySeconds"/> s and a looping siren rather than stay silent. Beside it, the hardware fault alarm (<see cref="HardwareAlarmPolicy"/>):
     /// a low tone while a rig device stands failed or missing, slowing to once every 5 s. From any
     /// alarm's first sound the media volume is held at 70 % of its maximum, 50 % after five minutes
     /// ringing (<see cref="AlarmVolumePolicy"/>, owner 2026-11-26), and unmuted every quarter second, so
@@ -34,6 +37,10 @@ namespace RealityLog.Rig
         private const float SoftBeepVolume = 0.35f;
         /// <summary>How often the rig's devices are read for a hardware fault.</summary>
         private const float FaultLookSeconds = 1f;
+        /// <summary>The silence between two phrases at the second level.</summary>
+        private const float LoudPauseSeconds = 1f;
+        /// <summary>The silence between two phrases at the top level: back to back.</summary>
+        private const float SirenPauseSeconds = 0.25f;
 
         private readonly BreakAlarmPolicy policy = new();
         private readonly HardwareAlarmPolicy hardware = new();
@@ -48,6 +55,10 @@ namespace RealityLog.Rig
         private AudioSource? siren;
         private AudioClip? beep;
         private float nextBeep = float.NegativeInfinity;
+        private AudioClip? phrase;
+        private string? phraseFor;
+        private string phraseWords = "";
+        private float phraseEnds = float.NegativeInfinity;
         private RecordingManager? recorder;
         private string? collector;
         private int? volumeBefore;
@@ -143,15 +154,32 @@ namespace RealityLog.Rig
         private void Escalate(BreakAlarmVerdict level, string who, double idle)
         {
             Sounding = true;
-            nextBeep = float.NegativeInfinity;
-            if (level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
+            var speaks = Phrase() != null;
+            // A phrase already in the air finishes; the new level's pace starts after it.
+            nextBeep = phraseEnds;
+            if (!speaks && level != BreakAlarmVerdict.Siren && siren != null) siren.Stop();
             Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: {level.ToString().ToLowerInvariant()}; no take for " +
-                $"{idle:F0} s since the last one ended (collector {who})");
+                $"{idle:F0} s since the last one ended (collector {who}); " +
+                (speaks ? $"saying \"{phraseWords}\"" : "beeping, no recorded phrase"));
         }
 
-        /// <summary>Every look while alarming: the level's sound, and from Loud on the volume held at 70 % of maximum.</summary>
+        /// <summary>
+        /// Every look while alarming: the phrase at the level's pace, or the level's old sound if there
+        /// is no phrase. Update holds the volume (<see cref="AlarmVolumePolicy"/>).
+        /// </summary>
         private void Play(BreakAlarmVerdict level)
         {
+            var said = Phrase();
+            if (said != null)
+            {
+                if (Time.unscaledTime < nextBeep) return;
+                phraseEnds = Time.unscaledTime + said.length;
+                nextBeep = level == BreakAlarmVerdict.Siren ? phraseEnds + SirenPauseSeconds
+                    : level == BreakAlarmVerdict.Loud ? phraseEnds + LoudPauseSeconds
+                    : Mathf.Max(Time.unscaledTime + SoftBeepEverySeconds, phraseEnds + LoudPauseSeconds);
+                Source().PlayOneShot(said, level == BreakAlarmVerdict.Soft ? SoftBeepVolume : 1f);
+                return;
+            }
             if (level == BreakAlarmVerdict.Siren)
             {
                 StartSiren();
@@ -168,7 +196,6 @@ namespace RealityLog.Rig
         {
             if (siren != null) return siren;
             siren = gameObject.AddComponent<AudioSource>();
-            siren.clip = BuildSiren();
             siren.loop = true;
             siren.spatialBlend = 0f;
             siren.playOnAwake = false;
@@ -184,13 +211,51 @@ namespace RealityLog.Rig
         private void StartSiren()
         {
             var source = Source();
+            if (source.clip == null) source.clip = BuildSiren();
             if (!source.isPlaying) source.Play();
+        }
+
+        /// <summary>
+        /// The recorded phrase for this headset's pod name, read again when the name changes (a headset
+        /// has none until it is enrolled). Null when there is no recorded phrase to say.
+        /// </summary>
+        private AudioClip? Phrase()
+        {
+            var podName = RigCoordinator.Instance?.PodName ?? "";
+            if (phraseFor == podName) return phrase;
+            phraseFor = podName;
+            if (phrase != null) Destroy(phrase);
+            phrase = null;
+            try
+            {
+                var file = Resources.Load<TextAsset>(BreakAlarmVoice.ResourceName);
+                var read = BreakAlarmVoice.Read(file != null ? file.bytes : null, podName);
+                if (file != null) Resources.UnloadAsset(file);
+                if (read is BreakAlarmVoice.Phrase found)
+                {
+                    phrase = AudioClip.Create("BreakAlarmPhrase", found.Samples.Length, 1, found.Rate, false);
+                    phrase.SetData(found.Samples, 0);
+                    phraseWords = found.Words;
+                    Debug.Log($"[{Constants.LOG_TAG}] break alarm: will say \"{phraseWords}\" (pod name \"{podName}\")");
+                }
+                else
+                {
+                    Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: no recorded phrase in {BreakAlarmVoice.ResourceName}; it will beep");
+                }
+            }
+            catch (Exception ex)
+            {
+                phrase = null;
+                Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: cannot read the recorded phrase, it will beep: {ex.Message}");
+            }
+            return phrase;
         }
 
         private void StopSiren(string why)
         {
             Sounding = false;
             if (siren != null) siren.Stop();
+            phraseEnds = float.NegativeInfinity;
             Debug.LogWarning($"[{Constants.LOG_TAG}] break alarm: off; {why} (collector {collector ?? "unknown"})");
         }
 
