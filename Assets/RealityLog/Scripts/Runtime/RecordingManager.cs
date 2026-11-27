@@ -128,8 +128,34 @@ namespace RealityLog
         /// </summary>
         public float RecordingDuration => isRecording ? Time.time - recordingStartTime : 0f;
 
+        // The headset's CPU and GPU levels: what the runtime chose at start while a take arms,
+        // records or stops, and SustainedLow between takes, so a headset waiting on its charger
+        // runs cooler (2026-11-27: plugged headsets fell 5-19 points in 15 min idle at night).
+        // The OS still raises the clocks under real load; the display rate is not touched.
+        private OVRManager.ProcessorPerformanceLevel? busyCpuLevel;
+        private OVRManager.ProcessorPerformanceLevel? busyGpuLevel;
+        private bool? perfBusy;
+        private float perfBusyUntil;
+
+        /// <summary>A start arms over the next seconds: hold the busy levels that long at least.</summary>
+        private const float PerfArmSeconds = 10f;
+
+        private void ApplyPerfLevels(bool busy)
+        {
+            if (perfBusy == busy || busyCpuLevel is not { } cpu || busyGpuLevel is not { } gpu) return;
+            perfBusy = busy;
+            var idle = OVRManager.ProcessorPerformanceLevel.SustainedLow;
+            OVRManager.suggestedCpuPerfLevel = busy ? cpu : idle;
+            OVRManager.suggestedGpuPerfLevel = busy ? gpu : idle;
+            var said = busy ? cpu + "/" + gpu + " (recording)" : idle + " (between takes)";
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: CPU/GPU level {said}");
+        }
+
         private void Start()
         {
+            busyCpuLevel = OVRManager.suggestedCpuPerfLevel;
+            busyGpuLevel = OVRManager.suggestedGpuPerfLevel;
+            Debug.Log($"[{Constants.LOG_TAG}] RecordingManager: the runtime started at CPU/GPU level {busyCpuLevel}/{busyGpuLevel}");
             // Auto-discover body tracking loggers if not assigned in Inspector
             if (bodyTrackingLoggers == null || bodyTrackingLoggers.Length == 0)
             {
@@ -190,6 +216,8 @@ namespace RealityLog
                 Debug.LogWarning($"[{Constants.LOG_TAG}] RecordingManager: Already recording!");
                 return;
             }
+            perfBusyUntil = Time.unscaledTime + PerfArmSeconds;
+            ApplyPerfLevels(busy: true);
 
             if (CameraSelfTest.Running)
             {
@@ -751,6 +779,7 @@ namespace RealityLog
                 catch (Exception ex) { Debug.LogError($"[{Constants.LOG_TAG}] RecordingManager: main-thread work failed: {ex}"); }
             }
             PollCaptureWatch();
+            ApplyPerfLevels(isRecording || Time.unscaledTime < perfBusyUntil);
             MainThreadFrames.Frame(Time.unscaledDeltaTime);
             if (Frames.Frame(MonotonicClock.Nanos(), GC.CollectionCount(0)) is string slow)
                 Debug.LogWarning($"[{Constants.LOG_TAG}] {slow}");
