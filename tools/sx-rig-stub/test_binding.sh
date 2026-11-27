@@ -185,11 +185,12 @@ bash "$here/test_tracking_readiness.sh"
     "$repo/Assets/RealityLog/Scripts/Runtime/Rig/SelfRelaunch.cs"
 "$mono" "$out/self-relaunch-harness.exe"
 
-# BreakAlarm: any running headset with no take for 45 s since the last one ended: soft beep, loud beep from 60 s, siren from 90 s, until a take records.
+# BreakAlarm: any running headset with no take for 45 s since the last one ended says "Pod N, start now", louder from 60 s, back to back from 90 s, until a take records.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 \
     -out:"$out/break-alarm-harness.exe" "$here/BreakAlarmHarness.cs" \
-    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/BreakAlarmPolicy.cs"
-"$mono" "$out/break-alarm-harness.exe"
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/BreakAlarmPolicy.cs" \
+    "$repo/Assets/RealityLog/Scripts/Runtime/Rig/BreakAlarmVoice.cs"
+"$mono" "$out/break-alarm-harness.exe" "$repo/Assets/RealityLog/Resources/sx_break_alarm_voice.bytes"
 
 # OsControllerReport: the controllers' charge from OVRRemoteService's dumpsys text, and its cache.
 "$mono" "$csc" -nologo -nullable:enable -langversion:9 -r:"$facades/netstandard.dll" \
