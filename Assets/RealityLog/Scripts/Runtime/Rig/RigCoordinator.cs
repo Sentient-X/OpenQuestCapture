@@ -1222,6 +1222,12 @@ namespace RealityLog.Rig
                 }
                 startupErrors.Remove("pod_config");
                 podConfigProblem = null;
+                // Retired keys (operator_id, local_only, the locked wrist colour) never refuse the
+                // open and are never sent: one line per open names them.
+                if (RigOpenConfig.RetiredPodConfigKeys(ReadPodConfig()) is { Length: > 0 } retired)
+                {
+                    Debug.Log($"[{Constants.LOG_TAG}] RigCoordinator: {PodConfigFileName} retired keys ignored: {string.Join(", ", retired)}");
+                }
                 try
                 {
                     config = BuildConfig();

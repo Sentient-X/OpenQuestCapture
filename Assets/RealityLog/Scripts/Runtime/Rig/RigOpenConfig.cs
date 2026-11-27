@@ -26,11 +26,20 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// pod_config.json keys the app no longer reads, tolerated so a headset provisioned
-        /// before still opens: <c>operator_id</c> (the rig seals the Factory shift's collector now)
-        /// and <c>local_only</c> (the Local only mode, removed 2026-11-22: an enrolled headset
-        /// always declares, and one not set up records nothing).
+        /// before still opens, never sent: <c>operator_id</c> (the rig seals the Factory shift's
+        /// collector now), <c>local_only</c> (the Local only mode, removed 2026-11-22: an enrolled
+        /// headset always declares, and one not set up records nothing), and the locked wrist
+        /// colour (<c>gripper_colour_preset_left</c>, <c>gripper_colour_preset_right</c>,
+        /// <c>umi_wrist_colour_001</c>; removed 2026-11-27 after build 115 stopped sending it:
+        /// one room's exposure and white balance turned the wrists blue and dark under any other
+        /// light, so the cameras run auto white balance and the rig's exposure controller).
         /// </summary>
-        public static readonly string[] RetiredKeys = { "operator_id", "local_only" };
+        public static readonly string[] RetiredKeys =
+            { "operator_id", "local_only", "gripper_colour_preset_left", "gripper_colour_preset_right", "umi_wrist_colour_001" };
+
+        /// <summary>The retired keys a pod_config.json still carries, for the one log line that names them.</summary>
+        public static string[] RetiredPodConfigKeys(JObject podConfig) =>
+            podConfig.Properties().Select(p => p.Name).Where(RetiredKeys.Contains).ToArray();
 
         /// <summary>Rig settings pod_config.json may give, sent when present.</summary>
         public static readonly string[] Settings =
@@ -48,16 +57,7 @@ namespace RealityLog.Rig
         /// APK's content identity, which the rig reports as its recorder build, and the app's
         /// version, which the rig's activity names as its Quest app.
         /// </summary>
-        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "quest_app_version", UmiWristColour001Key };
-
-        /// <summary>
-        /// The rig key that records both wrist cameras with the colour calibration 001 embedded
-        /// in libsx_rig (Pod 13, 2026-11-21). The app no longer sends it (build 115, owner 2026-11-27):
-        /// 001 locks exposure at 7 ms and white balance at 3100 K, tuned for one room on one afternoon,
-        /// and under any other light the wrists came out blue and dark. The cameras run their own auto
-        /// white balance and the rig's exposure controller again. pod_config.json may not set it.
-        /// </summary>
-        public const string UmiWristColour001Key = "umi_wrist_colour_001";
+        public static readonly string[] OptionalAppSet = { "quest_apk_build_id", "quest_app_version" };
 
         /// <summary>The <c>quest_app_version</c> value: the app's versionName and versionCode.</summary>
         public static JObject QuestAppVersion(string versionName, long versionCode) => new()

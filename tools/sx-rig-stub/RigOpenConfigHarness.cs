@@ -53,17 +53,27 @@ static class RigOpenConfigHarness
         Expect((string?)local["factory_url"] == "https://app.sentientx.io/d/factory/" && (string?)local["auth_url"] == "https://app.sentientx.io/d/auth/"
             && (string?)local["rig_type_id"] == "rig_yubi", "the site pod_config.json names is always passed, even beside a stale local_only: true");
 
-        // Wrist colour 001: never sent, even when the library offers it (auto white balance and exposure); pod_config.json cannot turn it on.
-        var with001 = new System.Collections.Generic.HashSet<string>(rigKeys) { RigOpenConfig.UmiWristColour001Key };
-        var quest001 = RigOpenConfig.Build(new JObject(), with001, "/s", "/c", "/p", null, null, null);
-        Expect(quest001[RigOpenConfig.UmiWristColour001Key] == null, "an ordinary open leaves wrist colour 001 off: the cameras keep auto white balance and exposure");
-        Expect(RigOpenConfig.UnknownPodConfigKeys(new JObject { [RigOpenConfig.UmiWristColour001Key] = true }, with001)
-            .Contains(RigOpenConfig.UmiWristColour001Key), "pod_config.json cannot turn wrist colour 001 on");
-        var without001 = new System.Collections.Generic.HashSet<string>(rigKeys);
-        without001.Remove(RigOpenConfig.UmiWristColour001Key);
-        Expect(RigOpenConfig.Build(new JObject(), without001, "/s", "/c", "/p", null, null, null)[RigOpenConfig.UmiWristColour001Key] == null
-            && RigOpenConfig.PolicyKeysUnknownToRig(without001).Length == RigOpenConfig.PolicyKeysUnknownToRig(rigKeys).Length,
-            "an older library without wrist colour 001 still opens, without the key");
+        // Locked wrist colour is retired (2026-11-27): the rig's list no longer names its keys, a
+        // pod_config.json an earlier build provisioned with them still opens (no unknown key), and
+        // none is ever sent; RetiredPodConfigKeys names them for the coordinator's one log line.
+        var colourKeys = new[] { "gripper_colour_preset_left", "gripper_colour_preset_right", "umi_wrist_colour_001" };
+        Expect(colourKeys.All(k => !rigKeys.Contains(k)), "the rig's key list has no wrist colour key");
+        var coloured = (JObject)pod.DeepClone();
+        coloured["gripper_colour_preset_left"] = JObject.Parse("{'schema':'sx.gripper-colour-profile/v1','camera_id':'fleet'}");
+        coloured["gripper_colour_preset_right"] = "stale";
+        coloured["umi_wrist_colour_001"] = true;
+        Expect(RigOpenConfig.UnknownPodConfigKeys(coloured, rigKeys).Length == 0,
+            "a pod_config.json with stale wrist colour keys has no unknown keys, so the open is never refused");
+        var withStale = new System.Collections.Generic.HashSet<string>(rigKeys);
+        withStale.UnionWith(colourKeys);
+        foreach (var keySet in new[] { rigKeys, withStale })
+        {
+            var sentColour = RigOpenConfig.Build(coloured, keySet, "/s", "/c", "/p", null, null, null);
+            Expect(colourKeys.All(k => sentColour[k] == null), "no wrist colour key reaches sx_rig_open, even for a rig list that still names them");
+        }
+        Expect(RigOpenConfig.RetiredPodConfigKeys(coloured).Intersect(colourKeys).Count() == 3
+            && RigOpenConfig.RetiredPodConfigKeys(JObject.Parse("{\"pod_name\":\"p\"}")).Length == 0,
+            "the retired keys a pod_config.json carries are named for the log line, and only those");
 
         // quest_apk_build_id goes only to a rig whose list has it.
         var withId = new System.Collections.Generic.HashSet<string>(rigKeys) { "quest_apk_build_id" };
