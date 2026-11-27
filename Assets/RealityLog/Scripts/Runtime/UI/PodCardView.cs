@@ -297,7 +297,6 @@ namespace RealityLog.UI
             blockerPanel.color = Faint(tone, 0.16f);
             blockerHeadline.color = s.Blocker.Tone == PodTone.Neutral ? TextColor : tone;
             Set(blockerHeadline, s.Blocker.Headline ?? "");
-            Set(blockerAction, s.Blocker.Action ?? "");
             // Who acts, before the action: "Floor manager: The floor manager assigns ...".
             var who = s.Blocker.Who ?? "";
             Set(blockerAction, who.Length > 0 ? "<b>" + who + ":</b> " + (s.Blocker.Action ?? "") : s.Blocker.Action ?? "");

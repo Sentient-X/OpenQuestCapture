@@ -549,6 +549,20 @@
       "still_fine": "The menu button still starts and stops recording.",
       "action": "Tell a technician: the gripper's start button works only when its sensor is set to its own side."
     },
+    "headset_draining_on_charger": {
+      "support_code": 3156,
+      "who": "collector",
+      "headline": "The headset lost {points}% in {minutes} min while plugged in",
+      "still_fine": "You can keep recording for now.",
+      "action": "Check the charger and its cable: pushed fully in at the wall and at the rig, and the rig's own wall charger, not a phone charger or a laptop port. If it keeps falling, tell the floor manager to swap the charger or the cable."
+    },
+    "headset_hot": {
+      "support_code": 3157,
+      "who": "collector",
+      "headline": "The headset is hot",
+      "still_fine": "Your episodes are kept; sealing waits until it cools.",
+      "action": "Between takes, set it down in the shade with its vents uncovered, away from a window, a lamp or a warm charger. If it stays hot, tell the floor manager."
+    },
     "unknown": {
       "support_code": 3199,
       "who": "technician",
