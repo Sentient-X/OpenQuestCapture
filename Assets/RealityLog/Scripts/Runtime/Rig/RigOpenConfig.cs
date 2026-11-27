@@ -52,9 +52,10 @@ namespace RealityLog.Rig
 
         /// <summary>
         /// The rig key that records both wrist cameras with the colour calibration 001 embedded
-        /// in libsx_rig (Pod 13, 2026-11-21): a wrist measured for 001 uses its own table, any
-        /// other wrist its side's 001 table, and each take records which. The app sets it on every
-        /// open when the shipped library offers it; pod_config.json may not set it.
+        /// in libsx_rig (Pod 13, 2026-11-21). The app no longer sends it (build 115, owner 2026-11-27):
+        /// 001 locks exposure at 7 ms and white balance at 3100 K, tuned for one room on one afternoon,
+        /// and under any other light the wrists came out blue and dark. The cameras run their own auto
+        /// white balance and the rig's exposure controller again. pod_config.json may not set it.
         /// </summary>
         public const string UmiWristColour001Key = "umi_wrist_colour_001";
 
@@ -139,11 +140,6 @@ namespace RealityLog.Rig
                 ["credentials_dir"] = credentialsDir,
                 ["rig_config_path"] = podConfigPath,
             };
-            // Every UMI take is recorded with wrist colour 001 when the library has it.
-            if (rigKeys.Contains(UmiWristColour001Key))
-            {
-                config[UmiWristColour001Key] = true;
-            }
             foreach (var key in Settings.Concat(Site))
             {
                 if (podConfig[key] is JToken value && value.Type != JTokenType.Null) config[key] = value.DeepClone();
