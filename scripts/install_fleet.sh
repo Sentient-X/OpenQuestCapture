@@ -11,7 +11,8 @@
 #                 headset that answers as a target
 #   --jobs N      headsets handled at once (default 4)
 #   --stop        force-stop a running app before installing. Without it a running app is skipped:
-#                 it may be recording. Even with --stop, a headset whose head camera wrote video in
+#                 it may be recording. The APK is first pushed to the headset and its sha256
+#                 checked while the app runs; only then is the app stopped. Even with --stop, a headset whose head camera wrote video in
 #                 the last 10 s is recording a take and is skipped (2026-11-24: a stop 4 s into a
 #                 take on pod6 cut it; a heartbeat read is up to a minute old). An app this script stopped is launched again after the
 #                 install (the pods seal and upload only while the app runs; on 2026-11-24 the
@@ -58,6 +59,7 @@ want=$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"$badging")
 want_name=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$badging")
 [ -n "$want" ] || { echo "cannot read versionCode from $apk" >&2; exit 2; }
 grep -q "package: name='$pkg'" <<<"$badging" || { echo "$apk is not $pkg: $badging" >&2; exit 2; }
+apk_sha=$(sha256sum "$apk" | awk '{print $1}')
 
 runs=${INSTALL_FLEET_RUNS:-$HOME/p3/tmp/install-fleet}
 mkdir -p "$runs"
@@ -118,41 +120,51 @@ one() {
   pid=$(a shell pidof "$pkg" 2>/dev/null | tr -d '\r' || true)
   if [ "$dry_run" = 1 ]; then
     if [ -n "$pid" ] && [ "$stop" = 0 ]; then finish "running, would skip (pass --stop)"
-    elif [ -n "$pid" ]; then finish "would stop, install $before -> $want, relaunch"
+    elif [ -n "$pid" ]; then finish "would push and check the APK, stop, install $before -> $want, relaunch"
     else finish "would install $before -> $want"; fi
     return
   fi
+  if [ -n "$pid" ] && [ "$stop" = 0 ]; then finish "running, skipped (pass --stop)"; return; fi
+  # The APK reaches the headset whole, and is checked, while the app still runs. On 2026-11-27 an
+  # install streamed over Wi-Fi adb after the stop broke ("device offline") 18 times on a worn
+  # pod: each attempt only killed and relaunched its app. Now a broken transfer touches nothing,
+  # and the app is down only for a local `pm install` of a file already on the headset. A copy
+  # left by an earlier attempt with the right sha256 is used as it is.
+  staged=/data/local/tmp/oqc-$want.apk
+  if [ "$(a shell sha256sum "$staged" 2>/dev/null | awk '{print $1}' | tr -d '\r' || true)" != "$apk_sha" ]; then
+    say "pushing the APK to $staged (the app keeps running)"
+    if ! out=$(a push "$apk" "$staged" 2>&1); then
+      echo "$out" >>"$log"
+      a shell rm -f "$staged" >>"$log" 2>&1 || true
+      finish "failed: push: $(tail -n 1 <<<"$out"), app untouched"; return
+    fi
+    echo "$out" >>"$log"
+    got=$(a shell sha256sum "$staged" 2>>"$log" | awk '{print $1}' | tr -d '\r' || true)
+    [ "$got" = "$apk_sha" ] || { a shell rm -f "$staged" >>"$log" 2>&1 || true
+      finish "failed: pushed copy sha256 ${got:-unreadable}, wanted $apk_sha, app untouched"; return; }
+  fi
   if [ -n "$pid" ]; then
-    if [ "$stop" = 0 ]; then finish "running, skipped (pass --stop)"; return; fi
     # Looked at the moment before the stop: the newest take's head video written in the last
     # 10 s means a take records now, whatever the last heartbeat said.
     age=$(a shell "f=\$(ls -t /sdcard/Android/data/$pkg/files/*/left_camera.mp4 2>/dev/null | head -n 1); \
 if [ -n \"\$f\" ]; then echo \$(( \$(date +%s) - \$(stat -c %Y \"\$f\") )); else echo none; fi" 2>/dev/null | tr -d '\r' || true)
     if [[ $age =~ ^[0-9]+$ ]] && [ "$age" -le 10 ]; then
-      finish "recording a take (head video written ${age} s ago), skipped"; return
+      finish "recording a take (head video written ${age} s ago), skipped; the checked APK stays at $staged"; return
     fi
     a shell am force-stop "$pkg" >>"$log" 2>&1
     say "force-stopped $pkg (pid $pid)"
   fi
-  say "installing $before -> $want"
-  if ! out=$(a install -r "$apk" 2>&1) || ! grep -q Success <<<"$out"; then
-    echo "$out" >>"$log"
-    # A streamed install over flaky Wi-Fi breaks part way ("Performing Streamed Install" and
-    # nothing more); pushing the whole file first got through on 2026-11-25 (Pods 13, 17).
-    case "$out" in
-      *INSTALL_FAILED_UPDATE_INCOMPATIBLE*) ;;
-      *) say "install broke; retrying once with --no-streaming"
-         if out=$(a install -r --no-streaming "$apk" 2>&1) && grep -q Success <<<"$out"; then out=; fi
-         echo "$out" >>"$log" ;;
-    esac
-  fi
-  if [ -n "$out" ] && ! grep -q Success <<<"$out"; then
+  say "installing $before -> $want from $staged"
+  out=$(a shell pm install -r "$staged" 2>&1 | tr -d '\r' || true)
+  echo "$out" >>"$log"
+  if ! grep -q Success <<<"$out"; then
     case "$out" in
       *INSTALL_FAILED_UPDATE_INCOMPATIBLE*) finish "failed: signer differs, needs uninstall by a person$(relaunch)" ;;
       *) finish "failed: install: $(tail -n 1 <<<"$out")$(relaunch)" ;;
     esac
     return
   fi
+  a shell rm -f "$staged" >>"$log" 2>&1 || true
   after=$(a shell dumpsys package "$pkg" 2>>"$log" | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | head -n 1)
   after=${after:-none}
   [ "$after" = "$want" ] || { finish "failed: versionCode $after after install, wanted $want"; return; }
