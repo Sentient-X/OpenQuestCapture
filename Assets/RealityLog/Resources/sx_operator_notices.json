@@ -360,6 +360,13 @@
       "still_fine": "Your earlier episodes are safe.",
       "action": "The floor manager checks the task's setup in the Console."
     },
+    "readiness_operator": {
+      "support_code": 3130,
+      "who": "collector",
+      "headline": "Check in first",
+      "still_fine": "Your earlier episodes are safe.",
+      "action": "Pair your phone with this rig, or ask a floor lead to check you in here."
+    },
     "readiness_other": {
       "support_code": 3147,
       "who": "technician",
